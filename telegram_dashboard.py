@@ -37,6 +37,7 @@ BUTTON_ADMIN_ACCOUNTS = "🔑 Accounts"
 BUTTON_POST_STATS = "📈 Post Stats"
 BUTTON_RUNTIME_LOCKS = "🔐 Runtime Locks"
 BUTTON_SYSTEM_CONFIG = "⚙️ System Config"
+BUTTON_DEBUG_SNAPSHOT = "🧰 Debug Snapshot"
 
 DASHBOARD_ACTIONS = {
     BUTTON_DASHBOARD: "dashboard",
@@ -70,6 +71,7 @@ DASHBOARD_ACTIONS = {
     BUTTON_POST_STATS: "admin_post_stats",
     BUTTON_RUNTIME_LOCKS: "admin_runtime_locks",
     BUTTON_SYSTEM_CONFIG: "admin_system_config",
+    BUTTON_DEBUG_SNAPSHOT: "admin_debug_snapshot",
     # Backward-compatible labels from the first lightweight dashboard.
     "➕ Add Account": "add_account",
     "👥 Accounts": "manage_accounts",
@@ -164,6 +166,7 @@ def admin_dashboard_markup() -> Dict[str, Any]:
             [BUTTON_SYSTEM_STATS, BUTTON_POST_STATS],
             [BUTTON_USERS, BUTTON_ADMIN_ACCOUNTS],
             [BUTTON_RUNTIME_LOCKS, BUTTON_SYSTEM_CONFIG],
+            [BUTTON_DEBUG_SNAPSHOT],
             [BUTTON_USER_DASHBOARD],
         ],
         placeholder="Choose an admin action...",

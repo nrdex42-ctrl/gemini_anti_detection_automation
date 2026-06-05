@@ -9,7 +9,9 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
+import sys
 import time
 import uuid
 from contextlib import suppress
@@ -68,6 +70,34 @@ def progress_bar(done: int, total: int, width: int = 10) -> str:
 def progress_card(title: str, done: int, total: int, status: str) -> str:
     percent = int((done / max(1, total)) * 100)
     return f"{title}\n{progress_bar(done, total)} {done}/{total} ({percent}%)\n{status}"
+
+
+def new_debug_id(prefix: str) -> str:
+    safe_prefix = re.sub(r"[^a-z0-9_-]+", "", (prefix or "dbg").lower())[:10] or "dbg"
+    return f"{safe_prefix}_{uuid.uuid4().hex[:10]}"
+
+
+def _debug_safe(value: Any, limit: int = 220) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_debug_safe(item, limit) for item in list(value)[:10]]
+    if isinstance(value, dict):
+        return {
+            str(key)[:60]: _debug_safe(item, limit)
+            for key, item in list(value.items())[:20]
+            if str(key).lower() not in {"cookie", "cookies", "cookie_header", "xs", "fr", "datr", "sb", "media_path"}
+        }
+    text = " ".join(str(value or "").split())
+    return text[:limit]
+
+
+def diagnostic_path_from_text(text: Any) -> str:
+    raw = str(text or "")
+    marker = "Diagnostic:"
+    if marker not in raw:
+        return ""
+    return raw.split(marker, 1)[1].strip().splitlines()[0].strip()[:220]
 
 
 def cookie_validation_summary(session_ok: bool, detail: str, max_length: int = 180) -> Tuple[str, str]:
@@ -210,6 +240,8 @@ class TelegramBotApp:
         self.api_base = f"https://api.telegram.org/bot{self.token}"
         self.dashboard_sessions: Dict[str, Dict[str, Any]] = {}
         self.account_name_lookup_tasks: set[str] = set()
+        self.started_at = time.monotonic()
+        self.started_wall_at = datetime.now(timezone.utc)
 
     def is_admin_user(self, user_id: int) -> bool:
         return bool(self.admin_ids and int(user_id or 0) in self.admin_ids)
@@ -218,6 +250,15 @@ class TelegramBotApp:
         if self.is_admin_user(user_id):
             return None
         return int(user_id or 0)
+
+    def debug_event(self, event: str, trace_id: str = "", **fields: Any) -> None:
+        safe_fields = {key: _debug_safe(value) for key, value in fields.items()}
+        logger.info(
+            "BOT_DEBUG event=%s trace_id=%s fields=%s",
+            event,
+            trace_id or "-",
+            json.dumps(safe_fields, ensure_ascii=False, sort_keys=True),
+        )
 
     async def startup(self, app: web.Application) -> None:
         self.session = ClientSession()
@@ -838,6 +879,120 @@ class TelegramBotApp:
         lines.append(f"- admins_configured={bool(self.admin_ids)}")
         await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup())
 
+    async def show_admin_debug_snapshot(self, chat_id: int, message_id: int, user_id: int) -> None:
+        if not self.is_admin_user(user_id):
+            await self.send_message(chat_id, "Admin dashboard is restricted.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+            return
+        trace_id = new_debug_id("snapshot")
+        started = time.monotonic()
+        self.debug_event("admin_debug_snapshot_start", trace_id, user_id=user_id, chat_id=chat_id)
+        try:
+            summary = await asyncio.to_thread(self.storage.admin_summary)
+            status_counts = summary.get("job_status_counts") or {}
+            active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
+            diagnostics_dir = Path(os.getenv("DIAGNOSTICS_DIR", "diagnostics"))
+            diagnostic_count = 0
+            latest_diagnostic = "none"
+            try:
+                if diagnostics_dir.exists():
+                    diagnostic_items = sorted(
+                        [path for path in diagnostics_dir.iterdir() if path.is_dir()],
+                        key=lambda path: path.stat().st_mtime,
+                        reverse=True,
+                    )
+                    diagnostic_count = len(diagnostic_items)
+                    if diagnostic_items:
+                        latest_diagnostic = diagnostic_items[0].name
+            except Exception as exc:
+                latest_diagnostic = f"unavailable: {compact_error(exc, 120)}"
+
+            config_keys = [
+                "LOG_LEVEL",
+                "HEADLESS",
+                "PLAYWRIGHT_BROWSERS_PATH",
+                "FACEBOOK_BROWSER_EXECUTABLE",
+                "BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS",
+                "BOT_PROGRESS_HEARTBEAT_SECONDS",
+                "BOT_POSTING_ENGINE_TIMEOUT_SECONDS",
+                "BOT_BATCH_POSTING_ENGINE_TIMEOUT_SECONDS",
+                "POST_PAGES_PORTAL_FIRST",
+                "POST_ENABLE_PAGES_PORTAL_FALLBACK",
+                "FACEBOOK_IMAGE_FORCE_SANITIZE_UPLOAD",
+            ]
+            lines = [
+                "🧰 Debug Snapshot",
+                "━━━━━━━━━━━━━━━━━━",
+                f"Debug ID: {trace_id}",
+                f"Uptime: {int(time.monotonic() - self.started_at)}s",
+                f"Started: {self.started_wall_at.strftime('%Y-%m-%d %H:%M UTC')}",
+                f"Revision: {self.deploy_revision() or 'unknown'}",
+                f"Python: {platform.python_version()} ({sys.version_info.major}.{sys.version_info.minor})",
+                f"Platform: {platform.system()} {platform.release()}",
+                f"PID: {os.getpid()}",
+                "",
+                "Database:",
+                f"- users={summary.get('user_count', 0)} accounts={summary.get('total_accounts', 0)} active_accounts={summary.get('active_accounts', 0)} pages={summary.get('page_count', 0)}",
+                f"- jobs active={active_jobs} success={int(status_counts.get('success', 0))} failed={int(status_counts.get('failed', 0))}",
+                "",
+                "Diagnostics:",
+                f"- folder={diagnostics_dir}",
+                f"- count={diagnostic_count}",
+                f"- latest={latest_diagnostic}",
+                "",
+                "Config:",
+            ]
+            for key in config_keys:
+                value = os.getenv(key, "")
+                if key in {"FACEBOOK_BROWSER_EXECUTABLE", "PLAYWRIGHT_BROWSERS_PATH"}:
+                    value = value or "<default>"
+                lines.append(f"- {key}={_debug_safe(value or '<default>', 100)}")
+
+            locks = summary.get("active_locks") or []
+            lines.extend(["", "Active locks:"])
+            if locks:
+                for lock in locks[:5]:
+                    lines.append(
+                        f"- {lock.get('account_id')} until={self._format_dt(lock.get('locked_until'))} by={str(lock.get('locked_by') or '')[:42]}"
+                    )
+            else:
+                lines.append("- none")
+
+            recent_jobs = summary.get("recent_jobs") or []
+            failed_jobs = [job for job in recent_jobs if str(job.get("status") or "") == "failed"]
+            lines.extend(["", "Recent failed jobs:"])
+            if failed_jobs:
+                for job in failed_jobs[:5]:
+                    error = str(job.get("error") or "").strip()
+                    diagnostic = diagnostic_path_from_text(error)
+                    suffix = f" | diag={Path(diagnostic).name}" if diagnostic else ""
+                    lines.append(
+                        f"- {str(job.get('id') or '')[:8]} {job.get('post_type')} {job.get('account_id')} "
+                        f"{self._format_dt(job.get('completed_at'))}: {compact_error(Exception(error), 140)}{suffix}"
+                    )
+            else:
+                lines.append("- none in latest 12 jobs")
+
+            elapsed = time.monotonic() - started
+            lines.extend(["", f"Snapshot generated in {elapsed:.2f}s. Check Render logs for `BOT_DEBUG` with this Debug ID."])
+            self.debug_event(
+                "admin_debug_snapshot_complete",
+                trace_id,
+                elapsed_seconds=round(elapsed, 3),
+                active_jobs=active_jobs,
+                failed_recent=len(failed_jobs),
+                diagnostics=diagnostic_count,
+            )
+            await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup())
+        except Exception as exc:
+            self.debug_event("admin_debug_snapshot_failed", trace_id, error=compact_error(exc))
+            logger.exception("Admin debug snapshot failed trace_id=%s", trace_id)
+            await self.send_message(
+                chat_id,
+                "\n".join(["Debug snapshot failed.", f"Debug ID: {trace_id}", compact_error(exc)]),
+                message_id,
+                reply_markup=admin_dashboard_markup(),
+            )
+
     async def prompt_for_account(self, chat_id: int, message_id: int, prompt: str, user_id: int = 0) -> bool:
         accounts = await self.dashboard_accounts(user_id)
         if not accounts:
@@ -1198,6 +1353,7 @@ class TelegramBotApp:
             "admin_post_stats",
             "admin_runtime_locks",
             "admin_system_config",
+            "admin_debug_snapshot",
         }:
             self.clear_dashboard_session(chat_id, user_id)
             if not self.is_admin_user(user_id):
@@ -1215,6 +1371,8 @@ class TelegramBotApp:
                 await self.show_admin_runtime_locks(chat_id, message_id, user_id)
             elif action == "admin_system_config":
                 await self.show_admin_config(chat_id, message_id, user_id)
+            elif action == "admin_debug_snapshot":
+                await self.show_admin_debug_snapshot(chat_id, message_id, user_id)
             return
         if action in {"accounts", "manage_accounts"}:
             self.clear_dashboard_session(chat_id, user_id)
@@ -2016,11 +2174,50 @@ class TelegramBotApp:
         )
 
     async def handle_update_safe(self, update: Dict[str, Any]) -> None:
+        trace_id = new_debug_id("upd")
+        started = time.monotonic()
+        chat_id, user_id, message_id = self.update_chat_context(update)
+        update_kind = "callback" if update.get("callback_query") else "message"
+        command = ""
+        action = ""
+        callback_data = ""
+        if update.get("callback_query"):
+            callback_data = str((update.get("callback_query") or {}).get("data") or "")[:80]
+        else:
+            message = update.get("message") or update.get("edited_message") or {}
+            text = str(message.get("text") or message.get("caption") or "").strip()
+            command, _args = split_command(text)
+            action = dashboard_action(text)
+        self.debug_event(
+            "telegram_update_start",
+            trace_id,
+            kind=update_kind,
+            chat_id=chat_id,
+            user_id=user_id,
+            message_id=message_id,
+            command=command,
+            action=action,
+            callback_data=callback_data,
+        )
         try:
             await self.handle_update(update)
+            self.debug_event(
+                "telegram_update_complete",
+                trace_id,
+                elapsed_seconds=round(time.monotonic() - started, 3),
+                kind=update_kind,
+                user_id=user_id,
+            )
         except Exception as exc:
-            logger.exception("Telegram dashboard update failed")
-            chat_id, user_id, message_id = self.update_chat_context(update)
+            logger.exception("Telegram dashboard update failed trace_id=%s", trace_id)
+            self.debug_event(
+                "telegram_update_failed",
+                trace_id,
+                elapsed_seconds=round(time.monotonic() - started, 3),
+                kind=update_kind,
+                user_id=user_id,
+                error=compact_error(exc),
+            )
             if not chat_id:
                 return
             if user_id:
@@ -2036,6 +2233,7 @@ class TelegramBotApp:
                         [
                             "Dashboard action failed.",
                             "━━━━━━━━━━━━━━━━━━",
+                            f"Debug ID: {trace_id}",
                             compact_error(exc),
                             "",
                             "The current flow was reset. Use /start or the dashboard buttons to continue.",
@@ -2310,9 +2508,17 @@ class TelegramBotApp:
             return
         account_id = args[0]
         verb = "Refreshing cached pages" if refresh else "Discovering pages"
+        trace_id = new_debug_id("pages")
+        self.debug_event(
+            "page_discovery_start",
+            trace_id,
+            account_id=account_id,
+            user_id=user_id,
+            refresh=refresh,
+        )
         progress = await self.send_message(
             chat_id,
-            progress_card(f"{verb}...", 0, 3, "Preparing Facebook session..."),
+            progress_card(f"{verb}...", 0, 3, f"Debug ID: {trace_id}\nPreparing Facebook session..."),
             message_id,
             reply_markup=cancel_markup(),
         )
@@ -2321,7 +2527,7 @@ class TelegramBotApp:
             await self.try_edit_message(
                 chat_id,
                 progress_message_id,
-                progress_card(f"{verb}...", 1, 3, "Opening pages manager..."),
+                progress_card(f"{verb}...", 1, 3, f"Debug ID: {trace_id}\nOpening pages manager..."),
                 reply_markup=cancel_markup(),
             )
             discovery_timeout = _env_int("BOT_PAGE_DISCOVERY_TIMEOUT_SECONDS", 150, minimum=30)
@@ -2352,7 +2558,7 @@ class TelegramBotApp:
                     tick += 1
                     elapsed = int(time.monotonic() - started)
                     detail = (
-                        f"Discovering managed pages... {elapsed}s elapsed. "
+                        f"Debug ID: {trace_id}\nDiscovering managed pages... {elapsed}s elapsed. "
                         "Still waiting for Facebook/browser response."
                     )
                     if tick % 3 == 0:
@@ -2367,7 +2573,7 @@ class TelegramBotApp:
                 await self.try_edit_message(
                     chat_id,
                     progress_message_id,
-                    progress_card(f"{verb}...", 2, 3, f"Saving {len(pages)} discovered page(s) to cache..."),
+                    progress_card(f"{verb}...", 2, 3, f"Debug ID: {trace_id}\nSaving {len(pages)} discovered page(s) to cache..."),
                     reply_markup=cancel_markup(),
                 )
                 await asyncio.to_thread(self.storage.upsert_pages, account_id, pages)
@@ -2375,9 +2581,10 @@ class TelegramBotApp:
                 await self.try_edit_message(
                     chat_id,
                     progress_message_id,
-                    progress_card(f"{verb}...", 3, 3, "No managed pages discovered."),
+                    progress_card(f"{verb}...", 3, 3, f"Debug ID: {trace_id}\nNo managed pages discovered."),
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
+                self.debug_event("page_discovery_empty", trace_id, account_id=account_id, elapsed_seconds=round(time.monotonic() - started, 3))
                 await self.send_message(
                     chat_id,
                     "Dashboard keyboard restored.",
@@ -2390,8 +2597,15 @@ class TelegramBotApp:
             await self.try_edit_message(
                 chat_id,
                 progress_message_id,
-                "\n".join([progress_card(f"{verb}...", 3, 3, "Pages saved to cache."), "", *lines]),
+                "\n".join([progress_card(f"{verb}...", 3, 3, f"Debug ID: {trace_id}\nPages saved to cache."), "", *lines]),
                 reply_markup=await self.dashboard_reply_markup(user_id),
+            )
+            self.debug_event(
+                "page_discovery_complete",
+                trace_id,
+                account_id=account_id,
+                page_count=len(pages),
+                elapsed_seconds=round(time.monotonic() - started, 3),
             )
             await self.send_message(
                 chat_id,
@@ -2400,6 +2614,7 @@ class TelegramBotApp:
             )
         except Exception as exc:
             logger.exception("Page discovery failed")
+            self.debug_event("page_discovery_failed", trace_id, account_id=account_id, error=compact_error(exc))
             await self.try_edit_message(
                 chat_id,
                 progress_message_id,
@@ -2407,6 +2622,7 @@ class TelegramBotApp:
                     [
                         progress_card(f"{verb}...", 3, 3, "Page discovery failed."),
                         "",
+                        f"Debug ID: {trace_id}",
                         compact_error(exc),
                         "",
                         "Use /start to refresh the dashboard, or try Stored Pages if pages were already cached.",
@@ -2782,15 +2998,24 @@ class TelegramBotApp:
         page_name: str = "",
     ) -> None:
         lock_owner = f"telegram:{os.getpid()}:{job_id}:{uuid.uuid4().hex[:12]}"
+        trace_id = new_debug_id("post")
         lock_acquired = False
         cookie_session_attempted = False
         heartbeat_task: Optional[asyncio.Task[None]] = None
         progress_message_id = 0
         total_units = 3
         try:
+            self.debug_event(
+                "post_job_start",
+                trace_id,
+                job_id=job_id,
+                account_id=account_id,
+                post_type=post_type,
+                page=page_name or page_id_or_url,
+            )
             progress = await self.send_message(
                 chat_id,
-                progress_card("Posting...", 0, total_units, "Queued and waiting for account isolation slot."),
+                progress_card("Posting...", 0, total_units, f"Debug ID: {trace_id}\nQueued and waiting for account isolation slot."),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
@@ -2800,15 +3025,16 @@ class TelegramBotApp:
                 await self.try_edit_message(
                     chat_id,
                     progress_message_id,
-                    progress_card("Posting...", 0, total_units, detail),
+                    progress_card("Posting...", 0, total_units, f"Debug ID: {trace_id}\n{detail}"),
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
 
             lock_acquired = await self.wait_for_account_slot(account_id, lock_owner, chat_id, lock_progress)
+            self.debug_event("post_job_lock_acquired", trace_id, job_id=job_id, account_id=account_id)
             await self.try_edit_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Posting...", 1, total_units, "Account slot acquired."),
+                progress_card("Posting...", 1, total_units, f"Debug ID: {trace_id}\nAccount slot acquired."),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             heartbeat_task = asyncio.create_task(self.account_lock_heartbeat(account_id, lock_owner))
@@ -2816,7 +3042,7 @@ class TelegramBotApp:
             await self.try_edit_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Posting...", 2, total_units, "Cookie loaded. Opening Facebook composer..."),
+                progress_card("Posting...", 2, total_units, f"Debug ID: {trace_id}\nCookie loaded. Opening Facebook composer..."),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             post = self.engine_post_payload(page_id_or_url, page_name or page_id_or_url, post_type, caption, media_path)
@@ -2844,7 +3070,7 @@ class TelegramBotApp:
                         "Posting...",
                         2,
                         total_units,
-                        f"Browser posting is still running... {elapsed}s elapsed. Waiting for Facebook result.",
+                        f"Debug ID: {trace_id}\nBrowser posting is still running... {elapsed}s elapsed. Waiting for Facebook result.",
                     ),
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
@@ -2852,6 +3078,7 @@ class TelegramBotApp:
             results_task = asyncio.create_task(
                 create_facebook_posts(cookies_json(parse_cookies(cookie_string)), [post], progress_callback=progress_callback)
             )
+            self.debug_event("post_job_engine_start", trace_id, job_id=job_id, timeout_seconds=engine_timeout)
             results = await self.wait_for_task_with_heartbeat(
                 results_task,
                 timeout_seconds=engine_timeout,
@@ -2862,35 +3089,37 @@ class TelegramBotApp:
             await self.try_edit_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Posting...", total_units, total_units, "Facebook returned a posting result."),
+                progress_card("Posting...", total_units, total_units, f"Debug ID: {trace_id}\nFacebook returned a posting result."),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             result = results[0] if results else {"success": False, "status": "no_result"}
             success = bool(result.get("success"))
             error = "" if success else str(result.get("result") or result.get("status") or result.get("error") or "posting failed")
             await asyncio.to_thread(self.storage.mark_job_completed, job_id, success, result, error)
+            self.debug_event("post_job_complete", trace_id, job_id=job_id, success=success, error=error[:300])
             if success:
                 await self.try_edit_message(
                     chat_id,
                     progress_message_id,
-                    progress_card("Posting...", total_units, total_units, f"Post job {job_id} succeeded."),
+                    progress_card("Posting...", total_units, total_units, f"Debug ID: {trace_id}\nPost job {job_id} succeeded."),
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
             else:
                 await self.try_edit_message(
                     chat_id,
                     progress_message_id,
-                    progress_card("Posting...", total_units, total_units, f"Post job {job_id} failed: {error[:500]}"),
+                    progress_card("Posting...", total_units, total_units, f"Debug ID: {trace_id}\nPost job {job_id} failed: {error[:500]}"),
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
         except Exception as exc:
             logger.exception("Post job failed")
+            self.debug_event("post_job_failed", trace_id, job_id=job_id, error=compact_error(exc))
             await asyncio.to_thread(self.storage.mark_job_completed, job_id, False, {"exception": str(exc)}, str(exc))
             if progress_message_id:
                 await self.try_edit_message(
                     chat_id,
                     progress_message_id,
-                    "\n".join([progress_card("Posting...", total_units, total_units, "Post job failed."), "", compact_error(exc)]),
+                    "\n".join([progress_card("Posting...", total_units, total_units, "Post job failed."), "", f"Debug ID: {trace_id}", compact_error(exc)]),
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
             else:
@@ -2919,6 +3148,7 @@ class TelegramBotApp:
     ) -> None:
         batch_id = uuid.uuid4().hex[:12]
         lock_owner = f"telegram:{os.getpid()}:batch:{batch_id}"
+        trace_id = new_debug_id("batch")
         lock_acquired = False
         cookie_session_attempted = False
         heartbeat_task: Optional[asyncio.Task[None]] = None
@@ -2926,9 +3156,17 @@ class TelegramBotApp:
         job_ids = [str(job["job_id"]) for job in jobs]
         total_units = max(3, len(jobs) + 2)
         try:
+            self.debug_event(
+                "batch_post_start",
+                trace_id,
+                batch_id=batch_id,
+                account_id=account_id,
+                job_count=len(jobs),
+                post_types=sorted({str(job.get("post_type") or "") for job in jobs}),
+            )
             progress = await self.send_message(
                 chat_id,
-                progress_card("Batch posting...", 0, total_units, f"Queued {len(jobs)} page job(s)."),
+                progress_card("Batch posting...", 0, total_units, f"Debug ID: {trace_id}\nQueued {len(jobs)} page job(s)."),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
@@ -2939,15 +3177,16 @@ class TelegramBotApp:
                 await self.try_edit_message(
                     chat_id,
                     progress_message_id,
-                    progress_card("Batch posting...", 0, total_units, detail),
+                    progress_card("Batch posting...", 0, total_units, f"Debug ID: {trace_id}\n{detail}"),
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
 
             lock_acquired = await self.wait_for_account_slot(account_id, lock_owner, chat_id, lock_progress)
+            self.debug_event("batch_post_lock_acquired", trace_id, batch_id=batch_id, account_id=account_id)
             await self.try_edit_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Batch posting...", 1, total_units, "Account slot acquired."),
+                progress_card("Batch posting...", 1, total_units, f"Debug ID: {trace_id}\nAccount slot acquired."),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             heartbeat_task = asyncio.create_task(self.account_lock_heartbeat(account_id, lock_owner))
@@ -2955,7 +3194,7 @@ class TelegramBotApp:
             await self.try_edit_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Batch posting...", 2, total_units, "Cookie loaded. Posting cached pages..."),
+                progress_card("Batch posting...", 2, total_units, f"Debug ID: {trace_id}\nCookie loaded. Posting cached pages..."),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             posts = [
@@ -2996,7 +3235,7 @@ class TelegramBotApp:
                         "Batch posting...",
                         2,
                         total_units,
-                        f"Browser batch posting is still running... {elapsed}s elapsed. Waiting for Facebook result.",
+                        f"Debug ID: {trace_id}\nBrowser batch posting is still running... {elapsed}s elapsed. Waiting for Facebook result.",
                     ),
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
@@ -3004,6 +3243,7 @@ class TelegramBotApp:
             results_task = asyncio.create_task(
                 create_facebook_posts(cookies_json(parse_cookies(cookie_string)), posts, progress_callback=progress_callback)
             )
+            self.debug_event("batch_post_engine_start", trace_id, batch_id=batch_id, timeout_seconds=engine_timeout, post_count=len(posts))
             results = await self.wait_for_task_with_heartbeat(
                 results_task,
                 timeout_seconds=engine_timeout,
@@ -3014,7 +3254,7 @@ class TelegramBotApp:
             await self.try_edit_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Batch posting...", total_units, total_units, "Facebook returned batch results."),
+                progress_card("Batch posting...", total_units, total_units, f"Debug ID: {trace_id}\nFacebook returned batch results."),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             success_count = 0
@@ -3025,21 +3265,32 @@ class TelegramBotApp:
                     success_count += 1
                 error = "" if success else str(result.get("result") or result.get("status") or result.get("error") or "posting failed")
                 await asyncio.to_thread(self.storage.mark_job_completed, str(job["job_id"]), success, result, error)
+                self.debug_event(
+                    "batch_post_page_result",
+                    trace_id,
+                    batch_id=batch_id,
+                    job_id=str(job["job_id"]),
+                    page=job.get("page_name") or job.get("page_id_or_url"),
+                    success=success,
+                    error=error[:300],
+                )
             await self.try_edit_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Batch posting...", total_units, total_units, f"Completed: {success_count}/{len(jobs)} succeeded."),
+                progress_card("Batch posting...", total_units, total_units, f"Debug ID: {trace_id}\nCompleted: {success_count}/{len(jobs)} succeeded."),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
+            self.debug_event("batch_post_complete", trace_id, batch_id=batch_id, success_count=success_count, total=len(jobs))
         except Exception as exc:
             logger.exception("Batch post job failed")
+            self.debug_event("batch_post_failed", trace_id, batch_id=batch_id, error=compact_error(exc))
             for job_id in job_ids:
                 await asyncio.to_thread(self.storage.mark_job_completed, job_id, False, {"exception": str(exc)}, str(exc))
             if progress_message_id:
                 await self.try_edit_message(
                     chat_id,
                     progress_message_id,
-                    "\n".join([progress_card("Batch posting...", total_units, total_units, "Batch posting failed."), "", compact_error(exc)]),
+                    "\n".join([progress_card("Batch posting...", total_units, total_units, "Batch posting failed."), "", f"Debug ID: {trace_id}", compact_error(exc)]),
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
             else:
