@@ -343,6 +343,40 @@ def post_type_inline_markup() -> Dict[str, Any]:
     )
 
 
+def video_mode_card(*, account_name: str, pages: List[Dict[str, Any]], selected_indexes: List[int]) -> str:
+    page_names = [
+        page_display_name(pages[idx], idx)
+        for idx in selected_indexes
+        if isinstance(idx, int) and 0 <= idx < len(pages)
+    ]
+    preview = ", ".join(_short(name, 32) for name in page_names[:4])
+    if len(page_names) > 4:
+        preview += f", +{len(page_names) - 4} more"
+    return "\n".join(
+        [
+            "🎬 Video Posting Mode",
+            "━━━━━━━━━━━━━━━━━━",
+            f"Account: {_short(account_name or 'Facebook Account', 70)}",
+            f"Pages: {len(page_names)}",
+            f"Selected: {preview or 'none'}",
+            "",
+            "Choose how videos should be attached.",
+        ]
+    )
+
+
+def video_mode_inline_markup() -> Dict[str, Any]:
+    return inline_markup(
+        [
+            [inline_button("📄 Single video upload → all pages", "video:single_upload")],
+            [inline_button("📚 Multi videos upload → one per page", "video:multi_upload")],
+            [inline_button("🔗 Single video URL → all pages", "video:single_url")],
+            [inline_button("🔗 Multi video URLs → one per page", "video:multi_url")],
+            [inline_button("⬅️ Pages", "post:pages"), inline_button("🏠 Dashboard", "dash:back")],
+        ]
+    )
+
+
 def post_input_card(post_type: str) -> str:
     if post_type == "text":
         action = "Send the caption/text message now."
@@ -363,9 +397,10 @@ def post_review_card(
     post_type: str,
     caption: str,
     media_path: str = "",
+    multi_media_count: int = 0,
 ) -> str:
     caption_value = _short(caption, 700) if caption else "(none)"
-    media_value = "attached" if media_path else "(none)"
+    media_value = f"{multi_media_count} attached (one per page)" if multi_media_count else ("attached" if media_path else "(none)")
     lines = [
         "🧾 Review Post",
         "━━━━━━━━━━━━━━━━━━",

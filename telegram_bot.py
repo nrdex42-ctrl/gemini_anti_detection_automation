@@ -16,6 +16,7 @@ from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from aiohttp import ClientSession, web
 
@@ -48,6 +49,8 @@ from telegram_dashboard import (
     post_type_card,
     post_type_inline_markup,
     prompt_text,
+    video_mode_card,
+    video_mode_inline_markup,
 )
 
 logger = logging.getLogger("telegram_bot")
@@ -99,6 +102,41 @@ def _env_int(name: str, default: int, minimum: int = 0) -> int:
     except ValueError:
         logger.warning("Invalid %s=%r; using %d", name, raw, default)
         return default
+
+
+def parse_video_media_url(text: str) -> Tuple[bool, str]:
+    raw = (text or "").strip()
+    if not raw.startswith(("http://", "https://")):
+        return False, "Send a direct video link starting with https:// or http://."
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False, "That does not look like a valid video URL."
+    if len(raw) > 2048:
+        return False, "Video URL is too long."
+    return True, raw
+
+
+def probe_video_media_url(url: str) -> Tuple[bool, str, Optional[int]]:
+    import requests
+
+    timeout = _env_int("BOT_VIDEO_URL_PROBE_TIMEOUT_SECONDS", 12, minimum=3)
+    max_bytes = _env_int("MAX_MEDIA_BYTES", 50 * 1024 * 1024, minimum=1024 * 1024)
+    try:
+        response = requests.head(
+            url,
+            timeout=timeout,
+            allow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; FBAutomationBot/1.0)"},
+        )
+        if response.status_code >= 400:
+            return False, f"URL returned HTTP {response.status_code}. Use a direct video file link.", None
+        content_length = response.headers.get("Content-Length")
+        size = int(content_length) if content_length and content_length.isdigit() else None
+        if size and size > max_bytes:
+            return False, f"The video URL is about {size} bytes; bot limit is {max_bytes} bytes.", size
+        return True, "", size
+    except Exception:
+        return True, "", None
 
 
 def _csv_ints(name: str) -> set[int]:
@@ -369,6 +407,43 @@ class TelegramBotApp:
             logger.warning("Telegram editMessageText failed or timed out: %s", compact_error(exc, 300))
             return False
 
+    def start_background_task(self, coro: Awaitable[Any], label: str) -> asyncio.Task[Any]:
+        task = asyncio.create_task(coro)
+
+        def _log_done(done_task: asyncio.Task[Any]) -> None:
+            with suppress(asyncio.CancelledError):
+                exc = done_task.exception()
+                if exc:
+                    logger.error("Background task failed: %s", label, exc_info=(type(exc), exc, exc.__traceback__))
+
+        task.add_done_callback(_log_done)
+        return task
+
+    async def wait_for_task_with_heartbeat(
+        self,
+        task: asyncio.Task[Any],
+        *,
+        timeout_seconds: int,
+        heartbeat_seconds: int,
+        on_tick: Callable[[int], Awaitable[None]],
+        timeout_message: str,
+    ) -> Any:
+        started = time.monotonic()
+        while True:
+            remaining = timeout_seconds - (time.monotonic() - started)
+            if remaining <= 0:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                raise TimeoutError(timeout_message)
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(task),
+                    timeout=min(max(1, heartbeat_seconds), remaining),
+                )
+            except asyncio.TimeoutError:
+                await on_tick(int(time.monotonic() - started))
+
     def browser_progress_text(self, title: str, event: Dict[str, Any], fallback_total: int, base_done: int = 0) -> str:
         page_total = int(event.get("total") or fallback_total or 1)
         page_done = int(event.get("done") or 0)
@@ -424,9 +499,9 @@ class TelegramBotApp:
                 now = time.monotonic()
                 if text == last_text or (not completed and now - last_edit_at < min_interval):
                     return
-                await self.edit_message(chat_id, message_id, text, reply_markup=reply_markup)
-                last_text = text
-                last_edit_at = now
+                if await self.try_edit_message(chat_id, message_id, text, reply_markup=reply_markup):
+                    last_text = text
+                    last_edit_at = now
 
         return callback
 
@@ -840,6 +915,68 @@ class TelegramBotApp:
             if isinstance(idx, int) and 0 <= idx < len(pages) and isinstance(pages[idx], dict)
         ]
 
+    def multi_video_prompt(self, session: Dict[str, Any]) -> str:
+        selected_pages = self.selected_pages_from_session(session)
+        received = len(session.get("multi_media_paths") or []) if isinstance(session.get("multi_media_paths"), list) else 0
+        next_index = min(received, max(0, len(selected_pages) - 1))
+        page_name = page_display_name(selected_pages[next_index], next_index) if selected_pages else "Page"
+        return "\n".join(
+            [
+                "📚 Multi Video Upload",
+                "━━━━━━━━━━━━━━━━━━",
+                f"Received: {received}/{len(selected_pages)}",
+                f"Next page: {page_name}",
+                "",
+                f"Send video {received + 1} of {len(selected_pages)} now.",
+            ]
+        )
+
+    def multi_video_url_prompt(self, session: Dict[str, Any]) -> str:
+        selected_pages = self.selected_pages_from_session(session)
+        received = len(session.get("multi_media_paths") or []) if isinstance(session.get("multi_media_paths"), list) else 0
+        next_index = min(received, max(0, len(selected_pages) - 1))
+        page_name = page_display_name(selected_pages[next_index], next_index) if selected_pages else "Page"
+        return "\n".join(
+            [
+                "🔗 Multi Video URLs",
+                "━━━━━━━━━━━━━━━━━━",
+                f"Received: {received}/{len(selected_pages)}",
+                f"Next page: {page_name}",
+                "",
+                f"Paste direct video URL {received + 1} of {len(selected_pages)} now.",
+            ]
+        )
+
+    async def validate_video_url_or_reply(self, chat_id: int, message_id: int, text: str) -> str:
+        ok, value = parse_video_media_url(text)
+        if not ok:
+            await self.send_message(chat_id, value, message_id, reply_markup=cancel_markup())
+            return ""
+        progress = await self.send_message(
+            chat_id,
+            progress_card("Checking video URL...", 0, 1, "Validating direct URL..."),
+            message_id,
+            reply_markup=cancel_markup(),
+        )
+        progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
+        reachable, error, size = await asyncio.to_thread(probe_video_media_url, value)
+        if not reachable:
+            await self.try_edit_message(
+                chat_id,
+                progress_message_id,
+                progress_card("Checking video URL...", 1, 1, error or "Video URL is not reachable."),
+                reply_markup=cancel_markup(),
+            )
+            return ""
+        size_detail = f" Accepted. Size: about {size} bytes." if size else " Accepted. Size unknown."
+        await self.try_edit_message(
+            chat_id,
+            progress_message_id,
+            progress_card("Checking video URL...", 1, 1, size_detail),
+            reply_markup=cancel_markup(),
+        )
+        return value
+
     async def edit_page_selection_card(
         self,
         chat_id: int,
@@ -881,6 +1018,30 @@ class TelegramBotApp:
             reply_markup=post_type_inline_markup(),
         )
 
+    async def show_video_mode_card(
+        self,
+        chat_id: int,
+        message_id: int,
+        user_id: int,
+        session: Dict[str, Any],
+    ) -> None:
+        account_id = str(session.get("account_id") or "")
+        account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
+        account_name = account_display_name(account or {}, account_id)
+        pages = session.get("pages") if isinstance(session.get("pages"), list) else []
+        selected = session.get("selected_pages") if isinstance(session.get("selected_pages"), list) else []
+        session["post_type"] = "video"
+        session["step"] = "video_mode"
+        session.pop("media_path", None)
+        session.pop("multi_media_paths", None)
+        self.set_dashboard_session(chat_id, user_id, session)
+        await self.edit_message(
+            chat_id,
+            message_id,
+            video_mode_card(account_name=account_name, pages=pages, selected_indexes=selected),
+            reply_markup=video_mode_inline_markup(),
+        )
+
     async def show_post_input_card(
         self,
         chat_id: int,
@@ -889,6 +1050,9 @@ class TelegramBotApp:
         session: Dict[str, Any],
     ) -> None:
         post_type = str(session.get("post_type") or "text")
+        if post_type == "video":
+            await self.show_video_mode_card(chat_id, message_id, user_id, session)
+            return
         session["step"] = "caption" if post_type == "text" else f"media_{post_type}"
         self.set_dashboard_session(chat_id, user_id, session)
         await self.edit_message(chat_id, message_id, post_input_card(post_type), reply_markup={"inline_keyboard": []})
@@ -912,6 +1076,7 @@ class TelegramBotApp:
             post_type=str(session.get("post_type") or "text"),
             caption=str(session.get("caption") or ""),
             media_path=str(session.get("media_path") or ""),
+            multi_media_count=len(session.get("multi_media_paths") or []) if isinstance(session.get("multi_media_paths"), list) else 0,
         )
         session["step"] = "review"
         self.set_dashboard_session(chat_id, user_id, session)
@@ -928,6 +1093,18 @@ class TelegramBotApp:
         selected_pages = self.selected_pages_from_session(session)
         if not selected_pages:
             await self.send_message(chat_id, "No pages selected.", reply_markup=await self.dashboard_reply_markup(user_id))
+            return
+        multi_media_paths = session.get("multi_media_paths") if isinstance(session.get("multi_media_paths"), list) else []
+        if multi_media_paths:
+            await self.queue_paired_post_jobs_or_report(
+                chat_id,
+                user_id,
+                account_id,
+                selected_pages,
+                post_type,
+                caption,
+                [str(path) for path in multi_media_paths],
+            )
             return
         if len(selected_pages) == 1:
             page = selected_pages[0]
@@ -1372,6 +1549,22 @@ class TelegramBotApp:
                 )
                 return True
             session["post_type"] = post_type
+            if post_type == "video":
+                self.set_dashboard_session(chat_id, user_id, session)
+                account_id = str(session.get("account_id") or "")
+                account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
+                account_name = account_display_name(account or {}, account_id)
+                pages = session.get("pages") if isinstance(session.get("pages"), list) else []
+                selected = session.get("selected_pages") if isinstance(session.get("selected_pages"), list) else []
+                session["step"] = "video_mode"
+                self.set_dashboard_session(chat_id, user_id, session)
+                await self.send_message(
+                    chat_id,
+                    video_mode_card(account_name=account_name, pages=pages, selected_indexes=selected),
+                    message_id,
+                    reply_markup=video_mode_inline_markup(),
+                )
+                return True
             session["step"] = "caption" if post_type == "text" else f"media_{post_type}"
             self.set_dashboard_session(chat_id, user_id, session)
             await self.send_message(chat_id, post_input_card(post_type), message_id, reply_markup=cancel_markup())
@@ -1503,6 +1696,105 @@ class TelegramBotApp:
             )
             return True
 
+        if action == "post" and step == "media_video_url":
+            video_url = await self.validate_video_url_or_reply(chat_id, message_id, text.strip())
+            if not video_url:
+                return True
+            session["post_type"] = "video"
+            session["caption"] = ""
+            session["media_path"] = video_url
+            self.set_dashboard_session(chat_id, user_id, session)
+            await self.show_post_review(chat_id, message_id, user_id, session)
+            return True
+
+        if action == "post" and step == "multi_video_upload":
+            file_id = self.extract_media_file_id(message, "video")
+            if not file_id:
+                await self.send_message(chat_id, self.multi_video_prompt(session), message_id, reply_markup=cancel_markup())
+                return True
+            selected_pages = self.selected_pages_from_session(session)
+            if not selected_pages:
+                self.clear_dashboard_session(chat_id, user_id)
+                await self.send_message(chat_id, "No pages selected. Start again from the dashboard.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+                return True
+            media_path = await self.download_file(file_id, str(session.get("account_id") or ""))
+            paths = list(session.get("multi_media_paths") or [])
+            paths.append(media_path)
+            session["post_type"] = "video"
+            session["multi_media_paths"] = paths
+            session["media_path"] = ""
+            if len(paths) < len(selected_pages):
+                self.set_dashboard_session(chat_id, user_id, session)
+                await self.send_message(
+                    chat_id,
+                    "\n".join([f"✅ Video {len(paths)}/{len(selected_pages)} received.", "", self.multi_video_prompt(session)]),
+                    message_id,
+                    reply_markup=cancel_markup(),
+                )
+                return True
+            session["step"] = "multi_caption"
+            self.set_dashboard_session(chat_id, user_id, session)
+            await self.send_message(
+                chat_id,
+                "\n".join(
+                    [
+                        f"✅ All {len(selected_pages)} videos received.",
+                        "",
+                        "Send one shared caption for all posts.",
+                        "Send a single space to post without caption.",
+                    ]
+                ),
+                message_id,
+                reply_markup=cancel_markup(),
+            )
+            return True
+
+        if action == "post" and step == "multi_video_url":
+            video_url = await self.validate_video_url_or_reply(chat_id, message_id, text.strip())
+            if not video_url:
+                return True
+            selected_pages = self.selected_pages_from_session(session)
+            if not selected_pages:
+                self.clear_dashboard_session(chat_id, user_id)
+                await self.send_message(chat_id, "No pages selected. Start again from the dashboard.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+                return True
+            paths = list(session.get("multi_media_paths") or [])
+            paths.append(video_url)
+            session["post_type"] = "video"
+            session["multi_media_paths"] = paths
+            session["media_path"] = ""
+            if len(paths) < len(selected_pages):
+                self.set_dashboard_session(chat_id, user_id, session)
+                await self.send_message(
+                    chat_id,
+                    "\n".join([f"✅ Video URL {len(paths)}/{len(selected_pages)} saved.", "", self.multi_video_url_prompt(session)]),
+                    message_id,
+                    reply_markup=cancel_markup(),
+                )
+                return True
+            session["step"] = "multi_caption"
+            self.set_dashboard_session(chat_id, user_id, session)
+            await self.send_message(
+                chat_id,
+                "\n".join(
+                    [
+                        f"✅ All {len(selected_pages)} video URLs received.",
+                        "",
+                        "Send one shared caption for all posts.",
+                        "Send a single space to post without caption.",
+                    ]
+                ),
+                message_id,
+                reply_markup=cancel_markup(),
+            )
+            return True
+
+        if action == "post" and step == "multi_caption":
+            session["caption"] = "" if text == " " else text.strip()
+            self.set_dashboard_session(chat_id, user_id, session)
+            await self.show_post_review(chat_id, message_id, user_id, session)
+            return True
+
         if action == "post" and step in {"media_image", "media_video"}:
             post_type = str(session.get("post_type") or "").strip()
             file_id = self.extract_media_file_id(message, post_type)
@@ -1597,6 +1889,66 @@ class TelegramBotApp:
             session["post_type"] = post_type
             self.set_dashboard_session(chat_id, user_id, session)
             await self.show_post_input_card(chat_id, message_id, user_id, session)
+            return
+
+        if data.startswith("video:"):
+            mode = data.split(":", 1)[1]
+            selected_pages = self.selected_pages_from_session(session)
+            if not selected_pages:
+                await self.edit_page_selection_card(chat_id, message_id, user_id, session, prefix="Select at least one page first.")
+                return
+            session["post_type"] = "video"
+            session["video_mode"] = mode
+            session["caption"] = ""
+            session.pop("media_path", None)
+            session.pop("multi_media_paths", None)
+            if mode == "single_upload":
+                session["step"] = "media_video"
+                self.set_dashboard_session(chat_id, user_id, session)
+                await self.edit_message(chat_id, message_id, post_input_card("video"), reply_markup={"inline_keyboard": []})
+                return
+            if mode == "single_url":
+                session["step"] = "media_video_url"
+                self.set_dashboard_session(chat_id, user_id, session)
+                await self.edit_message(
+                    chat_id,
+                    message_id,
+                    "\n".join(
+                        [
+                            "🔗 Single Video URL",
+                            "━━━━━━━━━━━━━━━━━━",
+                            "Paste a direct http(s) video file URL.",
+                            "The same video will be posted to all selected pages.",
+                            "",
+                            "After that, I will show a final review card.",
+                        ]
+                    ),
+                    reply_markup={"inline_keyboard": []},
+                )
+                return
+            if mode == "multi_upload":
+                session["step"] = "multi_video_upload"
+                session["multi_media_paths"] = []
+                self.set_dashboard_session(chat_id, user_id, session)
+                await self.edit_message(
+                    chat_id,
+                    message_id,
+                    self.multi_video_prompt(session),
+                    reply_markup={"inline_keyboard": []},
+                )
+                return
+            if mode == "multi_url":
+                session["step"] = "multi_video_url"
+                session["multi_media_paths"] = []
+                self.set_dashboard_session(chat_id, user_id, session)
+                await self.edit_message(
+                    chat_id,
+                    message_id,
+                    self.multi_video_url_prompt(session),
+                    reply_markup={"inline_keyboard": []},
+                )
+                return
+            await self.show_video_mode_card(chat_id, message_id, user_id, session)
             return
 
         if data == "post:edit_caption":
@@ -2127,7 +2479,10 @@ class TelegramBotApp:
             f"Queued post job {job_id}.",
             reply_markup=await self.dashboard_reply_markup(user_id),
         )
-        asyncio.create_task(self.run_post_job(job_id, chat_id, user_id, account_id, page_id_or_url, post_type, caption, media_path, page_name))
+        self.start_background_task(
+            self.run_post_job(job_id, chat_id, user_id, account_id, page_id_or_url, post_type, caption, media_path, page_name),
+            f"post job {job_id}",
+        )
         return job_id
 
     async def queue_bulk_post_jobs(
@@ -2186,7 +2541,75 @@ class TelegramBotApp:
             f"Queued {len(job_ids)} post job(s) for all stored pages.",
             reply_markup=await self.dashboard_reply_markup(user_id),
         )
-        asyncio.create_task(self.run_post_jobs_batch(chat_id, user_id, account_id, job_payloads))
+        self.start_background_task(
+            self.run_post_jobs_batch(chat_id, user_id, account_id, job_payloads),
+            f"batch post {len(job_ids)} job(s)",
+        )
+        return job_ids
+
+    async def queue_paired_post_jobs(
+        self,
+        chat_id: int,
+        user_id: int,
+        account_id: str,
+        pages: List[Dict[str, Any]],
+        post_type: str,
+        caption: str,
+        media_paths: List[str],
+    ) -> List[str]:
+        if post_type not in POST_TYPES:
+            raise ValueError(f"post_type must be one of {sorted(POST_TYPES)}")
+        if post_type not in {"image", "video"}:
+            raise ValueError("paired media mode requires image or video post type")
+        if not pages:
+            raise ValueError("At least one selected page is required")
+        if len(media_paths) != len(pages):
+            raise ValueError(f"Media count ({len(media_paths)}) does not match selected pages ({len(pages)})")
+        if not await asyncio.to_thread(self.storage.account_exists, account_id, True, self.account_owner_scope(user_id)):
+            raise ValueError("Active account not found for this Telegram user")
+
+        job_payloads: List[Dict[str, str]] = []
+        job_ids: List[str] = []
+        for index, page in enumerate(pages):
+            page_id_or_url = str(page.get("page_url") or page.get("page_id") or "").strip()
+            page_name = page_display_name(page, len(job_payloads))
+            media_path = str(media_paths[index] or "").strip()
+            if not page_id_or_url or not media_path:
+                continue
+            job_id = await asyncio.to_thread(
+                self.storage.create_post_job,
+                telegram_chat_id=chat_id,
+                telegram_user_id=user_id,
+                account_id=account_id,
+                page_id_or_url=page_id_or_url,
+                page_name=page_name,
+                post_type=post_type,
+                caption=caption,
+                media_path=media_path,
+            )
+            job_ids.append(job_id)
+            job_payloads.append(
+                {
+                    "job_id": job_id,
+                    "page_id_or_url": page_id_or_url,
+                    "page_name": page_name,
+                    "post_type": post_type,
+                    "caption": caption,
+                    "media_path": media_path,
+                }
+            )
+
+        if not job_ids:
+            raise ValueError("No usable selected pages/media were found")
+        await self.send_message(
+            chat_id,
+            f"Queued {len(job_ids)} paired {post_type} post job(s).",
+            reply_markup=await self.dashboard_reply_markup(user_id),
+        )
+        self.start_background_task(
+            self.run_post_jobs_batch(chat_id, user_id, account_id, job_payloads),
+            f"paired batch post {len(job_ids)} job(s)",
+        )
         return job_ids
 
     async def queue_post_job_or_report(
@@ -2210,6 +2633,27 @@ class TelegramBotApp:
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             return None
+
+    async def queue_paired_post_jobs_or_report(
+        self,
+        chat_id: int,
+        user_id: int,
+        account_id: str,
+        pages: List[Dict[str, Any]],
+        post_type: str,
+        caption: str,
+        media_paths: List[str],
+    ) -> List[str]:
+        try:
+            return await self.queue_paired_post_jobs(chat_id, user_id, account_id, pages, post_type, caption, media_paths)
+        except Exception as exc:
+            logger.exception("Could not queue paired post jobs")
+            await self.send_message(
+                chat_id,
+                f"Could not queue paired post jobs: {str(exc)[:500]}",
+                reply_markup=await self.dashboard_reply_markup(user_id),
+            )
+            return []
 
     async def queue_bulk_post_jobs_or_report(
         self,
@@ -2326,8 +2770,17 @@ class TelegramBotApp:
             )
             progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
             await asyncio.to_thread(self.storage.mark_job_started, job_id)
-            lock_acquired = await self.wait_for_account_slot(account_id, lock_owner, chat_id)
-            await self.edit_message(
+
+            async def lock_progress(detail: str) -> None:
+                await self.try_edit_message(
+                    chat_id,
+                    progress_message_id,
+                    progress_card("Posting...", 0, total_units, detail),
+                    reply_markup=await self.dashboard_reply_markup(user_id),
+                )
+
+            lock_acquired = await self.wait_for_account_slot(account_id, lock_owner, chat_id, lock_progress)
+            await self.try_edit_message(
                 chat_id,
                 progress_message_id,
                 progress_card("Posting...", 1, total_units, "Account slot acquired."),
@@ -2335,7 +2788,7 @@ class TelegramBotApp:
             )
             heartbeat_task = asyncio.create_task(self.account_lock_heartbeat(account_id, lock_owner))
             cookie_string = await asyncio.to_thread(self.storage.get_account_cookie, account_id, self.account_owner_scope(user_id))
-            await self.edit_message(
+            await self.try_edit_message(
                 chat_id,
                 progress_message_id,
                 progress_card("Posting...", 2, total_units, "Cookie loaded. Opening Facebook composer..."),
@@ -2355,8 +2808,33 @@ class TelegramBotApp:
                 progress_markup,
                 base_done=2,
             )
-            results = await create_facebook_posts(cookies_json(parse_cookies(cookie_string)), [post], progress_callback=progress_callback)
-            await self.edit_message(
+            engine_timeout = _env_int("BOT_POSTING_ENGINE_TIMEOUT_SECONDS", 900, minimum=60)
+            heartbeat_seconds = _env_int("BOT_PROGRESS_HEARTBEAT_SECONDS", 8, minimum=2)
+
+            async def engine_tick(elapsed: int) -> None:
+                await self.try_edit_message(
+                    chat_id,
+                    progress_message_id,
+                    progress_card(
+                        "Posting...",
+                        2,
+                        total_units,
+                        f"Browser posting is still running... {elapsed}s elapsed. Waiting for Facebook result.",
+                    ),
+                    reply_markup=await self.dashboard_reply_markup(user_id),
+                )
+
+            results_task = asyncio.create_task(
+                create_facebook_posts(cookies_json(parse_cookies(cookie_string)), [post], progress_callback=progress_callback)
+            )
+            results = await self.wait_for_task_with_heartbeat(
+                results_task,
+                timeout_seconds=engine_timeout,
+                heartbeat_seconds=heartbeat_seconds,
+                on_tick=engine_tick,
+                timeout_message=f"Posting timed out after {engine_timeout}s while waiting for Facebook.",
+            )
+            await self.try_edit_message(
                 chat_id,
                 progress_message_id,
                 progress_card("Posting...", total_units, total_units, "Facebook returned a posting result."),
@@ -2367,14 +2845,14 @@ class TelegramBotApp:
             error = "" if success else str(result.get("result") or result.get("status") or result.get("error") or "posting failed")
             await asyncio.to_thread(self.storage.mark_job_completed, job_id, success, result, error)
             if success:
-                await self.edit_message(
+                await self.try_edit_message(
                     chat_id,
                     progress_message_id,
                     progress_card("Posting...", total_units, total_units, f"Post job {job_id} succeeded."),
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
             else:
-                await self.edit_message(
+                await self.try_edit_message(
                     chat_id,
                     progress_message_id,
                     progress_card("Posting...", total_units, total_units, f"Post job {job_id} failed: {error[:500]}"),
@@ -2384,7 +2862,12 @@ class TelegramBotApp:
             logger.exception("Post job failed")
             await asyncio.to_thread(self.storage.mark_job_completed, job_id, False, {"exception": str(exc)}, str(exc))
             if progress_message_id:
-                await self.edit_message(chat_id, progress_message_id, f"Post job {job_id} failed: {exc}", reply_markup=await self.dashboard_reply_markup(user_id))
+                await self.try_edit_message(
+                    chat_id,
+                    progress_message_id,
+                    "\n".join([progress_card("Posting...", total_units, total_units, "Post job failed."), "", compact_error(exc)]),
+                    reply_markup=await self.dashboard_reply_markup(user_id),
+                )
             else:
                 await self.send_message(chat_id, f"Post job {job_id} failed: {exc}", reply_markup=await self.dashboard_reply_markup(user_id))
         finally:
@@ -2426,8 +2909,17 @@ class TelegramBotApp:
             progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
             for job_id in job_ids:
                 await asyncio.to_thread(self.storage.mark_job_started, job_id)
-            lock_acquired = await self.wait_for_account_slot(account_id, lock_owner, chat_id)
-            await self.edit_message(
+
+            async def lock_progress(detail: str) -> None:
+                await self.try_edit_message(
+                    chat_id,
+                    progress_message_id,
+                    progress_card("Batch posting...", 0, total_units, detail),
+                    reply_markup=await self.dashboard_reply_markup(user_id),
+                )
+
+            lock_acquired = await self.wait_for_account_slot(account_id, lock_owner, chat_id, lock_progress)
+            await self.try_edit_message(
                 chat_id,
                 progress_message_id,
                 progress_card("Batch posting...", 1, total_units, "Account slot acquired."),
@@ -2435,7 +2927,7 @@ class TelegramBotApp:
             )
             heartbeat_task = asyncio.create_task(self.account_lock_heartbeat(account_id, lock_owner))
             cookie_string = await asyncio.to_thread(self.storage.get_account_cookie, account_id, self.account_owner_scope(user_id))
-            await self.edit_message(
+            await self.try_edit_message(
                 chat_id,
                 progress_message_id,
                 progress_card("Batch posting...", 2, total_units, "Cookie loaded. Posting cached pages..."),
@@ -2464,8 +2956,37 @@ class TelegramBotApp:
                 progress_markup,
                 base_done=2,
             )
-            results = await create_facebook_posts(cookies_json(parse_cookies(cookie_string)), posts, progress_callback=progress_callback)
-            await self.edit_message(
+            engine_timeout = _env_int(
+                "BOT_BATCH_POSTING_ENGINE_TIMEOUT_SECONDS",
+                max(300, len(posts) * 300),
+                minimum=120,
+            )
+            heartbeat_seconds = _env_int("BOT_PROGRESS_HEARTBEAT_SECONDS", 8, minimum=2)
+
+            async def engine_tick(elapsed: int) -> None:
+                await self.try_edit_message(
+                    chat_id,
+                    progress_message_id,
+                    progress_card(
+                        "Batch posting...",
+                        2,
+                        total_units,
+                        f"Browser batch posting is still running... {elapsed}s elapsed. Waiting for Facebook result.",
+                    ),
+                    reply_markup=await self.dashboard_reply_markup(user_id),
+                )
+
+            results_task = asyncio.create_task(
+                create_facebook_posts(cookies_json(parse_cookies(cookie_string)), posts, progress_callback=progress_callback)
+            )
+            results = await self.wait_for_task_with_heartbeat(
+                results_task,
+                timeout_seconds=engine_timeout,
+                heartbeat_seconds=heartbeat_seconds,
+                on_tick=engine_tick,
+                timeout_message=f"Batch posting timed out after {engine_timeout}s while waiting for Facebook.",
+            )
+            await self.try_edit_message(
                 chat_id,
                 progress_message_id,
                 progress_card("Batch posting...", total_units, total_units, "Facebook returned batch results."),
@@ -2479,7 +3000,7 @@ class TelegramBotApp:
                     success_count += 1
                 error = "" if success else str(result.get("result") or result.get("status") or result.get("error") or "posting failed")
                 await asyncio.to_thread(self.storage.mark_job_completed, str(job["job_id"]), success, result, error)
-            await self.edit_message(
+            await self.try_edit_message(
                 chat_id,
                 progress_message_id,
                 progress_card("Batch posting...", total_units, total_units, f"Completed: {success_count}/{len(jobs)} succeeded."),
@@ -2490,7 +3011,12 @@ class TelegramBotApp:
             for job_id in job_ids:
                 await asyncio.to_thread(self.storage.mark_job_completed, job_id, False, {"exception": str(exc)}, str(exc))
             if progress_message_id:
-                await self.edit_message(chat_id, progress_message_id, f"Batch posting failed: {exc}", reply_markup=await self.dashboard_reply_markup(user_id))
+                await self.try_edit_message(
+                    chat_id,
+                    progress_message_id,
+                    "\n".join([progress_card("Batch posting...", total_units, total_units, "Batch posting failed."), "", compact_error(exc)]),
+                    reply_markup=await self.dashboard_reply_markup(user_id),
+                )
             else:
                 await self.send_message(chat_id, f"Batch posting failed: {exc}", reply_markup=await self.dashboard_reply_markup(user_id))
         finally:
@@ -2508,7 +3034,13 @@ class TelegramBotApp:
                     cookie_session_attempted,
                 )
 
-    async def wait_for_account_slot(self, account_id: str, owner: str, chat_id: int) -> bool:
+    async def wait_for_account_slot(
+        self,
+        account_id: str,
+        owner: str,
+        chat_id: int,
+        progress_update: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> bool:
         cooldown_seconds = _env_int(
             "BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS",
             _env_int("LIVE_MATRIX_COOKIE_COOLDOWN_SECONDS", 360, minimum=0),
@@ -2524,22 +3056,33 @@ class TelegramBotApp:
         started = time.monotonic()
         notified_wait = False
 
+        async def notify(detail: str) -> None:
+            if progress_update is not None:
+                await progress_update(detail)
+            else:
+                await self.send_message(chat_id, detail)
+
         while True:
             runtime = await asyncio.to_thread(self.storage.claim_account_runtime, account_id, owner, lease_seconds)
             if runtime:
                 remaining = int(max(0, cooldown_seconds - seconds_since(runtime.get("last_cookie_used_at"))))
                 if remaining > 0:
-                    await self.send_message(
-                        chat_id,
-                        f"Account {account_id} is cooling down for {remaining}s before this job starts.",
-                    )
-                    await asyncio.sleep(remaining)
+                    while remaining > 0:
+                        await notify(
+                            f"Account slot acquired. Cookie cooldown active: {remaining}s before browser posting starts."
+                        )
+                        sleep_for = min(max(1, poll_seconds), remaining)
+                        await asyncio.sleep(sleep_for)
+                        remaining = int(max(0, cooldown_seconds - seconds_since(runtime.get("last_cookie_used_at"))))
                 return True
 
             if time.monotonic() - started > max_wait_seconds:
                 raise RuntimeError(f"Timed out waiting for account lock: {account_id}")
-            if not notified_wait:
-                await self.send_message(chat_id, f"Account {account_id} is busy; waiting for an isolated posting slot.")
+            elapsed = int(time.monotonic() - started)
+            if progress_update is not None:
+                await notify(f"Account is busy; waiting for an isolated posting slot. {elapsed}s elapsed.")
+            elif not notified_wait:
+                await notify(f"Account {account_id} is busy; waiting for an isolated posting slot.")
                 notified_wait = True
             await asyncio.sleep(poll_seconds)
 
