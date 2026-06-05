@@ -5,8 +5,19 @@ from __future__ import annotations
 
 import os
 import sys
+import base64
+import hashlib
+import re
 
 import requests
+
+
+def telegram_safe_webhook_secret(secret: str) -> str:
+    raw = (secret or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,256}", raw):
+        return raw
+    digest = hashlib.sha256(raw.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
 def main() -> int:
@@ -23,12 +34,13 @@ def main() -> int:
         print("TELEGRAM_WEBHOOK_SECRET is required", file=sys.stderr)
         return 2
 
+    safe_secret = telegram_safe_webhook_secret(secret)
     webhook_url = f"{public_base_url}/telegram/webhook"
     response = requests.post(
         f"https://api.telegram.org/bot{token}/setWebhook",
         json={
             "url": webhook_url,
-            "secret_token": secret,
+            "secret_token": safe_secret,
             "drop_pending_updates": True,
             "allowed_updates": ["message", "edited_message"],
         },

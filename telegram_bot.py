@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
 import os
@@ -75,6 +77,14 @@ def _placeholder(value: str) -> bool:
     )
 
 
+def telegram_safe_webhook_secret(secret: str) -> str:
+    raw = (secret or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,256}", raw):
+        return raw
+    digest = hashlib.sha256(raw.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
 def account_id_from_cookie(cookie_string: str) -> str:
     for pair in cookie_string.split(";"):
         if pair.strip().startswith("c_user="):
@@ -119,11 +129,14 @@ def seconds_since(value: Any) -> float:
 class TelegramBotApp:
     def __init__(self) -> None:
         self.token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-        self.webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+        raw_webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+        self.webhook_secret = telegram_safe_webhook_secret(raw_webhook_secret)
         if not self.token:
             raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
-        if not self.webhook_secret:
+        if not raw_webhook_secret:
             raise RuntimeError("TELEGRAM_WEBHOOK_SECRET is required")
+        if self.webhook_secret != raw_webhook_secret:
+            logger.info("Telegram webhook secret normalized to a Bot API-safe token")
         self.admin_ids = _csv_ints("BOT_ADMIN_IDS")
         self.storage = BotStorage.from_env()
         self.session: Optional[ClientSession] = None

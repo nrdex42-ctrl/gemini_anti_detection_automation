@@ -72,14 +72,14 @@ services:
       - key: FACEBOOK_IMAGE_PREFER_JPEG_UPLOAD
         value: "true"
       - key: TELEGRAM_BOT_TOKEN
-        value: REPLACE_ME_TELEGRAM_BOT_TOKEN
+        sync: false
       - key: TELEGRAM_WEBHOOK_SECRET
         generateValue: true
       - key: BOT_ADMIN_IDS
-        value: "123456789"
+        sync: false
       - key: DATABASE_URL
-        value: postgresql://replace_me:replace_me@replace-me.supabase.co:5432/postgres
+        sync: false
       - key: ENCRYPTION_KEY
         generateValue: true
       - key: PUBLIC_BASE_URL
-        value: https://replace-me.onrender.com
+        sync: false
