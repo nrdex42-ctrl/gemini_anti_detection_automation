@@ -69,12 +69,14 @@ The bot sends a persistent Telegram reply keyboard in the typing area. The dashb
 - Post to All Pages
 - Switch Active Account
 - Select Account & Post
+- Refresh Pages
 - My Accounts
 - Check All Cookies
 - Post History
 - Discover Pages
 - Stored Pages
 - Bot Status
+- Admin Dashboard for users listed in `BOT_ADMIN_IDS`
 
 Cookie ingestion accepts:
 
@@ -90,7 +92,11 @@ The quick-post buttons use guided steps:
 2. Choose a stored page or type a page id/full URL.
 3. Send text, image, or video depending on the selected post type.
 
+Stored page discovery is cached in Supabase. Posting uses the saved page list and does not rediscover pages each time. Use `Refresh Pages` when an account gains/loses page access or you want to update the cache.
+
 `Post to All Pages` queues one batch for all stored pages of the active account and uses one isolated account session for that batch.
+
+Admin dashboard buttons expose system stats, users, accounts, post stats, runtime locks, and key runtime config values.
 
 Slash commands remain available for direct automation and testing.
 

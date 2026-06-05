@@ -275,6 +275,148 @@ class BotStorage:
             "recent_jobs": recent_jobs,
         }
 
+    def admin_summary(self) -> Dict[str, Any]:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select
+                        count(*)::int as total_accounts,
+                        count(*) filter (where active)::int as active_accounts,
+                        count(*) filter (where not active)::int as inactive_accounts
+                    from fb_accounts
+                    """
+                )
+                account_row = cur.fetchone() or {}
+
+                cur.execute("select count(*)::int as page_count from fb_pages")
+                page_row = cur.fetchone() or {}
+
+                cur.execute(
+                    """
+                    with known_users as (
+                        select telegram_user_id from telegram_user_state
+                        union
+                        select created_by as telegram_user_id from fb_accounts where created_by is not null
+                        union
+                        select telegram_user_id from fb_post_jobs where telegram_user_id is not null
+                    )
+                    select count(*)::int as user_count from known_users
+                    """
+                )
+                user_row = cur.fetchone() or {}
+
+                cur.execute(
+                    """
+                    select status, count(*)::int as count
+                    from fb_post_jobs
+                    group by status
+                    """
+                )
+                job_status_counts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
+
+                cur.execute(
+                    """
+                    select post_type, count(*)::int as count
+                    from fb_post_jobs
+                    group by post_type
+                    """
+                )
+                post_type_counts = {str(row["post_type"]): int(row["count"]) for row in cur.fetchall()}
+
+                cur.execute(
+                    """
+                    select account_id, last_cookie_used_at, locked_until, locked_by, updated_at
+                    from fb_account_runtime
+                    where locked_until is not null and locked_until > now()
+                    order by locked_until desc
+                    limit 12
+                    """
+                )
+                active_locks = list(cur.fetchall())
+
+                cur.execute(
+                    """
+                    select id::text, telegram_user_id, account_id, page_id_or_url, post_type,
+                           status, error, created_at, completed_at
+                    from fb_post_jobs
+                    order by created_at desc
+                    limit 12
+                    """
+                )
+                recent_jobs = list(cur.fetchall())
+
+        return {
+            "total_accounts": int(account_row.get("total_accounts") or 0),
+            "active_accounts": int(account_row.get("active_accounts") or 0),
+            "inactive_accounts": int(account_row.get("inactive_accounts") or 0),
+            "page_count": int(page_row.get("page_count") or 0),
+            "user_count": int(user_row.get("user_count") or 0),
+            "job_status_counts": job_status_counts,
+            "post_type_counts": post_type_counts,
+            "active_locks": active_locks,
+            "recent_jobs": recent_jobs,
+        }
+
+    def admin_users(self, limit: int = 20) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    with known_users as (
+                        select telegram_user_id from telegram_user_state
+                        union
+                        select created_by as telegram_user_id from fb_accounts where created_by is not null
+                        union
+                        select telegram_user_id from fb_post_jobs where telegram_user_id is not null
+                    )
+                    select
+                        u.telegram_user_id,
+                        s.active_account_id,
+                        count(distinct a.account_id)::int as account_count,
+                        count(distinct j.id)::int as job_count,
+                        max(greatest(
+                            coalesce(a.updated_at, 'epoch'::timestamptz),
+                            coalesce(j.created_at, 'epoch'::timestamptz),
+                            coalesce(s.updated_at, 'epoch'::timestamptz)
+                        )) as last_seen
+                    from known_users u
+                    left join telegram_user_state s on s.telegram_user_id = u.telegram_user_id
+                    left join fb_accounts a on a.created_by = u.telegram_user_id
+                    left join fb_post_jobs j on j.telegram_user_id = u.telegram_user_id
+                    group by u.telegram_user_id, s.active_account_id
+                    order by last_seen desc nulls last
+                    limit %s
+                    """,
+                    (int(limit),),
+                )
+                return list(cur.fetchall())
+
+    def admin_accounts(self, limit: int = 30) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select
+                        a.account_id,
+                        a.label,
+                        a.active,
+                        a.created_by,
+                        a.updated_at,
+                        count(distinct p.page_id)::int as page_count,
+                        count(distinct j.id)::int as job_count,
+                        max(j.created_at) as last_job_at
+                    from fb_accounts a
+                    left join fb_pages p on p.account_id = a.account_id
+                    left join fb_post_jobs j on j.account_id = a.account_id
+                    group by a.account_id, a.label, a.active, a.created_by, a.updated_at
+                    order by a.updated_at desc
+                    limit %s
+                    """,
+                    (int(limit),),
+                )
+                return list(cur.fetchall())
+
     def create_post_job(
         self,
         *,

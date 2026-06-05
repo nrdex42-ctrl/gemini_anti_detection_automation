@@ -118,7 +118,7 @@ python scripts/generate_fernet_key.py
 2. Confirm Render logs include `Telegram webhook configured for https://.../telegram/webhook`.
 3. Send `/start` or `/dashboard` to the bot.
 4. Use the typing-area dashboard panel to add an account.
-5. Use `Discover Pages` to store managed pages for that account.
+5. Use `Refresh Pages` / `Discover Pages` to store managed pages for that account.
 6. Use `Switch Active Account`, quick post buttons, or `Post to All Pages` to queue posts through guided steps.
 
 If automatic webhook setup is disabled, set it manually:
@@ -139,6 +139,10 @@ Direct bot commands still work:
 ```
 
 `/add_account` and the dashboard Add Facebook Account button accept raw cookie headers, JSON cookie arrays, `{cookies:[...]}` exports, uploaded JSON files, and multi-message JSON chunks followed by `/done`.
+
+Page discovery is cached in `fb_pages`. Normal posting reads the saved page list and does not rediscover pages before each post. Use the `🔄 Refresh Pages` dashboard button when you want to refresh a selected account's cached pages.
+
+Admins listed in `BOT_ADMIN_IDS` can use `/admin` or `🔒 Admin Dashboard` to view system stats, users, accounts, post stats, active account locks, and runtime config.
 
 ## 6. Isolation Rules
 

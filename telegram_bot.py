@@ -26,6 +26,7 @@ from telegram_dashboard import (
     POST_TYPE_CHOICES,
     POST_ACTION_TYPES,
     account_choice_label,
+    admin_dashboard_markup,
     cancel_markup,
     choices_markup,
     dashboard_action,
@@ -100,15 +101,17 @@ def help_text() -> str:
     return (
         "Facebook automation bot commands:\n\n"
         "/dashboard - open the typing-area dashboard panel\n"
+        "/admin - open the admin dashboard for BOT_ADMIN_IDS users\n"
         "/add_account <raw_cookie> - store/update an account cookie\n"
         "/add_account auto <raw_cookie> - derive the account id from c_user\n"
         "/add_account <account_id> <raw_cookie> - force a specific account id\n"
         "/accounts - list stored accounts\n"
         "/remove_account <account_id> - deactivate an account\n"
-        "/pages <account_id> - discover and store managed pages\n"
+        "/pages <account_id> - discover/refresh and store managed pages\n"
         "/list_pages <account_id> - list stored pages\n"
         "/post <account_id> <page_id_or_url> <text|image|video> <caption> - queue a post\n\n"
         "Add Account accepts raw cookie strings, JSON arrays, {cookies:[...]} exports, and uploaded JSON files.\n"
+        "Posting uses stored pages by default; use Refresh Pages when you want to update the cache.\n"
         "For image/video posts, attach or reply to the media in Telegram and include the /post command caption."
     )
 
@@ -141,6 +144,9 @@ class TelegramBotApp:
         self.session: Optional[ClientSession] = None
         self.api_base = f"https://api.telegram.org/bot{self.token}"
         self.dashboard_sessions: Dict[str, Dict[str, Any]] = {}
+
+    def is_admin_user(self, user_id: int) -> bool:
+        return not self.admin_ids or int(user_id or 0) in self.admin_ids
 
     async def startup(self, app: web.Application) -> None:
         self.session = ClientSession()
@@ -338,7 +344,12 @@ class TelegramBotApp:
             active_account = await asyncio.to_thread(self.storage.get_active_account, user_id)
         status_counts = summary.get("job_status_counts") or {}
         active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
-        return dashboard_markup(has_accounts=bool(accounts), active_account=active_account, active_jobs=active_jobs)
+        return dashboard_markup(
+            has_accounts=bool(accounts),
+            active_account=active_account,
+            active_jobs=active_jobs,
+            is_admin=self.is_admin_user(user_id),
+        )
 
     async def show_dashboard(self, chat_id: int, message_id: int = 0, prefix: str = "", user_id: int = 0) -> None:
         try:
@@ -350,12 +361,141 @@ class TelegramBotApp:
             text = dashboard_text(accounts=accounts, summary=summary, active_account=active_account, prefix=prefix)
             status_counts = summary.get("job_status_counts") or {}
             active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
-            reply_markup = dashboard_markup(has_accounts=bool(accounts), active_account=active_account, active_jobs=active_jobs)
+            reply_markup = dashboard_markup(
+                has_accounts=bool(accounts),
+                active_account=active_account,
+                active_jobs=active_jobs,
+                is_admin=self.is_admin_user(user_id),
+            )
         except Exception as exc:
             logger.exception("Dashboard rendering failed")
             text = f"{prefix + chr(10) + chr(10) if prefix else ''}Dashboard is available, but database status could not be loaded: {exc}"
             reply_markup = dashboard_markup(has_accounts=False)
         await self.send_message(chat_id, text, message_id, reply_markup=reply_markup)
+
+    def admin_overview_text(self, summary: Dict[str, Any], prefix: str = "") -> str:
+        status_counts = summary.get("job_status_counts") or {}
+        active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
+        lines: List[str] = []
+        if prefix:
+            lines.extend([prefix, ""])
+        lines.extend(
+            [
+                "🔒 Admin Dashboard",
+                "━━━━━━━━━━━━━━━━━━",
+                f"Users: {summary.get('user_count', 0)}",
+                f"Accounts: {summary.get('total_accounts', 0)} total, {summary.get('active_accounts', 0)} active, {summary.get('inactive_accounts', 0)} inactive",
+                f"Stored pages: {summary.get('page_count', 0)}",
+                f"Jobs: {active_jobs} active, {int(status_counts.get('success', 0))} success, {int(status_counts.get('failed', 0))} failed",
+                f"Active locks: {len(summary.get('active_locks') or [])}",
+                "",
+                "Use the admin keyboard below.",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _format_dt(self, value: Any) -> str:
+        if not value:
+            return "never"
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            try:
+                dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            except ValueError:
+                return str(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    async def show_admin_dashboard(self, chat_id: int, message_id: int, user_id: int, prefix: str = "") -> None:
+        if not self.is_admin_user(user_id):
+            await self.send_message(chat_id, "Admin dashboard is restricted.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+            return
+        summary = await asyncio.to_thread(self.storage.admin_summary)
+        await self.send_message(chat_id, self.admin_overview_text(summary, prefix), message_id, reply_markup=admin_dashboard_markup())
+
+    async def show_admin_users(self, chat_id: int, message_id: int, user_id: int) -> None:
+        rows = await asyncio.to_thread(self.storage.admin_users)
+        lines = ["👥 Users", "━━━━━━━━━━━━━━━━━━"]
+        if not rows:
+            lines.append("No users recorded yet.")
+        for row in rows:
+            lines.append(
+                f"- {row.get('telegram_user_id')} | active={row.get('active_account_id') or 'none'} | "
+                f"accounts={row.get('account_count', 0)} | jobs={row.get('job_count', 0)} | "
+                f"last={self._format_dt(row.get('last_seen'))}"
+            )
+        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup())
+
+    async def show_admin_accounts(self, chat_id: int, message_id: int, user_id: int) -> None:
+        rows = await asyncio.to_thread(self.storage.admin_accounts)
+        lines = ["🔑 Accounts", "━━━━━━━━━━━━━━━━━━"]
+        if not rows:
+            lines.append("No accounts stored yet.")
+        for row in rows:
+            status = "active" if row.get("active") else "inactive"
+            lines.append(
+                f"- {row.get('account_id')} ({status}) | pages={row.get('page_count', 0)} | "
+                f"jobs={row.get('job_count', 0)} | owner={row.get('created_by') or 'unknown'}"
+            )
+        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup())
+
+    async def show_admin_post_stats(self, chat_id: int, message_id: int, user_id: int) -> None:
+        summary = await asyncio.to_thread(self.storage.admin_summary)
+        status_counts = summary.get("job_status_counts") or {}
+        post_type_counts = summary.get("post_type_counts") or {}
+        lines = ["📈 Post Stats", "━━━━━━━━━━━━━━━━━━", "Status:"]
+        if status_counts:
+            for status, count in sorted(status_counts.items()):
+                lines.append(f"- {status}: {count}")
+        else:
+            lines.append("- no jobs yet")
+        lines.append("")
+        lines.append("Types:")
+        if post_type_counts:
+            for post_type, count in sorted(post_type_counts.items()):
+                lines.append(f"- {post_type}: {count}")
+        else:
+            lines.append("- no jobs yet")
+        recent_jobs = summary.get("recent_jobs") or []
+        if recent_jobs:
+            lines.extend(["", "Recent jobs:"])
+            for job in recent_jobs[:8]:
+                lines.append(f"- {job.get('status')} | {job.get('account_id')} | {job.get('post_type')} | {str(job.get('page_id_or_url') or '')[:32]}")
+        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup())
+
+    async def show_admin_runtime_locks(self, chat_id: int, message_id: int, user_id: int) -> None:
+        summary = await asyncio.to_thread(self.storage.admin_summary)
+        locks = summary.get("active_locks") or []
+        lines = ["🔐 Runtime Locks", "━━━━━━━━━━━━━━━━━━"]
+        if not locks:
+            lines.append("No active account locks.")
+        for lock in locks:
+            lines.append(
+                f"- {lock.get('account_id')} | until={self._format_dt(lock.get('locked_until'))} | "
+                f"by={str(lock.get('locked_by') or '')[:48]}"
+            )
+        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup())
+
+    async def show_admin_config(self, chat_id: int, message_id: int, user_id: int) -> None:
+        keys = [
+            "AUTO_INIT_DB",
+            "AUTO_SET_TELEGRAM_WEBHOOK",
+            "HEADLESS",
+            "DELETE_COOKIE_MESSAGES",
+            "BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS",
+            "BOT_ACCOUNT_LOCK_LEASE_SECONDS",
+            "BOT_ACCOUNT_LOCK_HEARTBEAT_SECONDS",
+            "BOT_DASHBOARD_SESSION_TTL_SECONDS",
+            "TELEGRAM_UPLOAD_DIR",
+        ]
+        lines = ["⚙️ System Config", "━━━━━━━━━━━━━━━━━━"]
+        for key in keys:
+            value = os.getenv(key, "")
+            lines.append(f"- {key}={value or '<default>'}")
+        lines.append(f"- admins_configured={bool(self.admin_ids)}")
+        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup())
 
     async def prompt_for_account(self, chat_id: int, message_id: int, prompt: str, user_id: int = 0) -> bool:
         accounts = await self.dashboard_accounts()
@@ -391,7 +531,7 @@ class TelegramBotApp:
             return
         await self.send_message(
             chat_id,
-            "No stored pages for this account yet. Type a page id / full page URL, or run Discover Pages.",
+            "No stored pages for this account yet. Tap Refresh Pages to discover and cache them, or type a page id / full page URL.",
             message_id,
             reply_markup=cancel_markup(),
         )
@@ -407,6 +547,36 @@ class TelegramBotApp:
             self.clear_dashboard_session(chat_id, user_id)
             prefix = "Current operation cancelled." if action == "cancel" else ""
             await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
+            return
+        if action == "user_dashboard":
+            self.clear_dashboard_session(chat_id, user_id)
+            await self.show_dashboard(chat_id, message_id, user_id=user_id)
+            return
+        if action in {
+            "admin_dashboard",
+            "admin_system_stats",
+            "admin_users",
+            "admin_accounts",
+            "admin_post_stats",
+            "admin_runtime_locks",
+            "admin_system_config",
+        }:
+            self.clear_dashboard_session(chat_id, user_id)
+            if not self.is_admin_user(user_id):
+                await self.send_message(chat_id, "Admin dashboard is restricted.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+                return
+            if action in {"admin_dashboard", "admin_system_stats"}:
+                await self.show_admin_dashboard(chat_id, message_id, user_id)
+            elif action == "admin_users":
+                await self.show_admin_users(chat_id, message_id, user_id)
+            elif action == "admin_accounts":
+                await self.show_admin_accounts(chat_id, message_id, user_id)
+            elif action == "admin_post_stats":
+                await self.show_admin_post_stats(chat_id, message_id, user_id)
+            elif action == "admin_runtime_locks":
+                await self.show_admin_runtime_locks(chat_id, message_id, user_id)
+            elif action == "admin_system_config":
+                await self.show_admin_config(chat_id, message_id, user_id)
             return
         if action in {"accounts", "manage_accounts"}:
             self.clear_dashboard_session(chat_id, user_id)
@@ -431,6 +601,16 @@ class TelegramBotApp:
         if action == "switch_account":
             self.set_dashboard_session(chat_id, user_id, {"action": "switch_account", "step": "account"})
             if not await self.prompt_for_account(chat_id, message_id, "Select the account to make active.", user_id):
+                self.clear_dashboard_session(chat_id, user_id)
+            return
+        if action == "refresh_pages":
+            active_account = await asyncio.to_thread(self.storage.get_active_account, user_id)
+            if active_account:
+                self.clear_dashboard_session(chat_id, user_id)
+                await self.command_discover_pages(chat_id, message_id, [active_account], user_id, refresh=True)
+                return
+            self.set_dashboard_session(chat_id, user_id, {"action": "refresh_pages", "step": "account"})
+            if not await self.prompt_for_account(chat_id, message_id, "Select the account to refresh managed pages for.", user_id):
                 self.clear_dashboard_session(chat_id, user_id)
             return
         if action == "select_account":
@@ -617,6 +797,10 @@ class TelegramBotApp:
                 self.clear_dashboard_session(chat_id, user_id)
                 await self.command_discover_pages(chat_id, message_id, [account_id], user_id)
                 return True
+            if action == "refresh_pages":
+                self.clear_dashboard_session(chat_id, user_id)
+                await self.command_discover_pages(chat_id, message_id, [account_id], user_id, refresh=True)
+                return True
             if action == "list_pages":
                 self.clear_dashboard_session(chat_id, user_id)
                 await self.command_list_pages(chat_id, message_id, [account_id], user_id)
@@ -786,6 +970,10 @@ class TelegramBotApp:
             prefix = help_text() if command == "/help" else ""
             await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
             return
+        if command == "/admin":
+            self.clear_dashboard_session(chat_id, user_id)
+            await self.show_admin_dashboard(chat_id, message_id, user_id)
+            return
         if action:
             await self.handle_dashboard_button(chat_id, user_id, message_id, action)
             return
@@ -930,12 +1118,21 @@ class TelegramBotApp:
             reply_markup=await self.dashboard_reply_markup(user_id),
         )
 
-    async def command_discover_pages(self, chat_id: int, message_id: int, args: List[str], user_id: int = 0) -> None:
+    async def command_discover_pages(
+        self,
+        chat_id: int,
+        message_id: int,
+        args: List[str],
+        user_id: int = 0,
+        *,
+        refresh: bool = False,
+    ) -> None:
         if len(args) != 1:
             await self.send_message(chat_id, "Usage: /pages <account_id>", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
             return
         account_id = args[0]
-        await self.send_message(chat_id, f"Discovering pages for {account_id}...", message_id, reply_markup=cancel_markup())
+        verb = "Refreshing cached pages" if refresh else "Discovering pages"
+        await self.send_message(chat_id, f"{verb} for {account_id}...", message_id, reply_markup=cancel_markup())
         try:
             pages = await self.discover_pages(account_id)
             if pages:
@@ -943,7 +1140,7 @@ class TelegramBotApp:
             if not pages:
                 await self.send_message(chat_id, "No managed pages discovered.", reply_markup=await self.dashboard_reply_markup(user_id))
                 return
-            lines = [f"Discovered {len(pages)} page(s):"]
+            lines = [f"{'Refreshed' if refresh else 'Discovered'} and cached {len(pages)} page(s):"]
             for page in pages:
                 lines.append(f"- {page.get('name') or page.get('id')} | {page.get('url')}")
             await self.send_message(chat_id, "\n".join(lines), reply_markup=await self.dashboard_reply_markup(user_id))

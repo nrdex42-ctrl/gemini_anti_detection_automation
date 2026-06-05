@@ -21,8 +21,17 @@ BUTTON_STATUS = "📊 Bot Status"
 BUTTON_BACK = "⬅️ Back to Dashboard"
 BUTTON_DASHBOARD = "🏠 Dashboard"
 BUTTON_DISCOVER_PAGES = "🔎 Discover Pages"
+BUTTON_REFRESH_PAGES = "🔄 Refresh Pages"
 BUTTON_LIST_PAGES = "📄 Stored Pages"
 BUTTON_CANCEL = "❌ Cancel"
+BUTTON_ADMIN = "🔒 Admin Dashboard"
+BUTTON_USER_DASHBOARD = "🔁 User Dashboard"
+BUTTON_SYSTEM_STATS = "📊 System Stats"
+BUTTON_USERS = "👥 Users"
+BUTTON_ADMIN_ACCOUNTS = "🔑 Accounts"
+BUTTON_POST_STATS = "📈 Post Stats"
+BUTTON_RUNTIME_LOCKS = "🔐 Runtime Locks"
+BUTTON_SYSTEM_CONFIG = "⚙️ System Config"
 
 DASHBOARD_ACTIONS = {
     BUTTON_DASHBOARD: "dashboard",
@@ -44,8 +53,17 @@ DASHBOARD_ACTIONS = {
     BUTTON_POST_HISTORY: "post_history",
     BUTTON_STATUS: "status",
     BUTTON_DISCOVER_PAGES: "discover_pages",
+    BUTTON_REFRESH_PAGES: "refresh_pages",
     BUTTON_LIST_PAGES: "list_pages",
     BUTTON_CANCEL: "cancel",
+    BUTTON_ADMIN: "admin_dashboard",
+    BUTTON_USER_DASHBOARD: "user_dashboard",
+    BUTTON_SYSTEM_STATS: "admin_system_stats",
+    BUTTON_USERS: "admin_users",
+    BUTTON_ADMIN_ACCOUNTS: "admin_accounts",
+    BUTTON_POST_STATS: "admin_post_stats",
+    BUTTON_RUNTIME_LOCKS: "admin_runtime_locks",
+    BUTTON_SYSTEM_CONFIG: "admin_system_config",
     "/cancel": "cancel",
     # Backward-compatible labels from the first lightweight dashboard.
     "➕ Add Account": "add_account",
@@ -112,25 +130,39 @@ def dashboard_markup(
 
     if posting_blocked and has_accounts and active_account:
         rows.append(["⏳ Posting cooldown active"])
-        rows.append([BUTTON_SWITCH_ACCOUNT, BUTTON_ADD_ACCOUNT])
+        rows.append([BUTTON_SWITCH_ACCOUNT, BUTTON_REFRESH_PAGES])
     elif not has_accounts:
         rows.append([BUTTON_ADD_ACCOUNT])
     elif active_account:
         rows.append([BUTTON_POST_ACTIVE, BUTTON_SWITCH_ACCOUNT])
         rows.append([BUTTON_QUICK_TEXT, BUTTON_QUICK_IMAGE])
         rows.append([BUTTON_QUICK_VIDEO, BUTTON_POST_ALL_PAGES])
+        rows.append([BUTTON_REFRESH_PAGES, BUTTON_LIST_PAGES])
     else:
         rows.append([BUTTON_SELECT_ACCOUNT, BUTTON_ADD_ACCOUNT])
 
     if has_accounts:
         rows.append([BUTTON_MY_ACCOUNTS, BUTTON_ADD_ACCOUNT])
         rows.append([BUTTON_CHECK_COOKIES, BUTTON_POST_HISTORY])
-        rows.append([BUTTON_DISCOVER_PAGES, BUTTON_LIST_PAGES])
+        if not active_account:
+            rows.append([BUTTON_DISCOVER_PAGES, BUTTON_LIST_PAGES])
 
     rows.append([BUTTON_STATUS, BUTTON_DASHBOARD])
     if is_admin:
-        rows.append(["🔒 Admin Dashboard"])
+        rows.append([BUTTON_ADMIN])
     return reply_keyboard(rows)
+
+
+def admin_dashboard_markup() -> Dict[str, Any]:
+    return reply_keyboard(
+        [
+            [BUTTON_SYSTEM_STATS, BUTTON_POST_STATS],
+            [BUTTON_USERS, BUTTON_ADMIN_ACCOUNTS],
+            [BUTTON_RUNTIME_LOCKS, BUTTON_SYSTEM_CONFIG],
+            [BUTTON_USER_DASHBOARD],
+        ],
+        placeholder="Choose an admin action...",
+    )
 
 
 def cancel_markup() -> Dict[str, Any]:
