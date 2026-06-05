@@ -1597,6 +1597,19 @@ class TelegramBotApp:
                 )
                 return True
             session["post_type"] = post_type
+            if post_type == "video":
+                page_id_or_url = str(session.get("page_id_or_url") or "").strip()
+                session["pages"] = [{"page_id": page_id_or_url, "page_url": page_id_or_url, "page_name": page_id_or_url}]
+                session["selected_pages"] = [0]
+                session["step"] = "video_mode"
+                self.set_dashboard_session(chat_id, user_id, session)
+                await self.send_message(
+                    chat_id,
+                    video_mode_card(account_name="", pages=session["pages"], selected_indexes=[0]),
+                    message_id,
+                    reply_markup=video_mode_inline_markup(),
+                )
+                return True
             session["step"] = "caption" if post_type == "text" else f"media_{post_type}"
             self.set_dashboard_session(chat_id, user_id, session)
             await self.send_message(chat_id, prompt_text("post", session["step"]), message_id, reply_markup=cancel_markup())
@@ -1609,6 +1622,18 @@ class TelegramBotApp:
                 return True
             post_type = str(session.get("post_type") or "text")
             session["page_id_or_url"] = page_id_or_url
+            if post_type == "video":
+                session["pages"] = [{"page_id": page_id_or_url, "page_url": page_id_or_url, "page_name": page_id_or_url}]
+                session["selected_pages"] = [0]
+                session["step"] = "video_mode"
+                self.set_dashboard_session(chat_id, user_id, session)
+                await self.send_message(
+                    chat_id,
+                    video_mode_card(account_name="", pages=session["pages"], selected_indexes=[0]),
+                    message_id,
+                    reply_markup=video_mode_inline_markup(),
+                )
+                return True
             session["step"] = "caption" if post_type == "text" else f"media_{post_type}"
             self.set_dashboard_session(chat_id, user_id, session)
             await self.send_message(chat_id, prompt_text("post", session["step"]), message_id, reply_markup=cancel_markup())
