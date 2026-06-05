@@ -1,9 +1,9 @@
-"""Reply-keyboard dashboard helpers for the raw Telegram Bot API service."""
+"""Telegram dashboard helpers for the raw Telegram Bot API service."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 
 BUTTON_ADD_ACCOUNT = "➕ Add Facebook Account"
@@ -205,14 +205,19 @@ def choices_markup(choices: Iterable[str], *, placeholder: str = "Choose or type
     return reply_keyboard(rows, placeholder=placeholder, persistent=False)
 
 
+def inline_button(text: str, callback_data: str) -> Dict[str, str]:
+    return {"text": text[:64], "callback_data": callback_data[:64]}
+
+
+def inline_markup(rows: Sequence[Sequence[Dict[str, str]]]) -> Dict[str, Any]:
+    return {"inline_keyboard": [list(row) for row in rows]}
+
+
 def account_choice_label(account: Dict[str, Any], active_account: str = "") -> str:
     account_id = str(account.get("account_id") or "").strip()
-    label = str(account.get("label") or "").strip()
     status = "active" if account.get("active") else "inactive"
     marker = "✅" if active_account and account_id == active_account else "👤"
-    if label and label != account_id:
-        return f"{marker} {account_id} | {label} | {status}"
-    return f"{marker} {account_id} | {status}"
+    return f"{marker} {account_display_name(account)} | {status}"
 
 
 def parse_choice_id(text: str) -> str:
@@ -223,12 +228,15 @@ def parse_choice_id(text: str) -> str:
     return value.split("|", 1)[0].strip()
 
 
-def account_display_name(account: Dict[str, Any], fallback_id: str = "") -> str:
+def account_display_name(account: Dict[str, Any], fallback_id: str = "", *, include_id: bool = False) -> str:
     account_id = str(account.get("account_id") or fallback_id or "").strip()
     label = str(account.get("label") or "").strip()
     if label and label != account_id:
-        return f"{label} ({account_id})"
-    return label or account_id or "unknown"
+        display = "Facebook Account" if label.startswith("Facebook Account ") else label
+        return f"{display} ({account_id})" if include_id and account_id else display
+    if include_id and account_id:
+        return account_id
+    return "Facebook Account"
 
 
 def page_choice_label(page: Dict[str, Any]) -> str:
@@ -239,6 +247,149 @@ def page_choice_label(page: Dict[str, Any]) -> str:
     if page_name and page_name != identity:
         return f"{identity} | {page_name[:48]}"
     return identity
+
+
+def page_display_name(page: Dict[str, Any], index: int = 0) -> str:
+    name = str(page.get("page_name") or page.get("name") or "").strip()
+    if name:
+        return name
+    return f"Page {index + 1}" if index >= 0 else "Page"
+
+
+def _short(value: Any, limit: int = 80) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else f"{text[: max(0, limit - 3)]}..."
+
+
+def page_selection_card(
+    *,
+    account_name: str,
+    pages: List[Dict[str, Any]],
+    selected_indexes: List[int],
+    prefix: str = "",
+) -> str:
+    selected = set(selected_indexes)
+    lines: List[str] = []
+    if prefix:
+        lines.extend([prefix, ""])
+    lines.extend(
+        [
+            "📄 Select Pages",
+            "━━━━━━━━━━━━━━━━━━",
+            f"Account: {_short(account_name or 'Facebook Account', 70)}",
+            f"Available pages: {len(pages)}",
+            f"Selected: {len(selected)}",
+            "",
+        ]
+    )
+    if not pages:
+        lines.append("No cached pages found. Refresh pages first.")
+    else:
+        for idx, page in enumerate(pages[:10]):
+            marker = "✅" if idx in selected else "⬜"
+            lines.append(f"{marker} {page_display_name(page, idx)}")
+        remaining = len(pages) - 10
+        if remaining > 0:
+            lines.append(f"... and {remaining} more")
+    lines.extend(["", "Tap page names to toggle, then Confirm."])
+    return "\n".join(lines)
+
+
+def page_selection_markup(pages: List[Dict[str, Any]], selected_indexes: List[int]) -> Dict[str, Any]:
+    selected = set(selected_indexes)
+    rows: List[List[Dict[str, str]]] = []
+    for idx, page in enumerate(pages[:24]):
+        marker = "✅" if idx in selected else "⬜"
+        rows.append([inline_button(f"{marker} {_short(page_display_name(page, idx), 48)}", f"pg:{idx}")])
+    if pages:
+        rows.append([inline_button("📋 All", "pg:all"), inline_button("✅ Confirm", "pg:confirm")])
+    rows.append([inline_button("🔄 Refresh Pages", "pg:refresh")])
+    rows.append([inline_button("⬅️ Dashboard", "dash:back")])
+    return inline_markup(rows)
+
+
+def post_type_card(*, account_name: str, pages: List[Dict[str, Any]], selected_indexes: List[int]) -> str:
+    page_names = [
+        page_display_name(pages[idx], idx)
+        for idx in selected_indexes
+        if isinstance(idx, int) and 0 <= idx < len(pages)
+    ]
+    preview = ", ".join(_short(name, 32) for name in page_names[:4])
+    if len(page_names) > 4:
+        preview += f", +{len(page_names) - 4} more"
+    return "\n".join(
+        [
+            "📝 Choose Post Type",
+            "━━━━━━━━━━━━━━━━━━",
+            f"Account: {_short(account_name or 'Facebook Account', 70)}",
+            f"Pages: {len(page_names)}",
+            f"Selected: {preview or 'none'}",
+            "",
+            "Choose what you want to post.",
+        ]
+    )
+
+
+def post_type_inline_markup() -> Dict[str, Any]:
+    return inline_markup(
+        [
+            [inline_button("📝 Caption/Text", "post:type:text")],
+            [inline_button("📸 Image", "post:type:image"), inline_button("🎬 Video", "post:type:video")],
+            [inline_button("⬅️ Pages", "post:pages"), inline_button("🏠 Dashboard", "dash:back")],
+        ]
+    )
+
+
+def post_input_card(post_type: str) -> str:
+    if post_type == "text":
+        action = "Send the caption/text message now."
+        title = "📝 Caption Post"
+    elif post_type == "image":
+        action = "Send or reply with the image now. Telegram media caption is optional."
+        title = "📸 Image Post"
+    else:
+        action = "Send or reply with the video now. Telegram media caption is optional."
+        title = "🎬 Video Post"
+    return "\n".join([title, "━━━━━━━━━━━━━━━━━━", action, "", "After that, I will show a final review card."])
+
+
+def post_review_card(
+    *,
+    account_name: str,
+    pages: List[Dict[str, Any]],
+    post_type: str,
+    caption: str,
+    media_path: str = "",
+) -> str:
+    caption_value = _short(caption, 700) if caption else "(none)"
+    media_value = "attached" if media_path else "(none)"
+    lines = [
+        "🧾 Review Post",
+        "━━━━━━━━━━━━━━━━━━",
+        f"Type: {post_type}",
+        f"Account: {_short(account_name or 'Facebook Account', 70)}",
+        f"Selected pages: {len(pages)}",
+    ]
+    for idx, page in enumerate(pages[:6]):
+        lines.append(f"• {page_display_name(page, idx)}")
+    remaining = len(pages) - 6
+    if remaining > 0:
+        lines.append(f"... and {remaining} more")
+    lines.extend(["", f"Caption: {caption_value}"])
+    if post_type in {"image", "video"}:
+        lines.append(f"Media: {media_value}")
+    lines.extend(["", "Confirm to start posting, or edit the caption."])
+    return "\n".join(lines)
+
+
+def post_confirm_inline_markup() -> Dict[str, Any]:
+    return inline_markup(
+        [
+            [inline_button("✏️ Edit Caption", "post:edit_caption")],
+            [inline_button("✅ Post Now", "post:confirm")],
+            [inline_button("⬅️ Pages", "post:pages"), inline_button("🏠 Dashboard", "dash:back")],
+        ]
+    )
 
 
 def _format_dt(value: Any) -> str:
@@ -313,14 +464,17 @@ def dashboard_text(
         lines.append("")
         lines.append("Session safety:")
         for item in locked_accounts[:4]:
-            lines.append(f"- {item.get('account_id')}: locked until {_format_dt(item.get('locked_until'))}")
+            locked_id = str(item.get("account_id") or "")
+            locked_name = account_display_name(account_by_id.get(locked_id, {}), locked_id)
+            lines.append(f"- {locked_name}: locked until {_format_dt(item.get('locked_until'))}")
 
     if recent_jobs:
         lines.append("")
         lines.append("Recent posts:")
         for job in recent_jobs[:5]:
+            target = str(job.get("page_name") or job.get("page_id_or_url") or "")[:36]
             lines.append(
-                f"- {job.get('status')} {job.get('post_type')} -> {str(job.get('page_id_or_url') or '')[:36]}"
+                f"- {job.get('status')} {job.get('post_type')} -> {target}"
             )
 
     lines.extend(["", "Use the keyboard buttons below. /start refreshes this dashboard."])
@@ -337,7 +491,7 @@ def prompt_text(action: str, step: str = "") -> str:
             "3. Long JSON across multiple messages, then tap Done."
         )
     if step == "account":
-        return "Choose an account from the keyboard or type its account_id."
+        return "Choose an account from the keyboard."
     if step == "post_type":
         return "Choose the post type."
     if step == "page":

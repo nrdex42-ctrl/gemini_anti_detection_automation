@@ -94,6 +94,34 @@ class BotStorage:
                     raise RuntimeError("This Facebook account is already stored by another Telegram user")
             conn.commit()
 
+    def update_account_label(self, account_id: str, label: str, owner_id: Optional[int] = None) -> bool:
+        label = (label or "").strip()
+        if not label:
+            return False
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                if owner_id is None:
+                    cur.execute(
+                        """
+                        update fb_accounts
+                        set label=%s, updated_at=now()
+                        where account_id=%s
+                        """,
+                        (label, account_id),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        update fb_accounts
+                        set label=%s, updated_at=now()
+                        where account_id=%s and created_by=%s
+                        """,
+                        (label, account_id, int(owner_id)),
+                    )
+                changed = cur.rowcount > 0
+            conn.commit()
+        return changed
+
     def set_active_account(self, telegram_user_id: int, account_id: str) -> None:
         with self.connect() as conn:
             with conn.cursor() as cur:
@@ -392,7 +420,7 @@ class BotStorage:
                 if owner_id is None:
                     cur.execute(
                         """
-                        select id::text, account_id, page_id_or_url, post_type, status, created_at
+                        select id::text, account_id, page_id_or_url, page_name, post_type, status, created_at
                         from fb_post_jobs
                         order by created_at desc
                         limit 8
@@ -401,7 +429,7 @@ class BotStorage:
                 else:
                     cur.execute(
                         """
-                        select id::text, account_id, page_id_or_url, post_type, status, created_at
+                        select id::text, account_id, page_id_or_url, page_name, post_type, status, created_at
                         from fb_post_jobs
                         where telegram_user_id=%s
                         order by created_at desc
