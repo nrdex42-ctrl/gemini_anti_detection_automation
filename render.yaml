@@ -71,11 +71,15 @@ services:
         value: "1800"
       - key: POST_ENABLE_PAGES_PORTAL_FALLBACK
         value: "true"
+      - key: POST_PAGES_PORTAL_FALLBACK_TEXT_ENABLED
+        value: "true"
       - key: POST_PAGES_PORTAL_FALLBACK_IMAGE_ENABLED
         value: "true"
       - key: POST_PAGES_PORTAL_FALLBACK_VIDEO_ENABLED
         value: "true"
       - key: POST_PAGES_PORTAL_FIRST
+        value: "true"
+      - key: POST_PAGES_PORTAL_FIRST_TEXT_ENABLED
         value: "true"
       - key: POST_PAGES_PORTAL_FIRST_IMAGE_ENABLED
         value: "true"

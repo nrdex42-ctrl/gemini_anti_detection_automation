@@ -1009,7 +1009,9 @@ class TelegramBotApp:
                 "BOT_POSTING_ENGINE_TIMEOUT_SECONDS",
                 "BOT_BATCH_POSTING_ENGINE_TIMEOUT_SECONDS",
                 "POST_PAGES_PORTAL_FIRST",
+                "POST_PAGES_PORTAL_FIRST_TEXT_ENABLED",
                 "POST_ENABLE_PAGES_PORTAL_FALLBACK",
+                "POST_PAGES_PORTAL_FALLBACK_TEXT_ENABLED",
                 "FACEBOOK_IMAGE_FORCE_SANITIZE_UPLOAD",
             ]
             lines = [
