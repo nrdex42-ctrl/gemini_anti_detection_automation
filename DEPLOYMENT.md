@@ -95,6 +95,8 @@ Recommended defaults are already in `render.yaml`:
 ```text
 HEADLESS=true
 AUTO_INIT_DB=true
+AUTO_SET_TELEGRAM_WEBHOOK=true
+TELEGRAM_DROP_PENDING_UPDATES=false
 DELETE_COOKIE_MESSAGES=true
 BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS=360
 POST_COOKIE_MIN_INTERVAL_SECONDS=360
@@ -111,13 +113,22 @@ python scripts/generate_fernet_key.py
 ## 5. Production Operation
 
 1. Deploy the Render service from the GitHub repository.
-2. Set the Telegram webhook with `scripts/set_telegram_webhook.py`.
+2. Confirm Render logs include `Telegram webhook configured for https://.../telegram/webhook`.
 3. Send `/start` or `/dashboard` to the bot.
 4. Use the typing-area dashboard panel to add an account.
 5. Use `Discover Pages` to store managed pages for that account.
 6. Use `Text Post`, `Image Post`, or `Video Post` to queue posts through guided steps.
 
-Direct commands still work:
+If automatic webhook setup is disabled, set it manually:
+
+```bash
+export TELEGRAM_BOT_TOKEN="..."
+export TELEGRAM_WEBHOOK_SECRET="..."
+export PUBLIC_BASE_URL="https://your-service.onrender.com"
+python scripts/set_telegram_webhook.py
+```
+
+Direct bot commands still work:
 
 ```text
 /add_account auto <raw_cookie>

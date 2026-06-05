@@ -65,6 +65,16 @@ def _csv_ints(name: str) -> set[int]:
     return values
 
 
+def _placeholder(value: str) -> bool:
+    normalized = (value or "").strip().lower()
+    return (
+        not normalized
+        or "replace_me" in normalized
+        or "replace-me" in normalized
+        or normalized.startswith("your-")
+    )
+
+
 def account_id_from_cookie(cookie_string: str) -> str:
     for pair in cookie_string.split(";"):
         if pair.strip().startswith("c_user="):
@@ -126,6 +136,8 @@ class TelegramBotApp:
             await asyncio.to_thread(self.storage.ensure_schema)
             logger.info("Supabase/Postgres schema ready")
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        if _env_bool("AUTO_SET_TELEGRAM_WEBHOOK", True):
+            await self.configure_telegram_webhook()
 
     async def cleanup(self, app: web.Application) -> None:
         if self.session is not None:
@@ -147,6 +159,31 @@ class TelegramBotApp:
             if not data.get("ok"):
                 logger.warning("Telegram API %s failed: %s", method, data)
             return data
+
+    async def configure_telegram_webhook(self) -> None:
+        public_base_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+        if _placeholder(public_base_url):
+            logger.warning("Skipping Telegram webhook setup because PUBLIC_BASE_URL is not configured")
+            return
+        if _placeholder(self.token):
+            logger.warning("Skipping Telegram webhook setup because TELEGRAM_BOT_TOKEN is not configured")
+            return
+        if not self.webhook_secret:
+            logger.warning("Skipping Telegram webhook setup because TELEGRAM_WEBHOOK_SECRET is not configured")
+            return
+
+        webhook_url = f"{public_base_url}/telegram/webhook"
+        payload = {
+            "url": webhook_url,
+            "secret_token": self.webhook_secret,
+            "drop_pending_updates": _env_bool("TELEGRAM_DROP_PENDING_UPDATES", False),
+            "allowed_updates": ["message", "edited_message"],
+        }
+        data = await self.telegram_api("setWebhook", payload)
+        if data.get("ok"):
+            logger.info("Telegram webhook configured for %s", webhook_url)
+        else:
+            logger.error("Telegram webhook setup failed: %s", data)
 
     async def send_message(
         self,
@@ -800,7 +837,12 @@ class TelegramBotApp:
     async def webhook(self, request: web.Request) -> web.Response:
         path_secret = request.match_info.get("secret", "")
         header_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-        if path_secret != self.webhook_secret or header_secret != self.webhook_secret:
+        authorized = False
+        if header_secret:
+            authorized = header_secret == self.webhook_secret
+        elif path_secret:
+            authorized = path_secret == self.webhook_secret
+        if not authorized:
             return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
         try:
             update = await request.json()
@@ -822,6 +864,7 @@ def create_app() -> web.Application:
     app.on_cleanup.append(bot.cleanup)
     app.router.add_get("/", bot.health)
     app.router.add_get("/healthz", bot.health)
+    app.router.add_post("/telegram/webhook", bot.webhook)
     app.router.add_post("/telegram/webhook/{secret}", bot.webhook)
     return app
 

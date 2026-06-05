@@ -25,6 +25,10 @@ services:
         value: "33554432"
       - key: TELEGRAM_UPLOAD_DIR
         value: artifacts/telegram_uploads
+      - key: AUTO_SET_TELEGRAM_WEBHOOK
+        value: "true"
+      - key: TELEGRAM_DROP_PENDING_UPDATES
+        value: "false"
       - key: AUTO_INIT_DB
         value: "true"
       - key: DELETE_COOKIE_MESSAGES

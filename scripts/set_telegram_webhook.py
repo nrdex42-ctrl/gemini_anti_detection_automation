@@ -23,7 +23,7 @@ def main() -> int:
         print("TELEGRAM_WEBHOOK_SECRET is required", file=sys.stderr)
         return 2
 
-    webhook_url = f"{public_base_url}/telegram/webhook/{secret}"
+    webhook_url = f"{public_base_url}/telegram/webhook"
     response = requests.post(
         f"https://api.telegram.org/bot{token}/setWebhook",
         json={
