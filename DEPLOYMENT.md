@@ -1,0 +1,127 @@
+# Deployment Checklist
+
+This checklist prepares the repository for GitHub, Render, Supabase/Postgres, and Telegram webhook operation.
+
+## 1. GitHub
+
+Repository target:
+
+```text
+https://github.com/nrdex42-ctrl/Anti_Detection_FB_Automation.git
+```
+
+Before pushing, verify no secrets are tracked:
+
+```bash
+rg -n --hidden "datr=|c_user=|xs=|fr=|TELEGRAM_BOT_TOKEN=.+|DATABASE_URL=postgres|ENCRYPTION_KEY=.+" \
+  --glob '!artifacts/**' \
+  --glob '!diagnostics/**' \
+  --glob '!logs/**' \
+  --glob '!__pycache__/**' \
+  --glob '!.git/**' .
+```
+
+## 2. Supabase/Postgres
+
+Create a Supabase project and copy a Postgres connection string into Render as `DATABASE_URL`.
+
+For Render or any IPv4-only hosting network, prefer the Supabase Session Pooler connection string. Supabase documents direct and pooler Postgres connection options here:
+
+```text
+https://supabase.com/docs/guides/database/connecting-to-postgres
+```
+
+Schema options:
+
+- Leave `AUTO_INIT_DB=true` so the bot applies `supabase/schema.sql` on startup.
+- Or run the schema manually:
+
+```bash
+export DATABASE_URL="postgresql://..."
+python scripts/init_supabase.py
+```
+
+The schema creates:
+
+- `fb_accounts` for encrypted account cookies.
+- `fb_pages` for discovered managed pages.
+- `fb_post_jobs` for Telegram queued posts.
+- `fb_account_runtime` for account lock leases and cookie cooldown state.
+
+## 3. Telegram Bot
+
+Create a bot with BotFather and copy the token into Render as `TELEGRAM_BOT_TOKEN`.
+
+Set a strong `TELEGRAM_WEBHOOK_SECRET`. Telegram sends this value in the `X-Telegram-Bot-Api-Secret-Token` header when configured through `setWebhook`.
+
+Official Bot API reference:
+
+```text
+https://core.telegram.org/bots/api#setwebhook
+```
+
+After Render gives you a public URL, set:
+
+```bash
+export TELEGRAM_BOT_TOKEN="..."
+export TELEGRAM_WEBHOOK_SECRET="..."
+export PUBLIC_BASE_URL="https://your-service.onrender.com"
+python scripts/set_telegram_webhook.py
+```
+
+## 4. Render
+
+The repository includes `render.yaml`. Render Blueprints support `runtime: python`, `buildCommand`, and `startCommand`.
+
+Official Blueprint reference:
+
+```text
+https://render.com/docs/blueprint-spec
+```
+
+Required Render environment variables:
+
+```text
+TELEGRAM_BOT_TOKEN
+TELEGRAM_WEBHOOK_SECRET
+BOT_ADMIN_IDS
+DATABASE_URL
+ENCRYPTION_KEY
+PUBLIC_BASE_URL
+```
+
+Recommended defaults are already in `render.yaml`:
+
+```text
+HEADLESS=true
+AUTO_INIT_DB=true
+DELETE_COOKIE_MESSAGES=true
+BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS=360
+POST_COOKIE_MIN_INTERVAL_SECONDS=360
+PLAYWRIGHT_BROWSERS_PATH=.playwright
+FACEBOOK_BROWSER_NO_SANDBOX=true
+```
+
+Generate `ENCRYPTION_KEY` locally:
+
+```bash
+python scripts/generate_fernet_key.py
+```
+
+## 5. Production Operation
+
+1. Deploy the Render service from the GitHub repository.
+2. Set the Telegram webhook with `scripts/set_telegram_webhook.py`.
+3. Send `/start` to the bot.
+4. Send `/add_account auto <raw_cookie>` from an admin Telegram user.
+5. Run `/pages <account_id>` to discover managed pages.
+6. Run `/post <account_id> <page_id_or_url> <text|image|video> <caption>` to queue a post.
+
+## 6. Isolation Rules
+
+- Different accounts can process concurrently.
+- The same account is protected by a Supabase lock lease.
+- After a posting attempt uses a cookie, the bot records `last_cookie_used_at`.
+- `BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS` controls the minimum wait before the next use of the same account.
+- `BOT_ACCOUNT_LOCK_HEARTBEAT_SECONDS` refreshes long-running job leases.
+

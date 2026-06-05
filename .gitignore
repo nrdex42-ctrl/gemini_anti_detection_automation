@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local secrets and runtime state
+.env
+.env.*
+!.env.example
+cookies*.json
+*cookie*.json
+session_states.json
+*.sqlite
+*.sqlite3
+*.db
+
+# Generated runtime output
+artifacts/
+diagnostics/
+logs/
+*.log
+
+# Browser/runtime caches
+.playwright/
+ms-playwright/
+playwright-report/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Keep source templates/docs tracked.
+!supabase/schema.sql
+!README.md

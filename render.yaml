@@ -1,0 +1,51 @@
+services:
+  - type: web
+    name: anti-detection-fb-automation
+    runtime: python
+    plan: starter
+    region: frankfurt
+    buildCommand: |
+      pip install -r requirements.txt
+      python -m playwright install chromium
+    startCommand: python telegram_bot.py
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.10
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: .playwright
+      - key: HEADLESS
+        value: "true"
+      - key: AUTO_INIT_DB
+        value: "true"
+      - key: DELETE_COOKIE_MESSAGES
+        value: "true"
+      - key: BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS
+        value: "360"
+      - key: BOT_ACCOUNT_LOCK_LEASE_SECONDS
+        value: "1800"
+      - key: BOT_ACCOUNT_LOCK_MAX_WAIT_SECONDS
+        value: "3600"
+      - key: POST_COOKIE_MIN_INTERVAL_SECONDS
+        value: "360"
+      - key: POST_COOKIE_SESSION_LOCK_ENABLED
+        value: "true"
+      - key: FACEBOOK_BROWSER_NO_SANDBOX
+        value: "true"
+      - key: FACEBOOK_IMAGE_FORCE_SANITIZE_UPLOAD
+        value: "true"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        generateValue: true
+      - key: BOT_ADMIN_IDS
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: PUBLIC_BASE_URL
+        sync: false

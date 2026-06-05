@@ -1,0 +1,11 @@
+aiohttp>=3.9,<4
+cryptography>=42,<46
+Pillow>=10,<12
+playwright>=1.44,<2
+playwright-stealth>=1.0.6,<2
+psycopg[binary]>=3.2,<4
+psycopg-pool>=3.2,<4
+python-dotenv>=1,<2
+redis>=5,<7
+requests>=2.31,<3
+rq>=1.16,<2

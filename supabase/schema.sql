@@ -1,0 +1,55 @@
+create extension if not exists pgcrypto;
+
+create table if not exists fb_accounts (
+    id uuid primary key default gen_random_uuid(),
+    account_id text not null unique,
+    label text not null default '',
+    cookie_ciphertext text not null,
+    active boolean not null default true,
+    created_by bigint,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+create table if not exists fb_pages (
+    id uuid primary key default gen_random_uuid(),
+    account_id text not null references fb_accounts(account_id) on delete cascade,
+    page_id text not null,
+    page_name text not null default '',
+    page_url text not null default '',
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    unique(account_id, page_id)
+);
+
+create table if not exists fb_account_runtime (
+    account_id text primary key references fb_accounts(account_id) on delete cascade,
+    last_cookie_used_at timestamptz,
+    locked_until timestamptz,
+    locked_by text,
+    updated_at timestamptz not null default now()
+);
+
+create table if not exists fb_post_jobs (
+    id uuid primary key default gen_random_uuid(),
+    telegram_chat_id bigint,
+    telegram_user_id bigint,
+    account_id text not null references fb_accounts(account_id) on delete cascade,
+    page_id_or_url text not null,
+    page_name text not null default '',
+    post_type text not null check (post_type in ('text', 'image', 'video')),
+    caption text not null default '',
+    media_path text not null default '',
+    status text not null default 'queued',
+    result jsonb not null default '{}'::jsonb,
+    error text not null default '',
+    created_at timestamptz not null default now(),
+    started_at timestamptz,
+    completed_at timestamptz
+);
+
+create index if not exists idx_fb_accounts_active on fb_accounts(active);
+create index if not exists idx_fb_pages_account_id on fb_pages(account_id);
+create index if not exists idx_fb_account_runtime_locked_until on fb_account_runtime(locked_until);
+create index if not exists idx_fb_post_jobs_account_status on fb_post_jobs(account_id, status);
+create index if not exists idx_fb_post_jobs_created_at on fb_post_jobs(created_at desc);
