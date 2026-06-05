@@ -72,6 +72,94 @@ def progress_card(title: str, done: int, total: int, status: str) -> str:
     return f"{title}\n{progress_bar(done, total)} {done}/{total} ({percent}%)\n{status}"
 
 
+def compact_text(value: Any, limit: int = 220) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return f"{text[:max(0, limit - 1)].rstrip()}…"
+
+
+def page_status_bar(status: str, width: int = 5) -> str:
+    normalized = str(status or "pending").lower()
+    if normalized in {"success", "failed", "skipped"}:
+        done = width
+    elif normalized in {"running", "processing"}:
+        done = max(1, width // 2)
+    else:
+        done = 0
+    return "█" * done + "░" * (width - done)
+
+
+def posting_result_card(
+    results: List[Dict[str, Any]],
+    *,
+    title: str = "",
+    debug_id: str = "",
+    max_length: int = 3800,
+) -> str:
+    total = max(1, len(results))
+    success_count = sum(1 for item in results if bool(item.get("success")))
+    header = title or f"Posting complete: {success_count}/{len(results)} succeeded"
+    lines = [header, f"{progress_bar(success_count, total)} {success_count}/{len(results)} succeeded"]
+    if debug_id:
+        lines.append(f"Debug ID: {debug_id}")
+    lines.append("")
+
+    omitted = 0
+    for index, item in enumerate(results):
+        success = bool(item.get("success"))
+        page = compact_text(item.get("page") or "Unknown page", 42)
+        detail = compact_text(item.get("result") or item.get("error") or "", 260)
+        prefix = "✅" if success else "❌"
+        label = "Result" if success else "Error"
+        status = "success" if success else "failed"
+        line = f"{prefix} {page} {page_status_bar(status)} {label}: {detail}"
+        projected = "\n".join([*lines, line])
+        reserve = 80 if index < len(results) - 1 else 0
+        if len(projected) + reserve > max_length:
+            omitted = len(results) - index
+            break
+        lines.append(line)
+
+    if omitted:
+        lines.append(f"… {omitted} more result(s) omitted to keep the Telegram message deliverable.")
+    return "\n".join(lines)
+
+
+def posting_live_status_card(
+    title: str,
+    jobs: List[Dict[str, str]],
+    statuses: Dict[str, Dict[str, Any]],
+    *,
+    debug_id: str = "",
+    active_detail: str = "",
+    max_rows: int = 12,
+) -> str:
+    total = max(1, len(jobs))
+    done = sum(1 for state in statuses.values() if str(state.get("status") or "") in {"success", "failed", "skipped"})
+    lines = [progress_card(title, done, total, active_detail or "Posting pages...")]
+    if debug_id:
+        lines.append(f"Debug ID: {debug_id}")
+    lines.append("")
+    for index, job in enumerate(jobs[:max_rows]):
+        page = compact_text(job.get("page_name") or job.get("page_id_or_url") or f"Page {index + 1}", 34)
+        state = statuses.get(str(job.get("job_id") or "")) or {}
+        status = str(state.get("status") or "pending")
+        stage = compact_text(state.get("stage") or status.title(), 72)
+        icon = {
+            "success": "✅",
+            "failed": "❌",
+            "skipped": "⏭",
+            "running": "⏳",
+            "processing": "⏳",
+            "pending": "⬜",
+        }.get(status, "⏳")
+        lines.append(f"{icon} {page} {page_status_bar(status)} {stage}")
+    if len(jobs) > max_rows:
+        lines.append(f"… {len(jobs) - max_rows} more page(s)")
+    return "\n".join(lines)
+
+
 def new_debug_id(prefix: str) -> str:
     safe_prefix = re.sub(r"[^a-z0-9_-]+", "", (prefix or "dbg").lower())[:10] or "dbg"
     return f"{safe_prefix}_{uuid.uuid4().hex[:10]}"
@@ -131,6 +219,17 @@ def _env_int(name: str, default: int, minimum: int = 0) -> int:
         return max(minimum, int(raw))
     except ValueError:
         logger.warning("Invalid %s=%r; using %d", name, raw, default)
+        return default
+
+
+def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(minimum, float(raw))
+    except ValueError:
+        logger.warning("Invalid %s=%r; using %.2f", name, raw, default)
         return default
 
 
@@ -3328,7 +3427,10 @@ class TelegramBotApp:
         heartbeat_task: Optional[asyncio.Task[None]] = None
         progress_message_id = 0
         job_ids = [str(job["job_id"]) for job in jobs]
-        total_units = max(3, len(jobs) + 2)
+        page_statuses: Dict[str, Dict[str, Any]] = {
+            str(job["job_id"]): {"status": "pending", "stage": "Pending"}
+            for job in jobs
+        }
         try:
             self.debug_event(
                 "batch_post_start",
@@ -3340,13 +3442,25 @@ class TelegramBotApp:
             )
             progress = await self.send_message(
                 chat_id,
-                progress_card("Batch posting...", 0, total_units, f"Debug ID: {trace_id}\nQueued {len(jobs)} page job(s)."),
+                posting_live_status_card(
+                    "Batch posting...",
+                    jobs,
+                    page_statuses,
+                    debug_id=trace_id,
+                    active_detail=f"Queued {len(jobs)} page job(s).",
+                ),
             )
             progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Batch posting...", 0, total_units, f"Debug ID: {trace_id}\nMarking {len(job_ids)} job(s) as processing..."),
+                posting_live_status_card(
+                    "Batch posting...",
+                    jobs,
+                    page_statuses,
+                    debug_id=trace_id,
+                    active_detail=f"Marking {len(job_ids)} job(s) as processing...",
+                ),
             )
             storage_timeout_seconds = _env_int("BOT_STORAGE_OPERATION_TIMEOUT_SECONDS", 45, minimum=5)
             await asyncio.wait_for(
@@ -3360,7 +3474,7 @@ class TelegramBotApp:
                 progress_message_id = await self.edit_or_send_message(
                     chat_id,
                     progress_message_id,
-                    progress_card("Batch posting...", 0, total_units, f"Debug ID: {trace_id}\n{detail}"),
+                    posting_live_status_card("Batch posting...", jobs, page_statuses, debug_id=trace_id, active_detail=detail),
                 )
 
             lock_acquired = await self.wait_for_account_slot(account_id, lock_owner, chat_id, lock_progress, trace_id=trace_id)
@@ -3368,7 +3482,7 @@ class TelegramBotApp:
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Batch posting...", 1, total_units, f"Debug ID: {trace_id}\nAccount slot acquired."),
+                posting_live_status_card("Batch posting...", jobs, page_statuses, debug_id=trace_id, active_detail="Account slot acquired."),
             )
             heartbeat_task = asyncio.create_task(self.account_lock_heartbeat(account_id, lock_owner))
             self.debug_event("batch_post_cookie_load_start", trace_id, batch_id=batch_id, account_id=account_id)
@@ -3377,7 +3491,13 @@ class TelegramBotApp:
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Batch posting...", 2, total_units, f"Debug ID: {trace_id}\nCookie loaded. Posting cached pages..."),
+                posting_live_status_card(
+                    "Batch posting...",
+                    jobs,
+                    page_statuses,
+                    debug_id=trace_id,
+                    active_detail="Cookie loaded. Posting cached pages...",
+                ),
             )
             posts = [
                 self.engine_post_payload(
@@ -3395,15 +3515,80 @@ class TelegramBotApp:
 
             cookie_session_attempted = True
             progress_markup = await self.dashboard_reply_markup(user_id)
-            progress_callback = self.browser_progress_callback(
-                chat_id,
-                progress_message_id,
-                user_id,
-                "Batch posting...",
-                len(posts),
-                progress_markup,
-                base_done=2,
-            )
+            progress_lock = asyncio.Lock()
+            last_progress_edit_at = 0.0
+            last_progress_text = ""
+            min_progress_edit_seconds = _env_float("BOT_PROGRESS_EDIT_MIN_SECONDS", 1.5, minimum=0.5)
+
+            def status_key_for_event(event: Dict[str, Any]) -> str:
+                raw_job_id = str(event.get("job_id") or "").strip()
+                if raw_job_id in page_statuses:
+                    return raw_job_id
+                try:
+                    event_index = int(event.get("index"))
+                except Exception:
+                    event_index = -1
+                if 0 <= event_index < len(jobs):
+                    return str(jobs[event_index].get("job_id") or "")
+                event_page = str(event.get("page") or "").strip().lower()
+                for job in jobs:
+                    page_name = str(job.get("page_name") or "").strip().lower()
+                    page_id_or_url = str(job.get("page_id_or_url") or "").strip().lower()
+                    if event_page and event_page in {page_name, page_id_or_url}:
+                        return str(job.get("job_id") or "")
+                return ""
+
+            async def progress_callback(event: Dict[str, Any]) -> None:
+                nonlocal progress_message_id, last_progress_edit_at, last_progress_text
+                key = status_key_for_event(event)
+                if key:
+                    completed = bool(event.get("completed"))
+                    success = bool(event.get("success"))
+                    stage = str(event.get("stage") or "").strip()
+                    detail = str(event.get("detail") or event.get("result") or event.get("status") or event.get("error") or "").strip()
+                    if completed:
+                        status = "success" if success else "failed"
+                        stage = "Done" if success else "Failed"
+                    else:
+                        status = "running"
+                        stage = stage or "Working"
+                    if detail and not completed:
+                        stage = f"{stage}: {compact_text(detail, 52)}"
+                    elif detail and completed and not success:
+                        stage = f"{stage}: {compact_text(detail, 52)}"
+                    page_statuses[key] = {"status": status, "stage": stage}
+
+                done = sum(1 for state in page_statuses.values() if str(state.get("status") or "") in {"success", "failed", "skipped"})
+                total = max(1, len(jobs))
+                active_page = compact_text(event.get("page") or "", 42)
+                active_stage = compact_text(event.get("stage") or "Posting pages...", 90)
+                active_detail = f"{active_page}: {active_stage}" if active_page else active_stage
+                text = posting_live_status_card(
+                    "Batch posting...",
+                    jobs,
+                    page_statuses,
+                    debug_id=trace_id,
+                    active_detail=f"{active_detail} ({done}/{total})",
+                )
+                now = time.monotonic()
+                if not bool(event.get("completed")) and text == last_progress_text:
+                    return
+                if not bool(event.get("completed")) and now - last_progress_edit_at < min_progress_edit_seconds:
+                    return
+                async with progress_lock:
+                    now = time.monotonic()
+                    if not bool(event.get("completed")) and text == last_progress_text:
+                        return
+                    if not bool(event.get("completed")) and now - last_progress_edit_at < min_progress_edit_seconds:
+                        return
+                    progress_message_id = await self.edit_or_send_message(
+                        chat_id,
+                        progress_message_id,
+                        text,
+                        reply_markup=progress_markup if bool(event.get("completed")) else None,
+                    )
+                    last_progress_text = text
+                    last_progress_edit_at = now
             engine_timeout = _env_int(
                 "BOT_BATCH_POSTING_ENGINE_TIMEOUT_SECONDS",
                 max(300, len(posts) * 300),
@@ -3416,11 +3601,12 @@ class TelegramBotApp:
                 progress_message_id = await self.edit_or_send_message(
                     chat_id,
                     progress_message_id,
-                    progress_card(
+                    posting_live_status_card(
                         "Batch posting...",
-                        2,
-                        total_units,
-                        f"Debug ID: {trace_id}\nBrowser batch posting is still running... {elapsed}s elapsed. Waiting for Facebook result.",
+                        jobs,
+                        page_statuses,
+                        debug_id=trace_id,
+                        active_detail=f"Browser still running... {elapsed}s elapsed. Waiting for Facebook result.",
                     ),
                 )
 
@@ -3438,16 +3624,35 @@ class TelegramBotApp:
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Batch posting...", total_units, total_units, f"Debug ID: {trace_id}\nFacebook returned batch results."),
+                posting_live_status_card(
+                    "Batch posting...",
+                    jobs,
+                    page_statuses,
+                    debug_id=trace_id,
+                    active_detail="Facebook returned batch results.",
+                ),
             )
             success_count = 0
             completions: List[Dict[str, Any]] = []
+            result_items: List[Dict[str, Any]] = []
             for index, job in enumerate(jobs):
                 result = results[index] if index < len(results) else {"success": False, "status": "no_result"}
                 success = bool(result.get("success"))
                 if success:
                     success_count += 1
                 error = "" if success else str(result.get("result") or result.get("status") or result.get("error") or "posting failed")
+                page = str(job.get("page_name") or job.get("page_id_or_url") or result.get("page") or "Unknown page")
+                page_statuses[str(job["job_id"])] = {
+                    "status": "success" if success else "failed",
+                    "stage": "Done" if success else "Failed",
+                }
+                result_items.append(
+                    {
+                        "page": page,
+                        "success": success,
+                        "result": result.get("result") or result.get("status") or result.get("error") or error,
+                    }
+                )
                 completions.append(
                     {
                         "job_id": str(job["job_id"]),
@@ -3461,7 +3666,7 @@ class TelegramBotApp:
                     trace_id,
                     batch_id=batch_id,
                     job_id=str(job["job_id"]),
-                    page=job.get("page_name") or job.get("page_id_or_url"),
+                    page=page,
                     success=success,
                     error=error[:300],
                 )
@@ -3469,7 +3674,7 @@ class TelegramBotApp:
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Batch posting...", total_units, total_units, f"Debug ID: {trace_id}\nCompleted: {success_count}/{len(jobs)} succeeded."),
+                posting_result_card(result_items, debug_id=trace_id),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             self.debug_event("batch_post_complete", trace_id, batch_id=batch_id, success_count=success_count, total=len(jobs))
@@ -3490,10 +3695,22 @@ class TelegramBotApp:
                     ],
                 )
             if progress_message_id:
+                failed_results = [
+                    {
+                        "page": job.get("page_name") or job.get("page_id_or_url") or "Unknown page",
+                        "success": False,
+                        "result": compact_error(exc),
+                    }
+                    for job in jobs
+                ]
                 await self.edit_or_send_message(
                     chat_id,
                     progress_message_id,
-                    "\n".join([progress_card("Batch posting...", total_units, total_units, "Batch posting failed."), "", f"Debug ID: {trace_id}", compact_error(exc)]),
+                    posting_result_card(
+                        failed_results,
+                        title=f"Posting complete: 0/{len(jobs)} succeeded",
+                        debug_id=trace_id,
+                    ),
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
             else:
