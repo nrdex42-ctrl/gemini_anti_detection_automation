@@ -6,50 +6,86 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 
+BUTTON_ADD_ACCOUNT = "➕ Add Facebook Account"
+BUTTON_POST_ACTIVE = "⚡ Post With Active Account"
+BUTTON_QUICK_TEXT = "📝 Quick Text Post"
+BUTTON_QUICK_IMAGE = "📸 Quick Image Post"
+BUTTON_QUICK_VIDEO = "🎬 Quick Video Post"
+BUTTON_POST_ALL_PAGES = "📋 Post to All Pages"
+BUTTON_SWITCH_ACCOUNT = "🔁 Switch Active Account"
+BUTTON_SELECT_ACCOUNT = "📱 Select Account & Post"
+BUTTON_MY_ACCOUNTS = "👤 My Accounts"
+BUTTON_CHECK_COOKIES = "🧪 Check All Cookies"
+BUTTON_POST_HISTORY = "📊 Post History"
+BUTTON_STATUS = "📊 Bot Status"
+BUTTON_BACK = "⬅️ Back to Dashboard"
 BUTTON_DASHBOARD = "🏠 Dashboard"
-BUTTON_ADD_ACCOUNT = "➕ Add Account"
-BUTTON_ACCOUNTS = "👥 Accounts"
 BUTTON_DISCOVER_PAGES = "🔎 Discover Pages"
 BUTTON_LIST_PAGES = "📄 Stored Pages"
-BUTTON_TEXT_POST = "📝 Text Post"
-BUTTON_IMAGE_POST = "🖼 Image Post"
-BUTTON_VIDEO_POST = "🎬 Video Post"
-BUTTON_STATUS = "📊 Status"
 BUTTON_CANCEL = "❌ Cancel"
 
 DASHBOARD_ACTIONS = {
     BUTTON_DASHBOARD: "dashboard",
+    BUTTON_BACK: "dashboard",
     "Dashboard": "dashboard",
     "menu": "dashboard",
     "Menu": "dashboard",
     "/dashboard": "dashboard",
     BUTTON_ADD_ACCOUNT: "add_account",
-    BUTTON_ACCOUNTS: "accounts",
+    BUTTON_POST_ACTIVE: "post_active",
+    BUTTON_QUICK_TEXT: "quick_text",
+    BUTTON_QUICK_IMAGE: "quick_image",
+    BUTTON_QUICK_VIDEO: "quick_video",
+    BUTTON_POST_ALL_PAGES: "post_all_pages",
+    BUTTON_SWITCH_ACCOUNT: "switch_account",
+    BUTTON_SELECT_ACCOUNT: "select_account",
+    BUTTON_MY_ACCOUNTS: "manage_accounts",
+    BUTTON_CHECK_COOKIES: "check_cookies",
+    BUTTON_POST_HISTORY: "post_history",
+    BUTTON_STATUS: "status",
     BUTTON_DISCOVER_PAGES: "discover_pages",
     BUTTON_LIST_PAGES: "list_pages",
-    BUTTON_TEXT_POST: "post_text",
-    BUTTON_IMAGE_POST: "post_image",
-    BUTTON_VIDEO_POST: "post_video",
-    BUTTON_STATUS: "status",
     BUTTON_CANCEL: "cancel",
     "/cancel": "cancel",
+    # Backward-compatible labels from the first lightweight dashboard.
+    "➕ Add Account": "add_account",
+    "👥 Accounts": "manage_accounts",
+    "📝 Text Post": "quick_text",
+    "🖼 Image Post": "quick_image",
+    "🎬 Video Post": "quick_video",
 }
 
 POST_ACTION_TYPES = {
+    "quick_text": "text",
+    "quick_image": "image",
+    "quick_video": "video",
     "post_text": "text",
     "post_image": "image",
     "post_video": "video",
 }
+
+POST_TYPE_CHOICES = ("Text", "Image", "Video")
 
 
 def dashboard_action(text: str) -> str:
     return DASHBOARD_ACTIONS.get((text or "").strip(), "")
 
 
+def parse_post_type_choice(text: str) -> str:
+    normalized = (text or "").strip().lower()
+    if "image" in normalized or "photo" in normalized:
+        return "image"
+    if "video" in normalized:
+        return "video"
+    if "text" in normalized or "caption" in normalized:
+        return "text"
+    return ""
+
+
 def reply_keyboard(
     rows: List[List[str]],
     *,
-    placeholder: str = "Choose an action",
+    placeholder: str = "Choose a dashboard action...",
     persistent: bool = True,
 ) -> Dict[str, Any]:
     return {
@@ -61,24 +97,44 @@ def reply_keyboard(
     }
 
 
-def dashboard_markup(*, has_accounts: bool = False, active_jobs: int = 0) -> Dict[str, Any]:
-    rows = [
-        [BUTTON_TEXT_POST, BUTTON_IMAGE_POST],
-        [BUTTON_VIDEO_POST, BUTTON_DISCOVER_PAGES],
-        [BUTTON_ADD_ACCOUNT, BUTTON_ACCOUNTS],
-        [BUTTON_LIST_PAGES, BUTTON_STATUS],
-        [BUTTON_DASHBOARD],
-    ]
-    if not has_accounts:
-        rows = [
-            [BUTTON_ADD_ACCOUNT, BUTTON_ACCOUNTS],
-            [BUTTON_STATUS, BUTTON_DASHBOARD],
-        ]
-    return reply_keyboard(rows, placeholder="Dashboard panel")
+def dashboard_markup(
+    *,
+    has_accounts: bool = False,
+    active_account: str = "",
+    active_jobs: int = 0,
+    posting_blocked: bool = False,
+    is_admin: bool = False,
+) -> Dict[str, Any]:
+    rows: List[List[str]] = []
+
+    if active_jobs:
+        rows.append(["⏳ Posting in progress..."])
+
+    if posting_blocked and has_accounts and active_account:
+        rows.append(["⏳ Posting cooldown active"])
+        rows.append([BUTTON_SWITCH_ACCOUNT, BUTTON_ADD_ACCOUNT])
+    elif not has_accounts:
+        rows.append([BUTTON_ADD_ACCOUNT])
+    elif active_account:
+        rows.append([BUTTON_POST_ACTIVE, BUTTON_SWITCH_ACCOUNT])
+        rows.append([BUTTON_QUICK_TEXT, BUTTON_QUICK_IMAGE])
+        rows.append([BUTTON_QUICK_VIDEO, BUTTON_POST_ALL_PAGES])
+    else:
+        rows.append([BUTTON_SELECT_ACCOUNT, BUTTON_ADD_ACCOUNT])
+
+    if has_accounts:
+        rows.append([BUTTON_MY_ACCOUNTS, BUTTON_ADD_ACCOUNT])
+        rows.append([BUTTON_CHECK_COOKIES, BUTTON_POST_HISTORY])
+        rows.append([BUTTON_DISCOVER_PAGES, BUTTON_LIST_PAGES])
+
+    rows.append([BUTTON_STATUS, BUTTON_DASHBOARD])
+    if is_admin:
+        rows.append(["🔒 Admin Dashboard"])
+    return reply_keyboard(rows)
 
 
 def cancel_markup() -> Dict[str, Any]:
-    return reply_keyboard([[BUTTON_DASHBOARD, BUTTON_CANCEL]], placeholder="Send the requested value")
+    return reply_keyboard([[BUTTON_BACK, BUTTON_CANCEL]], placeholder="Send the requested value")
 
 
 def choices_markup(choices: Iterable[str], *, placeholder: str = "Choose or type a value") -> Dict[str, Any]:
@@ -94,28 +150,33 @@ def choices_markup(choices: Iterable[str], *, placeholder: str = "Choose or type
             row = []
     if row:
         rows.append(row)
-    rows.append([BUTTON_DASHBOARD, BUTTON_CANCEL])
+    rows.append([BUTTON_BACK, BUTTON_CANCEL])
     return reply_keyboard(rows, placeholder=placeholder, persistent=False)
 
 
-def account_choice_label(account: Dict[str, Any]) -> str:
+def account_choice_label(account: Dict[str, Any], active_account: str = "") -> str:
     account_id = str(account.get("account_id") or "").strip()
     label = str(account.get("label") or "").strip()
     status = "active" if account.get("active") else "inactive"
+    marker = "✅" if active_account and account_id == active_account else "👤"
     if label and label != account_id:
-        return f"{account_id} | {label} | {status}"
-    return f"{account_id} | {status}"
+        return f"{marker} {account_id} | {label} | {status}"
+    return f"{marker} {account_id} | {status}"
 
 
 def parse_choice_id(text: str) -> str:
-    return (text or "").split("|", 1)[0].strip()
+    value = (text or "").strip()
+    for marker in ("✅ ", "👤 "):
+        if value.startswith(marker):
+            value = value[len(marker):].strip()
+    return value.split("|", 1)[0].strip()
 
 
 def page_choice_label(page: Dict[str, Any]) -> str:
     page_id = str(page.get("page_id") or "").strip()
     page_url = str(page.get("page_url") or "").strip()
     page_name = str(page.get("page_name") or page_id or page_url).strip()
-    identity = page_id or page_url
+    identity = page_url or page_id
     if page_name and page_name != identity:
         return f"{identity} | {page_name[:48]}"
     return identity
@@ -136,10 +197,19 @@ def _format_dt(value: Any) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
+def _account_health_icon(account: Dict[str, Any], active_account: str) -> str:
+    if str(account.get("account_id") or "") == active_account:
+        return "🟢"
+    if account.get("active"):
+        return "🟡"
+    return "🔴"
+
+
 def dashboard_text(
     *,
     accounts: List[Dict[str, Any]],
     summary: Optional[Dict[str, Any]] = None,
+    active_account: str = "",
     prefix: str = "",
 ) -> str:
     summary = summary or {}
@@ -147,66 +217,81 @@ def dashboard_text(
     active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
     locked_accounts = summary.get("locked_accounts") or []
     recent_jobs = summary.get("recent_jobs") or []
+    page_counts = summary.get("page_counts_by_account") or {}
 
     lines: List[str] = []
     if prefix:
         lines.extend([prefix, ""])
+
+    active_text = active_account or "not selected"
     lines.extend(
         [
-            "🎛 Smart Bot Dashboard",
+            "🎛️ Smart Dashboard",
             "━━━━━━━━━━━━━━━━━━",
-            f"Accounts: {len(accounts)} total, {sum(1 for item in accounts if item.get('active'))} active",
+            f"Accounts: {len(accounts)} total",
+            f"Active account: {active_text}",
             f"Stored pages: {int(summary.get('page_count') or 0)}",
             f"Jobs: {active_jobs} active, {int(status_counts.get('success', 0))} success, {int(status_counts.get('failed', 0))} failed",
         ]
     )
 
+    if not accounts:
+        lines.extend(["", "No accounts yet. Tap Add Facebook Account and paste a raw cookie string or JSON export."])
+    elif not active_account:
+        lines.extend(["", "No active account selected. Tap Select Account & Post or Switch Active Account."])
+    else:
+        lines.extend(["", "Available accounts:"])
+        for account in accounts[:6]:
+            account_id = str(account.get("account_id") or "")
+            icon = _account_health_icon(account, active_account)
+            pages = int(page_counts.get(account_id, 0))
+            lines.append(f"{icon} {account_id} | pages: {pages}")
+        if len(accounts) > 6:
+            lines.append(f"... {len(accounts) - 6} more")
+
     if locked_accounts:
         lines.append("")
-        lines.append("Account isolation:")
+        lines.append("Session safety:")
         for item in locked_accounts[:4]:
             lines.append(f"- {item.get('account_id')}: locked until {_format_dt(item.get('locked_until'))}")
 
-    lines.append("")
-    if accounts:
-        lines.append("Accounts:")
-        for item in accounts[:6]:
-            status = "active" if item.get("active") else "inactive"
-            lines.append(f"- {item.get('account_id')} ({status})")
-        if len(accounts) > 6:
-            lines.append(f"- ... {len(accounts) - 6} more")
-    else:
-        lines.append("No accounts yet. Use Add Account to start.")
-
     if recent_jobs:
         lines.append("")
-        lines.append("Recent jobs:")
+        lines.append("Recent posts:")
         for job in recent_jobs[:5]:
             lines.append(
                 f"- {job.get('status')} {job.get('post_type')} -> {str(job.get('page_id_or_url') or '')[:36]}"
             )
 
-    lines.extend(["", "Use the panel buttons below. You can still use slash commands anytime."])
+    lines.extend(["", "Use the keyboard buttons below. Slash commands still work."])
     return "\n".join(lines)
 
 
 def prompt_text(action: str, step: str = "") -> str:
     if action == "add_account":
         return (
-            "Send the account cookie in one message.\n\n"
+            "Send Facebook session cookies.\n\n"
             "Accepted formats:\n"
-            "- auto <raw_cookie>\n"
-            "- <account_id> <raw_cookie>\n"
-            "- <raw_cookie>  (account id will be read from c_user)"
+            "1. Raw cookie string in one message.\n"
+            "2. Exported JSON file or JSON text.\n"
+            "3. Long JSON across multiple messages, then /done."
         )
     if step == "account":
-        return "Choose an account from the panel or type its account_id."
+        return "Choose an account from the keyboard or type its account_id."
+    if step == "post_type":
+        return "Choose the post type."
     if step == "page":
-        return "Choose a stored page from the panel or type a page id / full page URL."
+        return "Choose a stored page or type a page id / full page URL."
     if step == "caption":
         return "Send the post caption/text."
+    if step == "caption_all":
+        return "Send the caption/text to post to every stored page for this account."
     if step == "media_image":
         return "Attach or reply with the image now. The media caption will be used as the post caption."
     if step == "media_video":
         return "Attach or reply with the video now. The media caption will be used as the post caption."
+    if step == "media_image_all":
+        return "Attach or reply with the image to post to every stored page. The media caption will be used as the caption."
+    if step == "media_video_all":
+        return "Attach or reply with the video to post to every stored page. The media caption will be used as the caption."
     return "Send the requested value."

@@ -30,6 +30,14 @@ create table if not exists fb_account_runtime (
     updated_at timestamptz not null default now()
 );
 
+create table if not exists telegram_user_state (
+    telegram_user_id bigint primary key,
+    active_account_id text references fb_accounts(account_id) on delete set null,
+    lang text not null default 'en',
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
 create table if not exists fb_post_jobs (
     id uuid primary key default gen_random_uuid(),
     telegram_chat_id bigint,
@@ -51,5 +59,6 @@ create table if not exists fb_post_jobs (
 create index if not exists idx_fb_accounts_active on fb_accounts(active);
 create index if not exists idx_fb_pages_account_id on fb_pages(account_id);
 create index if not exists idx_fb_account_runtime_locked_until on fb_account_runtime(locked_until);
+create index if not exists idx_telegram_user_state_active_account on telegram_user_state(active_account_id);
 create index if not exists idx_fb_post_jobs_account_status on fb_post_jobs(account_id, status);
 create index if not exists idx_fb_post_jobs_created_at on fb_post_jobs(created_at desc);

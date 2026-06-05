@@ -59,24 +59,38 @@ For image/video posts, attach the media to the Telegram message or reply to a me
 
 ## Dashboard Panel
 
-The bot now sends a persistent Telegram reply keyboard in the typing area. The panel supports:
+The bot sends a persistent Telegram reply keyboard in the typing area. The dashboard mirrors the older bot flow with an active account model:
 
-- Add Account
-- Accounts
+- Add Facebook Account
+- Post With Active Account
+- Quick Text Post
+- Quick Image Post
+- Quick Video Post
+- Post to All Pages
+- Switch Active Account
+- Select Account & Post
+- My Accounts
+- Check All Cookies
+- Post History
 - Discover Pages
 - Stored Pages
-- Text Post
-- Image Post
-- Video Post
-- Status
-- Dashboard
-- Cancel
+- Bot Status
 
-The posting buttons use guided steps:
+Cookie ingestion accepts:
 
-1. Choose or type the account id.
+- Raw cookie strings.
+- JSON cookie arrays.
+- `{ "cookies": [...] }` browser-export payloads.
+- Uploaded JSON files.
+- Long JSON pasted across multiple messages, finished with `/done`.
+
+The quick-post buttons use guided steps:
+
+1. Use the active account, or choose/switch an account first.
 2. Choose a stored page or type a page id/full URL.
 3. Send text, image, or video depending on the selected post type.
+
+`Post to All Pages` queues one batch for all stored pages of the active account and uses one isolated account session for that batch.
 
 Slash commands remain available for direct automation and testing.
 

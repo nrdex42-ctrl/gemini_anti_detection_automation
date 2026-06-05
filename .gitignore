@@ -28,6 +28,7 @@ session_states.json
 artifacts/
 diagnostics/
 logs/
+old/
 *.log
 
 # Browser/runtime caches

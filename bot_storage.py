@@ -87,6 +87,59 @@ class BotStorage:
                 )
             conn.commit()
 
+    def set_active_account(self, telegram_user_id: int, account_id: str) -> None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into telegram_user_state (telegram_user_id, active_account_id, updated_at)
+                    values (%s, %s, now())
+                    on conflict (telegram_user_id) do update set
+                        active_account_id = excluded.active_account_id,
+                        updated_at = now()
+                    """,
+                    (int(telegram_user_id), account_id),
+                )
+            conn.commit()
+
+    def get_active_account(self, telegram_user_id: int) -> str:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select s.active_account_id
+                    from telegram_user_state s
+                    join fb_accounts a on a.account_id = s.active_account_id
+                    where s.telegram_user_id=%s and a.active=true
+                    """,
+                    (int(telegram_user_id),),
+                )
+                row = cur.fetchone()
+        return str((row or {}).get("active_account_id") or "")
+
+    def clear_active_account(self, telegram_user_id: int, account_id: str = "") -> None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                if account_id:
+                    cur.execute(
+                        """
+                        update telegram_user_state
+                        set active_account_id=null, updated_at=now()
+                        where telegram_user_id=%s and active_account_id=%s
+                        """,
+                        (int(telegram_user_id), account_id),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        update telegram_user_state
+                        set active_account_id=null, updated_at=now()
+                        where telegram_user_id=%s
+                        """,
+                        (int(telegram_user_id),),
+                    )
+            conn.commit()
+
     def deactivate_account(self, account_id: str) -> bool:
         with self.connect() as conn:
             with conn.cursor() as cur:
@@ -106,6 +159,15 @@ class BotStorage:
                     """
                 )
                 return list(cur.fetchall())
+
+    def account_exists(self, account_id: str, active_only: bool = True) -> bool:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                if active_only:
+                    cur.execute("select 1 from fb_accounts where account_id=%s and active=true", (account_id,))
+                else:
+                    cur.execute("select 1 from fb_accounts where account_id=%s", (account_id,))
+                return cur.fetchone() is not None
 
     def get_account_cookie(self, account_id: str) -> str:
         with self.connect() as conn:
@@ -165,6 +227,18 @@ class BotStorage:
 
                 cur.execute(
                     """
+                    select account_id, count(*)::int as count
+                    from fb_pages
+                    group by account_id
+                    """
+                )
+                page_counts_by_account = {
+                    str(row["account_id"]): int(row["count"])
+                    for row in cur.fetchall()
+                }
+
+                cur.execute(
+                    """
                     select status, count(*)::int as count
                     from fb_post_jobs
                     group by status
@@ -195,6 +269,7 @@ class BotStorage:
 
         return {
             "page_count": int(page_row.get("page_count") or 0),
+            "page_counts_by_account": page_counts_by_account,
             "job_status_counts": status_counts,
             "locked_accounts": locked_accounts,
             "recent_jobs": recent_jobs,
