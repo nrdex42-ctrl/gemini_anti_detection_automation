@@ -49,6 +49,12 @@ services:
         value: "1800"
       - key: BOT_PROGRESS_EDIT_MIN_SECONDS
         value: "1.5"
+      - key: BOT_PROGRESS_HEARTBEAT_SECONDS
+        value: "8"
+      - key: BOT_TELEGRAM_API_TIMEOUT_SECONDS
+        value: "30"
+      - key: BOT_PAGE_DISCOVERY_TIMEOUT_SECONDS
+        value: "150"
       - key: POST_COOKIE_MIN_INTERVAL_SECONDS
         value: "360"
       - key: POST_COOKIE_SESSION_LOCK_ENABLED

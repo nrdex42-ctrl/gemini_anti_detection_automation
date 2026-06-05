@@ -12,6 +12,7 @@ import os
 import re
 import time
 import uuid
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -73,6 +74,13 @@ def cookie_validation_summary(session_ok: bool, detail: str, max_length: int = 1
     detail_lower = compact_detail.lower()
     icon = "🟡" if "inconclusive" in detail_lower or "skipped" in detail_lower else "🔴"
     return icon, compact_detail[:max_length] or "Facebook session is not valid"
+
+
+def compact_error(exc: BaseException, max_length: int = 700) -> str:
+    detail = " ".join(str(exc or "").split())
+    if not detail:
+        detail = exc.__class__.__name__
+    return detail[:max_length]
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -194,7 +202,8 @@ class TelegramBotApp:
     async def telegram_api(self, method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if self.session is None:
             raise RuntimeError("HTTP session is not ready")
-        async with self.session.post(f"{self.api_base}/{method}", json=payload, timeout=60) as resp:
+        timeout_seconds = _env_int("BOT_TELEGRAM_API_TIMEOUT_SECONDS", 30, minimum=5)
+        async with self.session.post(f"{self.api_base}/{method}", json=payload, timeout=timeout_seconds) as resp:
             data = await resp.json(content_type=None)
             if not data.get("ok"):
                 logger.warning("Telegram API %s failed: %s", method, data)
@@ -333,6 +342,32 @@ class TelegramBotApp:
         if parse_mode:
             payload["parse_mode"] = parse_mode
         await self.telegram_api("editMessageText", payload)
+
+    async def try_edit_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        reply_markup: Optional[Dict[str, Any]] = None,
+        parse_mode: str = "",
+        timeout_seconds: int = 12,
+    ) -> bool:
+        try:
+            await asyncio.wait_for(
+                self.edit_message(
+                    chat_id,
+                    message_id,
+                    text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
+                ),
+                timeout=max(3, timeout_seconds),
+            )
+            return True
+        except Exception as exc:
+            logger.warning("Telegram editMessageText failed or timed out: %s", compact_error(exc, 300))
+            return False
 
     def browser_progress_text(self, title: str, event: Dict[str, Any], fallback_total: int, base_done: int = 0) -> str:
         page_total = int(event.get("total") or fallback_total or 1)
@@ -1587,6 +1622,52 @@ class TelegramBotApp:
             await self.queue_reviewed_post(chat_id, user_id, draft)
             return
 
+    def update_chat_context(self, update: Dict[str, Any]) -> Tuple[int, int, int]:
+        if update.get("callback_query"):
+            query = update.get("callback_query") or {}
+            message = query.get("message") or {}
+            chat = message.get("chat") or {}
+            user = query.get("from") or {}
+        else:
+            message = update.get("message") or update.get("edited_message") or {}
+            chat = message.get("chat") or {}
+            user = message.get("from") or {}
+        return (
+            int(chat.get("id") or 0),
+            int(user.get("id") or 0),
+            int(message.get("message_id") or 0),
+        )
+
+    async def handle_update_safe(self, update: Dict[str, Any]) -> None:
+        try:
+            await self.handle_update(update)
+        except Exception as exc:
+            logger.exception("Telegram dashboard update failed")
+            chat_id, user_id, message_id = self.update_chat_context(update)
+            if not chat_id:
+                return
+            if user_id:
+                self.clear_dashboard_session(chat_id, user_id)
+            try:
+                reply_markup = await self.dashboard_reply_markup(user_id)
+            except Exception:
+                reply_markup = dashboard_markup(has_accounts=False)
+            with suppress(Exception):
+                await self.send_message(
+                    chat_id,
+                    "\n".join(
+                        [
+                            "Dashboard action failed.",
+                            "━━━━━━━━━━━━━━━━━━",
+                            compact_error(exc),
+                            "",
+                            "The current flow was reset. Use /start or the dashboard buttons to continue.",
+                        ]
+                    ),
+                    message_id,
+                    reply_markup=reply_markup,
+                )
+
     async def handle_update(self, update: Dict[str, Any]) -> None:
         if update.get("callback_query"):
             await self.handle_callback_query(update)
@@ -1860,44 +1941,105 @@ class TelegramBotApp:
         )
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
         try:
-            await self.edit_message(
+            await self.try_edit_message(
                 chat_id,
                 progress_message_id,
                 progress_card(f"{verb}...", 1, 3, "Opening pages manager..."),
                 reply_markup=cancel_markup(),
             )
-            await self.edit_message(
-                chat_id,
-                progress_message_id,
-                progress_card(f"{verb}...", 2, 3, "Discovering managed pages..."),
-                reply_markup=cancel_markup(),
+            discovery_timeout = _env_int("BOT_PAGE_DISCOVERY_TIMEOUT_SECONDS", 150, minimum=30)
+            heartbeat_seconds = _env_int("BOT_PROGRESS_HEARTBEAT_SECONDS", 8, minimum=2)
+            started = time.monotonic()
+            pages_task = asyncio.create_task(
+                self.discover_pages(account_id, self.account_owner_scope(user_id))
             )
-            pages = await self.discover_pages(account_id, self.account_owner_scope(user_id))
+            tick = 0
+            pages: List[Dict[str, str]] = []
+            while True:
+                remaining = discovery_timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    pages_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await pages_task
+                    raise TimeoutError(
+                        f"Page discovery timed out after {discovery_timeout}s. "
+                        "Facebook or the Render browser worker did not respond in time."
+                    )
+                try:
+                    pages = await asyncio.wait_for(
+                        asyncio.shield(pages_task),
+                        timeout=min(heartbeat_seconds, remaining),
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    tick += 1
+                    elapsed = int(time.monotonic() - started)
+                    detail = (
+                        f"Discovering managed pages... {elapsed}s elapsed. "
+                        "Still waiting for Facebook/browser response."
+                    )
+                    if tick % 3 == 0:
+                        detail += " If this repeats, check Render logs for Playwright launch or Facebook login errors."
+                    await self.try_edit_message(
+                        chat_id,
+                        progress_message_id,
+                        progress_card(f"{verb}...", 2, 3, detail),
+                        reply_markup=cancel_markup(),
+                    )
             if pages:
+                await self.try_edit_message(
+                    chat_id,
+                    progress_message_id,
+                    progress_card(f"{verb}...", 2, 3, f"Saving {len(pages)} discovered page(s) to cache..."),
+                    reply_markup=cancel_markup(),
+                )
                 await asyncio.to_thread(self.storage.upsert_pages, account_id, pages)
             if not pages:
-                await self.edit_message(
+                await self.try_edit_message(
                     chat_id,
                     progress_message_id,
                     progress_card(f"{verb}...", 3, 3, "No managed pages discovered."),
+                    reply_markup=await self.dashboard_reply_markup(user_id),
+                )
+                await self.send_message(
+                    chat_id,
+                    "Dashboard keyboard restored.",
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
                 return
             lines = [f"{'Refreshed' if refresh else 'Discovered'} and cached {len(pages)} page(s):"]
             for index, page in enumerate(pages):
                 lines.append(f"- {page_display_name(page, index)}")
-            await self.edit_message(
+            await self.try_edit_message(
                 chat_id,
                 progress_message_id,
                 "\n".join([progress_card(f"{verb}...", 3, 3, "Pages saved to cache."), "", *lines]),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
+            await self.send_message(
+                chat_id,
+                "Dashboard keyboard restored.",
+                reply_markup=await self.dashboard_reply_markup(user_id),
+            )
         except Exception as exc:
             logger.exception("Page discovery failed")
-            await self.edit_message(
+            await self.try_edit_message(
                 chat_id,
                 progress_message_id,
-                f"Page discovery failed: {exc}",
+                "\n".join(
+                    [
+                        progress_card(f"{verb}...", 3, 3, "Page discovery failed."),
+                        "",
+                        compact_error(exc),
+                        "",
+                        "Use /start to refresh the dashboard, or try Stored Pages if pages were already cached.",
+                    ]
+                ),
+                reply_markup=await self.dashboard_reply_markup(user_id),
+            )
+            await self.send_message(
+                chat_id,
+                "Dashboard keyboard restored.",
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
 
@@ -2425,7 +2567,7 @@ class TelegramBotApp:
             update = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"ok": False, "error": "invalid_json"}, status=400)
-        asyncio.create_task(self.handle_update(update))
+        asyncio.create_task(self.handle_update_safe(update))
         return web.json_response({"ok": True})
 
 
