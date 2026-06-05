@@ -188,6 +188,24 @@ def _placeholder(value: str) -> bool:
     )
 
 
+class HealthzAccessLogFilter(logging.Filter):
+    """Suppress noisy Render health-check access log lines while keeping other access logs."""
+
+    _healthz_pattern = re.compile(r'"(?:GET|HEAD) /healthz(?:\?[^ ]*)? HTTP/')
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not self._healthz_pattern.search(record.getMessage())
+
+
+def configure_access_log_filters() -> None:
+    if not _env_bool("SUPPRESS_HEALTHZ_ACCESS_LOGS", True):
+        return
+    access_logger = logging.getLogger("aiohttp.access")
+    if any(isinstance(item, HealthzAccessLogFilter) for item in access_logger.filters):
+        return
+    access_logger.addFilter(HealthzAccessLogFilter())
+
+
 def telegram_safe_webhook_secret(secret: str) -> str:
     raw = (secret or "").strip()
     if re.fullmatch(r"[A-Za-z0-9_-]{1,256}", raw):
@@ -3552,6 +3570,7 @@ def create_app() -> web.Application:
         level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    configure_access_log_filters()
     bot = TelegramBotApp()
     app = web.Application(client_max_size=int(os.getenv("AIOHTTP_CLIENT_MAX_SIZE", str(32 * 1024 * 1024))))
     app["bot"] = bot

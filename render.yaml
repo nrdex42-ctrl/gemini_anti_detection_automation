@@ -17,6 +17,8 @@ services:
         value: "1"
       - key: LOG_LEVEL
         value: INFO
+      - key: SUPPRESS_HEALTHZ_ACCESS_LOGS
+        value: "true"
       - key: PLAYWRIGHT_BROWSERS_PATH
         value: .playwright
       - key: HEADLESS
