@@ -415,8 +415,12 @@ def post_review_card(
     caption: str,
     media_path: str = "",
     multi_media_count: int = 0,
+    multi_caption_count: int = 0,
 ) -> str:
-    caption_value = _short(caption, 700) if caption else "(none)"
+    if multi_caption_count and not caption:
+        caption_value = f"{multi_caption_count} attached (one per page)"
+    else:
+        caption_value = _short(caption, 700) if caption else "(none)"
     media_value = f"{multi_media_count} attached (one per page)" if multi_media_count else ("attached" if media_path else "(none)")
     lines = [
         "🧾 Review Post",

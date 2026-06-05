@@ -1481,6 +1481,7 @@ class TelegramBotApp:
         account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
         account_name = account_display_name(account or {}, account_id)
         selected_pages = self.selected_pages_from_session(session)
+        multi_captions = session.get("multi_captions") if isinstance(session.get("multi_captions"), list) else []
         text = post_review_card(
             account_name=account_name,
             pages=selected_pages,
@@ -1488,6 +1489,7 @@ class TelegramBotApp:
             caption=str(session.get("caption") or ""),
             media_path=str(session.get("media_path") or ""),
             multi_media_count=len(session.get("multi_media_paths") or []) if isinstance(session.get("multi_media_paths"), list) else 0,
+            multi_caption_count=sum(1 for item in multi_captions if str(item or "").strip()),
         )
         session["step"] = "review"
         self.set_dashboard_session(chat_id, user_id, session)
@@ -1513,6 +1515,7 @@ class TelegramBotApp:
             return
         multi_media_paths = session.get("multi_media_paths") if isinstance(session.get("multi_media_paths"), list) else []
         if multi_media_paths:
+            multi_captions = session.get("multi_captions") if isinstance(session.get("multi_captions"), list) else []
             await self.queue_paired_post_jobs_or_report(
                 chat_id,
                 user_id,
@@ -1521,6 +1524,7 @@ class TelegramBotApp:
                 post_type,
                 caption,
                 [str(path) for path in multi_media_paths],
+                captions=[str(item or "") for item in multi_captions],
                 progress_message_id=progress_message_id,
             )
             return
@@ -2089,6 +2093,7 @@ class TelegramBotApp:
 
         if action == "post" and step == "caption_edit":
             session["caption"] = "" if text == " " else text.strip()
+            session.pop("multi_captions", None)
             self.set_dashboard_session(chat_id, user_id, session)
             await self.show_post_review(chat_id, message_id, user_id, session)
             return True
@@ -2180,9 +2185,12 @@ class TelegramBotApp:
                 return True
             media_path = await self.download_file(file_id, str(session.get("account_id") or ""))
             paths = list(session.get("multi_media_paths") or [])
+            captions = list(session.get("multi_captions") or [])
             paths.append(media_path)
+            captions.append(text.strip())
             session["post_type"] = "video"
             session["multi_media_paths"] = paths
+            session["multi_captions"] = captions
             session["media_path"] = ""
             if len(paths) < len(selected_pages):
                 self.set_dashboard_session(chat_id, user_id, session)
@@ -2193,21 +2201,9 @@ class TelegramBotApp:
                     reply_markup=cancel_markup(),
                 )
                 return True
-            session["step"] = "multi_caption"
+            session["caption"] = ""
             self.set_dashboard_session(chat_id, user_id, session)
-            await self.send_message(
-                chat_id,
-                "\n".join(
-                    [
-                        f"✅ All {len(selected_pages)} videos received.",
-                        "",
-                        "Send one shared caption for all posts.",
-                        "Send a single space to post without caption.",
-                    ]
-                ),
-                message_id,
-                reply_markup=cancel_markup(),
-            )
+            await self.show_post_review(chat_id, message_id, user_id, session)
             return True
 
         if action == "post" and step == "multi_video_url":
@@ -2233,21 +2229,9 @@ class TelegramBotApp:
                     reply_markup=cancel_markup(),
                 )
                 return True
-            session["step"] = "multi_caption"
+            session["caption"] = ""
             self.set_dashboard_session(chat_id, user_id, session)
-            await self.send_message(
-                chat_id,
-                "\n".join(
-                    [
-                        f"✅ All {len(selected_pages)} video URLs received.",
-                        "",
-                        "Send one shared caption for all posts.",
-                        "Send a single space to post without caption.",
-                    ]
-                ),
-                message_id,
-                reply_markup=cancel_markup(),
-            )
+            await self.show_post_review(chat_id, message_id, user_id, session)
             return True
 
         if action == "post" and step == "multi_caption":
@@ -3219,6 +3203,7 @@ class TelegramBotApp:
         post_type: str,
         caption: str,
         media_paths: List[str],
+        captions: Optional[List[str]] = None,
         progress_message_id: int = 0,
     ) -> List[str]:
         if post_type not in POST_TYPES:
@@ -3235,10 +3220,12 @@ class TelegramBotApp:
         started = time.monotonic()
         jobs_to_create: List[Dict[str, Any]] = []
         job_payloads: List[Dict[str, str]] = []
+        per_page_captions = captions if isinstance(captions, list) else []
         for index, page in enumerate(pages):
             page_id_or_url = str(page.get("page_url") or page.get("page_id") or "").strip()
             page_name = page_display_name(page, len(job_payloads))
             media_path = str(media_paths[index] or "").strip()
+            page_caption = str(per_page_captions[index] if index < len(per_page_captions) else caption)
             if not page_id_or_url or not media_path:
                 continue
             jobs_to_create.append(
@@ -3249,7 +3236,7 @@ class TelegramBotApp:
                     "page_id_or_url": page_id_or_url,
                     "page_name": page_name,
                     "post_type": post_type,
-                    "caption": caption,
+                    "caption": page_caption,
                     "media_path": media_path,
                 }
             )
@@ -3259,7 +3246,7 @@ class TelegramBotApp:
                     "page_id_or_url": page_id_or_url,
                     "page_name": page_name,
                     "post_type": post_type,
-                    "caption": caption,
+                    "caption": page_caption,
                     "media_path": media_path,
                 }
             )
@@ -3334,6 +3321,7 @@ class TelegramBotApp:
         post_type: str,
         caption: str,
         media_paths: List[str],
+        captions: Optional[List[str]] = None,
         progress_message_id: int = 0,
     ) -> List[str]:
         try:
@@ -3345,6 +3333,7 @@ class TelegramBotApp:
                 post_type,
                 caption,
                 media_paths,
+                captions=captions,
                 progress_message_id=progress_message_id,
             )
         except Exception as exc:
