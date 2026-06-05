@@ -99,7 +99,7 @@ See `DEPLOYMENT.md` for the Render, Supabase, Telegram webhook, and GitHub push 
 ## Security Notes
 
 - `.gitignore` excludes `.env`, cookies, session state, diagnostics, and artifacts.
-- Set `BOT_ADMIN_IDS` in production so only approved Telegram users can control the bot.
+- Set `BOT_ADMIN_IDS` in production to restrict the Admin Dashboard. Normal user dashboards remain open, with accounts/pages/jobs isolated by Telegram user id.
 - Set `ENCRYPTION_KEY` before storing cookies. If this key changes, previously encrypted cookies cannot be decrypted.
 - Rotate any account cookie that was pasted into logs, chat history, screenshots, or committed files.
 - `BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS` defaults to `360` seconds to avoid overlapping account sessions.

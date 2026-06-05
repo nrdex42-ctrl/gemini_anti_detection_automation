@@ -68,8 +68,10 @@ create table if not exists fb_post_jobs (
 );
 
 create index if not exists idx_fb_accounts_active on fb_accounts(active);
+create index if not exists idx_fb_accounts_created_by on fb_accounts(created_by);
 create index if not exists idx_fb_pages_account_id on fb_pages(account_id);
 create index if not exists idx_fb_account_runtime_locked_until on fb_account_runtime(locked_until);
 create index if not exists idx_telegram_user_state_active_account on telegram_user_state(active_account_id);
 create index if not exists idx_fb_post_jobs_account_status on fb_post_jobs(account_id, status);
+create index if not exists idx_fb_post_jobs_user_status on fb_post_jobs(telegram_user_id, status);
 create index if not exists idx_fb_post_jobs_created_at on fb_post_jobs(created_at desc);

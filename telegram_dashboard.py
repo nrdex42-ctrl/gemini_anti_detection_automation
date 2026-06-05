@@ -323,7 +323,7 @@ def dashboard_text(
                 f"- {job.get('status')} {job.get('post_type')} -> {str(job.get('page_id_or_url') or '')[:36]}"
             )
 
-    lines.extend(["", "Use the keyboard buttons below. Slash commands still work."])
+    lines.extend(["", "Use the keyboard buttons below. /start refreshes this dashboard."])
     return "\n".join(lines)
 
 

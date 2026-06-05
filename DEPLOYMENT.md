@@ -101,6 +101,7 @@ AUTO_SET_TELEGRAM_WEBHOOK=true
 TELEGRAM_DROP_PENDING_UPDATES=false
 DELETE_COOKIE_MESSAGES=true
 BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS=360
+BOT_PROGRESS_EDIT_MIN_SECONDS=1.5
 POST_COOKIE_MIN_INTERVAL_SECONDS=360
 PLAYWRIGHT_BROWSERS_PATH=.playwright
 FACEBOOK_BROWSER_NO_SANDBOX=true
@@ -133,6 +134,8 @@ python scripts/set_telegram_webhook.py
 The dashboard Add Facebook Account button accepts raw cookie headers, JSON cookie arrays, `{cookies:[...]}` exports, uploaded JSON files, and multi-message JSON chunks followed by the `✅ Done` button.
 
 Page discovery is cached in `fb_pages`. Normal posting reads the saved page list and does not rediscover pages before each post. Use the `🔄 Refresh Pages` dashboard button when you want to refresh a selected account's cached pages.
+
+Normal users can use `/start` and the typing-area dashboard. Their accounts, cached pages, and post jobs are scoped to their Telegram user id.
 
 Admins listed in `BOT_ADMIN_IDS` can use `🔒 Admin Dashboard` to view system stats, users, accounts, post stats, active account locks, and runtime config.
 

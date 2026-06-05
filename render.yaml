@@ -47,6 +47,8 @@ services:
         value: "30"
       - key: BOT_DASHBOARD_SESSION_TTL_SECONDS
         value: "1800"
+      - key: BOT_PROGRESS_EDIT_MIN_SECONDS
+        value: "1.5"
       - key: POST_COOKIE_MIN_INTERVAL_SECONDS
         value: "360"
       - key: POST_COOKIE_SESSION_LOCK_ENABLED

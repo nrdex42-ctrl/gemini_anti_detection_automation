@@ -80,11 +80,18 @@ class BotStorage:
                     on conflict (account_id) do update set
                         label = excluded.label,
                         cookie_ciphertext = excluded.cookie_ciphertext,
+                        created_by = coalesce(fb_accounts.created_by, excluded.created_by),
                         active = true,
                         updated_at = now()
+                    where fb_accounts.created_by is null
+                       or fb_accounts.created_by = excluded.created_by
+                       or excluded.created_by is null
+                    returning account_id
                     """,
                     (account_id, label or account_id, encrypted_cookie, created_by or None),
                 )
+                if cur.fetchone() is None:
+                    raise RuntimeError("This Facebook account is already stored by another Telegram user")
             conn.commit()
 
     def set_active_account(self, telegram_user_id: int, account_id: str) -> None:
@@ -121,18 +128,20 @@ class BotStorage:
                 )
             conn.commit()
 
-    def get_active_account(self, telegram_user_id: int) -> str:
+    def get_active_account(self, telegram_user_id: int, owner_id: Optional[int] = None) -> str:
         with self.connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
+                sql = """
                     select s.active_account_id
                     from telegram_user_state s
                     join fb_accounts a on a.account_id = s.active_account_id
                     where s.telegram_user_id=%s and a.active=true
-                    """,
-                    (int(telegram_user_id),),
-                )
+                    """
+                params: List[Any] = [int(telegram_user_id)]
+                if owner_id is not None:
+                    sql += " and a.created_by=%s"
+                    params.append(int(owner_id))
+                cur.execute(sql, params)
                 row = cur.fetchone()
         return str((row or {}).get("active_account_id") or "")
 
@@ -159,56 +168,85 @@ class BotStorage:
                     )
             conn.commit()
 
-    def deactivate_account(self, account_id: str) -> bool:
+    def deactivate_account(self, account_id: str, owner_id: Optional[int] = None) -> bool:
         with self.connect() as conn:
             with conn.cursor() as cur:
-                cur.execute("update fb_accounts set active=false, updated_at=now() where account_id=%s", (account_id,))
+                if owner_id is None:
+                    cur.execute("update fb_accounts set active=false, updated_at=now() where account_id=%s", (account_id,))
+                else:
+                    cur.execute(
+                        """
+                        update fb_accounts
+                        set active=false, updated_at=now()
+                        where account_id=%s and created_by=%s
+                        """,
+                        (account_id, int(owner_id)),
+                    )
                 changed = cur.rowcount > 0
             conn.commit()
         return changed
 
-    def list_accounts(self) -> List[Dict[str, Any]]:
+    def list_accounts(self, owner_id: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    select account_id, label, active, created_at, updated_at
-                    from fb_accounts
-                    order by updated_at desc
-                    """
-                )
+                if owner_id is None:
+                    cur.execute(
+                        """
+                        select account_id, label, active, created_by, created_at, updated_at
+                        from fb_accounts
+                        order by updated_at desc
+                        """
+                    )
+                else:
+                    cur.execute(
+                        """
+                        select account_id, label, active, created_by, created_at, updated_at
+                        from fb_accounts
+                        where created_by=%s
+                        order by updated_at desc
+                        """,
+                        (int(owner_id),),
+                    )
                 return list(cur.fetchall())
 
-    def get_account(self, account_id: str) -> Optional[Dict[str, Any]]:
+    def get_account(self, account_id: str, owner_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
+                sql = """
                     select account_id, label, active, created_by, created_at, updated_at
                     from fb_accounts
                     where account_id=%s
-                    """,
-                    (account_id,),
-                )
+                    """
+                params: List[Any] = [account_id]
+                if owner_id is not None:
+                    sql += " and created_by=%s"
+                    params.append(int(owner_id))
+                cur.execute(sql, params)
                 row = cur.fetchone()
         return dict(row) if row else None
 
-    def account_exists(self, account_id: str, active_only: bool = True) -> bool:
+    def account_exists(self, account_id: str, active_only: bool = True, owner_id: Optional[int] = None) -> bool:
         with self.connect() as conn:
             with conn.cursor() as cur:
+                sql = "select 1 from fb_accounts where account_id=%s"
+                params: List[Any] = [account_id]
                 if active_only:
-                    cur.execute("select 1 from fb_accounts where account_id=%s and active=true", (account_id,))
-                else:
-                    cur.execute("select 1 from fb_accounts where account_id=%s", (account_id,))
+                    sql += " and active=true"
+                if owner_id is not None:
+                    sql += " and created_by=%s"
+                    params.append(int(owner_id))
+                cur.execute(sql, params)
                 return cur.fetchone() is not None
 
-    def get_account_cookie(self, account_id: str) -> str:
+    def get_account_cookie(self, account_id: str, owner_id: Optional[int] = None) -> str:
         with self.connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "select cookie_ciphertext from fb_accounts where account_id=%s and active=true",
-                    (account_id,),
-                )
+                sql = "select cookie_ciphertext from fb_accounts where account_id=%s and active=true"
+                params: List[Any] = [account_id]
+                if owner_id is not None:
+                    sql += " and created_by=%s"
+                    params.append(int(owner_id))
+                cur.execute(sql, params)
                 row = cur.fetchone()
         if not row:
             raise RuntimeError(f"Active account not found: {account_id}")
@@ -238,66 +276,139 @@ class BotStorage:
                     )
             conn.commit()
 
-    def list_pages(self, account_id: str) -> List[Dict[str, Any]]:
+    def list_pages(self, account_id: str, owner_id: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    select page_id, page_name, page_url, updated_at
-                    from fb_pages
-                    where account_id=%s
-                    order by page_name, page_id
-                    """,
-                    (account_id,),
-                )
+                if owner_id is None:
+                    cur.execute(
+                        """
+                        select page_id, page_name, page_url, updated_at
+                        from fb_pages
+                        where account_id=%s
+                        order by page_name, page_id
+                        """,
+                        (account_id,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        select p.page_id, p.page_name, p.page_url, p.updated_at
+                        from fb_pages p
+                        join fb_accounts a on a.account_id = p.account_id
+                        where p.account_id=%s and a.created_by=%s
+                        order by p.page_name, p.page_id
+                        """,
+                        (account_id, int(owner_id)),
+                    )
                 return list(cur.fetchall())
 
-    def dashboard_summary(self) -> Dict[str, Any]:
+    def dashboard_summary(self, owner_id: Optional[int] = None) -> Dict[str, Any]:
         with self.connect() as conn:
             with conn.cursor() as cur:
-                cur.execute("select count(*)::int as page_count from fb_pages")
+                if owner_id is None:
+                    cur.execute("select count(*)::int as page_count from fb_pages")
+                else:
+                    cur.execute(
+                        """
+                        select count(*)::int as page_count
+                        from fb_pages p
+                        join fb_accounts a on a.account_id = p.account_id
+                        where a.created_by=%s
+                        """,
+                        (int(owner_id),),
+                    )
                 page_row = cur.fetchone() or {}
 
-                cur.execute(
-                    """
-                    select account_id, count(*)::int as count
-                    from fb_pages
-                    group by account_id
-                    """
-                )
+                if owner_id is None:
+                    cur.execute(
+                        """
+                        select account_id, count(*)::int as count
+                        from fb_pages
+                        group by account_id
+                        """
+                    )
+                else:
+                    cur.execute(
+                        """
+                        select p.account_id, count(*)::int as count
+                        from fb_pages p
+                        join fb_accounts a on a.account_id = p.account_id
+                        where a.created_by=%s
+                        group by p.account_id
+                        """,
+                        (int(owner_id),),
+                    )
                 page_counts_by_account = {
                     str(row["account_id"]): int(row["count"])
                     for row in cur.fetchall()
                 }
 
-                cur.execute(
-                    """
-                    select status, count(*)::int as count
-                    from fb_post_jobs
-                    group by status
-                    """
-                )
+                if owner_id is None:
+                    cur.execute(
+                        """
+                        select status, count(*)::int as count
+                        from fb_post_jobs
+                        group by status
+                        """
+                    )
+                else:
+                    cur.execute(
+                        """
+                        select status, count(*)::int as count
+                        from fb_post_jobs
+                        where telegram_user_id=%s
+                        group by status
+                        """,
+                        (int(owner_id),),
+                    )
                 status_counts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
 
-                cur.execute(
-                    """
-                    select account_id, last_cookie_used_at, locked_until, locked_by
-                    from fb_account_runtime
-                    where locked_until is not null and locked_until > now()
-                    order by locked_until desc
-                    limit 10
-                    """
-                )
+                if owner_id is None:
+                    cur.execute(
+                        """
+                        select account_id, last_cookie_used_at, locked_until, locked_by
+                        from fb_account_runtime
+                        where locked_until is not null and locked_until > now()
+                        order by locked_until desc
+                        limit 10
+                        """
+                    )
+                else:
+                    cur.execute(
+                        """
+                        select r.account_id, r.last_cookie_used_at, r.locked_until, r.locked_by
+                        from fb_account_runtime r
+                        join fb_accounts a on a.account_id = r.account_id
+                        where r.locked_until is not null
+                          and r.locked_until > now()
+                          and a.created_by=%s
+                        order by r.locked_until desc
+                        limit 10
+                        """,
+                        (int(owner_id),),
+                    )
                 locked_accounts = list(cur.fetchall())
 
-                cur.execute(
-                    """
-                    select id::text, account_id, page_id_or_url, post_type, status, created_at
-                    from fb_post_jobs
-                    order by created_at desc
-                    limit 8
-                    """
-                )
+                if owner_id is None:
+                    cur.execute(
+                        """
+                        select id::text, account_id, page_id_or_url, post_type, status, created_at
+                        from fb_post_jobs
+                        order by created_at desc
+                        limit 8
+                        """
+                    )
+                else:
+                    cur.execute(
+                        """
+                        select id::text, account_id, page_id_or_url, post_type, status, created_at
+                        from fb_post_jobs
+                        where telegram_user_id=%s
+                        order by created_at desc
+                        limit 8
+                        """,
+                        (int(owner_id),),
+                    )
                 recent_jobs = list(cur.fetchall())
 
         return {
