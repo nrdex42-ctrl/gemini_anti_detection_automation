@@ -475,7 +475,11 @@ def dashboard_text(
         lines.append("")
         lines.append("Recent posts:")
         for job in recent_jobs[:5]:
-            target = str(job.get("page_name") or job.get("page_id_or_url") or "")[:36]
+            target = clean_facebook_page_name(
+                job.get("page_name"),
+                str(job.get("page_id_or_url") or ""),
+                str(job.get("page_id_or_url") or ""),
+            )[:36]
             lines.append(
                 f"- {job.get('status')} {job.get('post_type')} -> {target}"
             )

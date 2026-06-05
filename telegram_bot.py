@@ -66,6 +66,15 @@ def progress_card(title: str, done: int, total: int, status: str) -> str:
     return f"{title}\n{progress_bar(done, total)} {done}/{total} ({percent}%)\n{status}"
 
 
+def cookie_validation_summary(session_ok: bool, detail: str, max_length: int = 180) -> Tuple[str, str]:
+    compact_detail = " ".join(str(detail or "").split())
+    if session_ok:
+        return "🟢", "Facebook session is valid"
+    detail_lower = compact_detail.lower()
+    icon = "🟡" if "inconclusive" in detail_lower or "skipped" in detail_lower else "🔴"
+    return icon, compact_detail[:max_length] or "Facebook session is not valid"
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -1685,26 +1694,69 @@ class TelegramBotApp:
             await self.send_message(chat_id, "No accounts stored.", message_id, reply_markup=dashboard_markup(has_accounts=False))
             return
 
+        total = len(accounts)
+        progress = await self.send_message(
+            chat_id,
+            progress_card("Checking all cookies...", 0, total, "Preparing cookie validation..."),
+            message_id,
+            reply_markup=await self.dashboard_reply_markup(user_id),
+        )
+        progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
+
         lines = ["🧪 Cookie Validation Report", "━━━━━━━━━━━━━━━━━━━━━━"]
         valid_count = 0
-        for account in accounts:
+        from playwright_engine import validate_facebook_session
+
+        for index, account in enumerate(accounts, start=1):
             account_id = str(account.get("account_id") or "")
             display = account_display_name(account, account_id)
-            if not account.get("active"):
-                lines.append(f"🔴 {display}: inactive")
-                continue
+            if progress_message_id:
+                await self.edit_message(
+                    chat_id,
+                    progress_message_id,
+                    progress_card("Checking all cookies...", index - 1, total, f"Checking {display}..."),
+                )
             try:
                 cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, self.account_owner_scope(user_id))
                 parsed = parse_account_cookie_payload(cookie_header, account_id)
-                has_session = any(part.startswith("xs=") for part in parsed.cookie_header.split("; "))
-                if has_session:
+                session_ok, detail = await validate_facebook_session(cookies_json(parse_cookies(parsed.cookie_header)))
+                icon, status_text = cookie_validation_summary(session_ok, detail)
+                if session_ok:
                     valid_count += 1
-                    lines.append(f"🟢 {display}: stored cookie shape is usable")
-                else:
-                    lines.append(f"🟡 {display}: c_user found, xs missing")
+                lines.append(f"{icon} {display}: {status_text}")
             except Exception as exc:
                 lines.append(f"🔴 {display}: {str(exc)[:120]}")
-        lines.extend(["━━━━━━━━━━━━━━━━━━━━━━", f"Usable locally: {valid_count}/{len(accounts)}"])
+            if progress_message_id:
+                await self.edit_message(
+                    chat_id,
+                    progress_message_id,
+                    progress_card("Checking all cookies...", index, total, f"Finished {display}."),
+                )
+        lines.extend(
+            [
+                "━━━━━━━━━━━━━━━━━━━━━━",
+                f"Valid Facebook sessions: {valid_count}/{total}",
+                f"Stored accounts checked: {len(accounts)}",
+            ]
+        )
+        if progress_message_id:
+            await self.edit_message(
+                chat_id,
+                progress_message_id,
+                "\n".join(
+                    [
+                        progress_card(
+                            "Checking all cookies...",
+                            total,
+                            total,
+                            f"Validation complete: {valid_count}/{total} session(s) valid.",
+                        ),
+                        "",
+                        *lines,
+                    ]
+                ),
+            )
+            return
         await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=await self.dashboard_reply_markup(user_id))
 
     async def command_check_account(self, chat_id: int, message_id: int, user_id: int, account_id: str) -> None:
@@ -1713,12 +1765,26 @@ class TelegramBotApp:
             await self.send_message(chat_id, f"Account not found: {account_id}", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
             return
         display = account_display_name(account, account_id)
+        progress = await self.send_message(
+            chat_id,
+            progress_card("Checking account cookie...", 0, 1, f"Validating {display}..."),
+            message_id,
+            reply_markup=account_post_action_markup(),
+        )
+        progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
         try:
+            from playwright_engine import validate_facebook_session
+
             cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, self.account_owner_scope(user_id))
             parsed = parse_account_cookie_payload(cookie_header, account_id)
-            has_xs = any(part.startswith("xs=") for part in parsed.cookie_header.split("; "))
-            status_line = "🟢 Stored cookie shape is usable" if has_xs else "🟡 c_user found, xs missing"
-            hint = "Continue to cached pages or refresh pages if Facebook page access changed."
+            session_ok, detail = await validate_facebook_session(cookies_json(parse_cookies(parsed.cookie_header)))
+            icon, status_text = cookie_validation_summary(session_ok, detail)
+            status_line = f"{icon} {status_text}"
+            hint = (
+                "Continue to cached pages or refresh pages if Facebook page access changed."
+                if session_ok
+                else "Add/update this account again if Facebook reports the session as invalid."
+            )
         except Exception as exc:
             status_line = f"🔴 Cookie payload is not usable: {str(exc)[:160]}"
             hint = "Add/update this account again."
@@ -1730,6 +1796,14 @@ class TelegramBotApp:
             "",
             hint,
         ]
+        if progress_message_id:
+            await self.edit_message(
+                chat_id,
+                progress_message_id,
+                "\n".join([progress_card("Checking account cookie...", 1, 1, "Validation complete."), "", *lines]),
+                reply_markup=account_post_action_markup(),
+            )
+            return
         await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=account_post_action_markup())
 
     async def command_post_history(self, chat_id: int, message_id: int, user_id: int = 0) -> None:
@@ -1740,7 +1814,13 @@ class TelegramBotApp:
             return
         lines = ["📊 Post History", "━━━━━━━━━━━━━━━━━━━━━━"]
         for job in recent_jobs:
-            page = str(job.get("page_id_or_url") or "")[:42]
+            page = page_display_name(
+                {
+                    "page_name": job.get("page_name"),
+                    "page_url": job.get("page_id_or_url"),
+                },
+                -1,
+            )[:42]
             lines.append(f"- {job.get('status')} | {job.get('account_id')} | {job.get('post_type')} | {page}")
         await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=await self.dashboard_reply_markup(user_id))
 
