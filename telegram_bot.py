@@ -15,7 +15,7 @@ import sys
 import time
 import uuid
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -40,6 +40,7 @@ from telegram_dashboard import (
     dashboard_action,
     dashboard_markup,
     dashboard_text,
+    language_selection_markup,
     page_display_name,
     page_selection_card,
     page_selection_markup,
@@ -192,9 +193,7 @@ def cookie_validation_summary(session_ok: bool, detail: str, max_length: int = 1
     compact_detail = " ".join(str(detail or "").split())
     if session_ok:
         return "🟢", "Facebook session is valid"
-    detail_lower = compact_detail.lower()
-    icon = "🟡" if "inconclusive" in detail_lower or "skipped" in detail_lower else "🔴"
-    return icon, compact_detail[:max_length] or "Facebook session is not valid"
+    return "🔴", compact_detail[:max_length] or "Facebook session is not valid"
 
 
 def compact_error(exc: BaseException, max_length: int = 700) -> str:
@@ -972,6 +971,24 @@ class TelegramBotApp:
             reply_markup = dashboard_markup(has_accounts=False)
         await self.send_message(chat_id, text, message_id, reply_markup=reply_markup)
 
+    async def show_language_card(self, chat_id: int, message_id: int = 0, user_id: int = 0, prefix: str = "") -> None:
+        lang = await asyncio.to_thread(self.storage.get_user_language, user_id) if user_id else "en"
+        current = "Arabic (Egyptian)" if lang == "ar" else "English"
+        lines = []
+        if prefix:
+            lines.extend([prefix, ""])
+        lines.extend(
+            [
+                "🌐 Language",
+                "━━━━━━━━━━━━━━━━━━",
+                f"Current: {current}",
+                "",
+                "Choose the dashboard language.",
+                "Arabic uses Egyptian Arabic wording where translations are available.",
+            ]
+        )
+        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=language_selection_markup())
+
     def admin_overview_text(self, summary: Dict[str, Any], prefix: str = "") -> str:
         status_counts = summary.get("job_status_counts") or {}
         active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
@@ -1005,7 +1022,8 @@ class TelegramBotApp:
                 return str(value)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        display_tz = timezone(timedelta(hours=3), "UTC+3")
+        return dt.astimezone(display_tz).strftime("%Y-%m-%d %H:%M UTC+3")
 
     async def show_admin_dashboard(self, chat_id: int, message_id: int, user_id: int, prefix: str = "") -> None:
         if not self.is_admin_user(user_id):
@@ -1143,7 +1161,7 @@ class TelegramBotApp:
                 "━━━━━━━━━━━━━━━━━━",
                 f"Debug ID: {trace_id}",
                 f"Uptime: {int(time.monotonic() - self.started_at)}s",
-                f"Started: {self.started_wall_at.strftime('%Y-%m-%d %H:%M UTC')}",
+                f"Started: {self._format_dt(self.started_wall_at)}",
                 f"Revision: {self.deploy_revision() or 'unknown'}",
                 f"Python: {platform.python_version()} ({sys.version_info.major}.{sys.version_info.minor})",
                 f"Platform: {platform.system()} {platform.release()}",
@@ -1577,6 +1595,10 @@ class TelegramBotApp:
             prefix = "Current operation cancelled." if action == "cancel" else ""
             await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
             return
+        if action == "language":
+            self.clear_dashboard_session(chat_id, user_id)
+            await self.show_language_card(chat_id, message_id, user_id=user_id)
+            return
         if action == "user_dashboard":
             self.clear_dashboard_session(chat_id, user_id)
             await self.show_dashboard(chat_id, message_id, user_id=user_id)
@@ -1780,7 +1802,7 @@ class TelegramBotApp:
                 f"🆔 {parsed.account_id}",
                 f"📋 {name_source}",
                 "🟢 Selected: Active",
-                "🟡 Cookies: Not verified against Facebook posting yet",
+                "🔴 Cookies: Not verified against Facebook posting yet",
             ]
         )
         await self.edit_or_send_message(
@@ -2253,6 +2275,16 @@ class TelegramBotApp:
             await self.show_dashboard(chat_id, message_id, user_id=user_id)
             return
 
+        if data in {"lang:ar", "lang:en", "set_lang:ar", "set_lang:en"}:
+            selected_lang = data.rsplit(":", 1)[-1]
+            changed = await asyncio.to_thread(self.storage.set_user_language, user_id, selected_lang)
+            if not changed:
+                await self.show_language_card(chat_id, message_id, user_id=user_id, prefix="Invalid language selection.")
+                return
+            label = "Arabic (Egyptian)" if selected_lang == "ar" else "English"
+            await self.show_dashboard(chat_id, message_id, prefix=f"Language updated: {label}", user_id=user_id)
+            return
+
         session = self.get_dashboard_session(chat_id, user_id)
         if not session:
             await self.show_dashboard(chat_id, message_id, prefix="This card expired. Dashboard refreshed.", user_id=user_id)
@@ -2582,7 +2614,8 @@ class TelegramBotApp:
         await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=await self.dashboard_reply_markup(user_id))
 
     async def command_check_cookies(self, chat_id: int, message_id: int, user_id: int = 0) -> None:
-        accounts = await asyncio.to_thread(self.storage.list_accounts, self.account_owner_scope(user_id))
+        owner_scope = self.account_owner_scope(user_id)
+        accounts = await asyncio.to_thread(self.storage.list_accounts, owner_scope)
         if not accounts:
             await self.send_message(chat_id, "No accounts stored.", message_id, reply_markup=dashboard_markup(has_accounts=False))
             return
@@ -2608,15 +2641,30 @@ class TelegramBotApp:
                 progress_card("Checking all cookies...", index - 1, total, f"Checking {display}..."),
             )
             try:
-                cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, self.account_owner_scope(user_id))
+                cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
                 parsed = parse_account_cookie_payload(cookie_header, account_id)
                 session_ok, detail = await validate_facebook_session(cookies_json(parse_cookies(parsed.cookie_header)))
                 icon, status_text = cookie_validation_summary(session_ok, detail)
+                await asyncio.to_thread(
+                    self.storage.update_account_cookie_validation,
+                    account_id,
+                    "valid" if session_ok else "invalid",
+                    status_text,
+                    owner_scope,
+                )
                 if session_ok:
                     valid_count += 1
                 lines.append(f"{icon} {display}: {status_text}")
             except Exception as exc:
-                lines.append(f"🔴 {display}: {str(exc)[:120]}")
+                error_text = str(exc)[:120]
+                await asyncio.to_thread(
+                    self.storage.update_account_cookie_validation,
+                    account_id,
+                    "invalid",
+                    error_text,
+                    owner_scope,
+                )
+                lines.append(f"🔴 {display}: {error_text}")
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
@@ -2649,7 +2697,8 @@ class TelegramBotApp:
         )
 
     async def command_check_account(self, chat_id: int, message_id: int, user_id: int, account_id: str) -> None:
-        account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
+        owner_scope = self.account_owner_scope(user_id)
+        account = await asyncio.to_thread(self.storage.get_account, account_id, owner_scope)
         if not account:
             await self.send_message(chat_id, f"Account not found: {account_id}", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
             return
@@ -2663,10 +2712,17 @@ class TelegramBotApp:
         try:
             from playwright_engine import validate_facebook_session
 
-            cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, self.account_owner_scope(user_id))
+            cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
             parsed = parse_account_cookie_payload(cookie_header, account_id)
             session_ok, detail = await validate_facebook_session(cookies_json(parse_cookies(parsed.cookie_header)))
             icon, status_text = cookie_validation_summary(session_ok, detail)
+            await asyncio.to_thread(
+                self.storage.update_account_cookie_validation,
+                account_id,
+                "valid" if session_ok else "invalid",
+                status_text,
+                owner_scope,
+            )
             status_line = f"{icon} {status_text}"
             hint = (
                 "Continue to cached pages or refresh pages if Facebook page access changed."
@@ -2674,7 +2730,15 @@ class TelegramBotApp:
                 else "Add/update this account again if Facebook reports the session as invalid."
             )
         except Exception as exc:
-            status_line = f"🔴 Cookie payload is not usable: {str(exc)[:160]}"
+            error_text = str(exc)[:160]
+            await asyncio.to_thread(
+                self.storage.update_account_cookie_validation,
+                account_id,
+                "invalid",
+                error_text,
+                owner_scope,
+            )
+            status_line = f"🔴 Cookie payload is not usable: {error_text}"
             hint = "Add/update this account again."
         lines = [
             "🧪 Cookie Check",

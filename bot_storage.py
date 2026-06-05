@@ -77,13 +77,27 @@ class BotStorage:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    insert into fb_accounts (account_id, label, cookie_ciphertext, created_by, updated_at)
-                    values (%s, %s, %s, %s, now())
+                    insert into fb_accounts (
+                        account_id,
+                        label,
+                        cookie_ciphertext,
+                        created_by,
+                        cookie_status,
+                        cookie_status_detail,
+                        cookie_status_checked_at,
+                        cookie_status_updated_at,
+                        updated_at
+                    )
+                    values (%s, %s, %s, %s, 'unverified', 'New or updated cookie is not verified against Facebook yet.', null, now(), now())
                     on conflict (account_id) do update set
                         label = excluded.label,
                         cookie_ciphertext = excluded.cookie_ciphertext,
                         created_by = coalesce(fb_accounts.created_by, excluded.created_by),
                         active = true,
+                        cookie_status = 'unverified',
+                        cookie_status_detail = 'New or updated cookie is not verified against Facebook yet.',
+                        cookie_status_checked_at = null,
+                        cookie_status_updated_at = now(),
                         updated_at = now()
                     where fb_accounts.created_by is null
                        or fb_accounts.created_by = excluded.created_by
@@ -124,6 +138,47 @@ class BotStorage:
             conn.commit()
         return changed
 
+    def update_account_cookie_validation(
+        self,
+        account_id: str,
+        status: str,
+        detail: str = "",
+        owner_id: Optional[int] = None,
+    ) -> bool:
+        normalized = (status or "").strip().lower()
+        if normalized not in {"valid", "invalid", "unverified"}:
+            normalized = "invalid"
+        compact_detail = " ".join(str(detail or "").split())[:1000]
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                if owner_id is None:
+                    cur.execute(
+                        """
+                        update fb_accounts
+                        set cookie_status=%s,
+                            cookie_status_detail=%s,
+                            cookie_status_checked_at=now(),
+                            cookie_status_updated_at=now()
+                        where account_id=%s
+                        """,
+                        (normalized, compact_detail, account_id),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        update fb_accounts
+                        set cookie_status=%s,
+                            cookie_status_detail=%s,
+                            cookie_status_checked_at=now(),
+                            cookie_status_updated_at=now()
+                        where account_id=%s and created_by=%s
+                        """,
+                        (normalized, compact_detail, account_id, int(owner_id)),
+                    )
+                changed = cur.rowcount > 0
+            conn.commit()
+        return changed
+
     def set_active_account(self, telegram_user_id: int, account_id: str) -> None:
         with self.connect() as conn:
             with conn.cursor() as cur:
@@ -139,6 +194,39 @@ class BotStorage:
                     (int(telegram_user_id), account_id),
                 )
             conn.commit()
+
+    def set_user_language(self, telegram_user_id: int, lang: str) -> bool:
+        normalized = (lang or "").strip().lower()
+        if normalized not in {"ar", "en"}:
+            return False
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into telegram_user_state (telegram_user_id, lang, updated_at, last_seen_at)
+                    values (%s, %s, now(), now())
+                    on conflict (telegram_user_id) do update set
+                        lang = excluded.lang,
+                        updated_at = now(),
+                        last_seen_at = now()
+                    """,
+                    (int(telegram_user_id), normalized),
+                )
+            conn.commit()
+        return True
+
+    def get_user_language(self, telegram_user_id: int) -> str:
+        if not telegram_user_id:
+            return "en"
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "select lang from telegram_user_state where telegram_user_id=%s",
+                    (int(telegram_user_id),),
+                )
+                row = cur.fetchone()
+        lang = str((row or {}).get("lang") or "en").strip().lower()
+        return lang if lang in {"ar", "en"} else "en"
 
     def touch_user(self, telegram_user_id: int, chat_id: int) -> None:
         if not telegram_user_id:
@@ -222,18 +310,20 @@ class BotStorage:
                 if owner_id is None:
                     cur.execute(
                         """
-                        select account_id, label, active, created_by, created_at, updated_at
+                        select account_id, label, active, created_by, created_at, updated_at,
+                               cookie_status, cookie_status_detail, cookie_status_checked_at, cookie_status_updated_at
                         from fb_accounts
-                        order by updated_at desc
+                        order by greatest(coalesce(cookie_status_updated_at, updated_at), updated_at) desc
                         """
                     )
                 else:
                     cur.execute(
                         """
-                        select account_id, label, active, created_by, created_at, updated_at
+                        select account_id, label, active, created_by, created_at, updated_at,
+                               cookie_status, cookie_status_detail, cookie_status_checked_at, cookie_status_updated_at
                         from fb_accounts
                         where created_by=%s
-                        order by updated_at desc
+                        order by greatest(coalesce(cookie_status_updated_at, updated_at), updated_at) desc
                         """,
                         (int(owner_id),),
                     )
@@ -243,7 +333,8 @@ class BotStorage:
         with self.connect() as conn:
             with conn.cursor() as cur:
                 sql = """
-                    select account_id, label, active, created_by, created_at, updated_at
+                    select account_id, label, active, created_by, created_at, updated_at,
+                           cookie_status, cookie_status_detail, cookie_status_checked_at, cookie_status_updated_at
                     from fb_accounts
                     where account_id=%s
                     """

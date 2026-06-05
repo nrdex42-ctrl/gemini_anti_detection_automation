@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from page_name_utils import clean_facebook_page_name
@@ -22,6 +22,7 @@ BUTTON_POST_HISTORY = "📊 Post History"
 BUTTON_STATUS = "📊 Bot Status"
 BUTTON_BACK = "⬅️ Back to Dashboard"
 BUTTON_DASHBOARD = "🏠 Dashboard"
+BUTTON_LANGUAGE = "🌐 Language"
 BUTTON_DISCOVER_PAGES = "🔎 Discover Pages"
 BUTTON_REFRESH_PAGES = "🔄 Refresh Pages"
 BUTTON_LIST_PAGES = "📄 Stored Pages"
@@ -42,7 +43,10 @@ BUTTON_DEBUG_SNAPSHOT = "🧰 Debug Snapshot"
 DASHBOARD_ACTIONS = {
     BUTTON_DASHBOARD: "dashboard",
     BUTTON_BACK: "dashboard",
+    BUTTON_LANGUAGE: "language",
     "Dashboard": "dashboard",
+    "Language": "language",
+    "🌐 اللغة": "language",
     "menu": "dashboard",
     "Menu": "dashboard",
     BUTTON_ADD_ACCOUNT: "add_account",
@@ -154,7 +158,7 @@ def dashboard_markup(
         if not active_account:
             rows.append([BUTTON_DISCOVER_PAGES, BUTTON_LIST_PAGES])
 
-    rows.append([BUTTON_STATUS, BUTTON_DASHBOARD])
+    rows.append([BUTTON_STATUS, BUTTON_LANGUAGE])
     if is_admin:
         rows.append([BUTTON_ADMIN])
     return reply_keyboard(rows)
@@ -216,6 +220,16 @@ def inline_button(text: str, callback_data: str) -> Dict[str, str]:
 
 def inline_markup(rows: Sequence[Sequence[Dict[str, str]]]) -> Dict[str, Any]:
     return {"inline_keyboard": [list(row) for row in rows]}
+
+
+def language_selection_markup() -> Dict[str, Any]:
+    return inline_markup(
+        [
+            [inline_button("🇪🇬 Arabic (Egyptian)", "lang:ar")],
+            [inline_button("🇬🇧 English", "lang:en")],
+            [inline_button("⬅️ Back", "dash:back")],
+        ]
+    )
 
 
 def account_choice_label(account: Dict[str, Any], active_account: str = "") -> str:
@@ -445,15 +459,23 @@ def _format_dt(value: Any) -> str:
             return str(value)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    display_tz = timezone(timedelta(hours=3), "UTC+3")
+    return dt.astimezone(display_tz).strftime("%Y-%m-%d %H:%M UTC+3")
 
 
 def _account_health_icon(account: Dict[str, Any], active_account: str) -> str:
-    if str(account.get("account_id") or "") == active_account:
+    if str(account.get("cookie_status") or "unverified").lower() == "valid":
         return "🟢"
-    if account.get("active"):
-        return "🟡"
     return "🔴"
+
+
+def _account_cookie_status_label(account: Dict[str, Any]) -> str:
+    status = str(account.get("cookie_status") or "unverified").strip().lower()
+    if status == "valid":
+        return "valid"
+    if status == "invalid":
+        return "invalid"
+    return "not verified"
 
 
 def dashboard_text(
@@ -497,7 +519,7 @@ def dashboard_text(
             account_id = str(account.get("account_id") or "")
             icon = _account_health_icon(account, active_account)
             pages = int(page_counts.get(account_id, 0))
-            lines.append(f"{icon} {account_display_name(account)} | pages: {pages}")
+            lines.append(f"{icon} {account_display_name(account)} | pages: {pages} | cookies: {_account_cookie_status_label(account)}")
         if len(accounts) > 6:
             lines.append(f"... {len(accounts) - 6} more")
 
