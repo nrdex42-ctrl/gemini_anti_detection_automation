@@ -116,7 +116,7 @@ python scripts/generate_fernet_key.py
 
 1. Deploy the Render service from the GitHub repository.
 2. Confirm Render logs include `Telegram webhook configured for https://.../telegram/webhook`.
-3. Send `/start` or `/dashboard` to the bot.
+3. Send `/start` to the bot.
 4. Use the typing-area dashboard panel to add an account.
 5. Use `Refresh Pages` / `Discover Pages` to store managed pages for that account.
 6. Use `Switch Active Account`, quick post buttons, or `Post to All Pages` to queue posts through guided steps.
@@ -130,19 +130,13 @@ export PUBLIC_BASE_URL="https://your-service.onrender.com"
 python scripts/set_telegram_webhook.py
 ```
 
-Direct bot commands still work:
-
-```text
-/add_account auto <raw_cookie>
-/pages <account_id>
-/post <account_id> <page_id_or_url> <text|image|video> <caption>
-```
-
-`/add_account` and the dashboard Add Facebook Account button accept raw cookie headers, JSON cookie arrays, `{cookies:[...]}` exports, uploaded JSON files, and multi-message JSON chunks followed by `/done`.
+The dashboard Add Facebook Account button accepts raw cookie headers, JSON cookie arrays, `{cookies:[...]}` exports, uploaded JSON files, and multi-message JSON chunks followed by the `✅ Done` button.
 
 Page discovery is cached in `fb_pages`. Normal posting reads the saved page list and does not rediscover pages before each post. Use the `🔄 Refresh Pages` dashboard button when you want to refresh a selected account's cached pages.
 
-Admins listed in `BOT_ADMIN_IDS` can use `/admin` or `🔒 Admin Dashboard` to view system stats, users, accounts, post stats, active account locks, and runtime config.
+Admins listed in `BOT_ADMIN_IDS` can use `🔒 Admin Dashboard` to view system stats, users, accounts, post stats, active account locks, and runtime config.
+
+Set `RESTART_BROADCAST_ENABLED=true` to let the bot send known users a refreshed dashboard message once per Render deploy revision.
 
 ## 6. Isolation Rules
 

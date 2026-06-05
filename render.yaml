@@ -31,6 +31,8 @@ services:
         value: "false"
       - key: AUTO_INIT_DB
         value: "true"
+      - key: RESTART_BROADCAST_ENABLED
+        value: "true"
       - key: DELETE_COOKIE_MESSAGES
         value: "true"
       - key: BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS

@@ -92,13 +92,32 @@ class BotStorage:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    insert into telegram_user_state (telegram_user_id, active_account_id, updated_at)
-                    values (%s, %s, now())
+                    insert into telegram_user_state (telegram_user_id, active_account_id, updated_at, last_seen_at)
+                    values (%s, %s, now(), now())
                     on conflict (telegram_user_id) do update set
                         active_account_id = excluded.active_account_id,
-                        updated_at = now()
+                        updated_at = now(),
+                        last_seen_at = now()
                     """,
                     (int(telegram_user_id), account_id),
+                )
+            conn.commit()
+
+    def touch_user(self, telegram_user_id: int, chat_id: int) -> None:
+        if not telegram_user_id:
+            return
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into telegram_user_state (telegram_user_id, last_chat_id, updated_at, last_seen_at)
+                    values (%s, %s, now(), now())
+                    on conflict (telegram_user_id) do update set
+                        last_chat_id = excluded.last_chat_id,
+                        updated_at = now(),
+                        last_seen_at = now()
+                    """,
+                    (int(telegram_user_id), int(chat_id or telegram_user_id)),
                 )
             conn.commit()
 
@@ -159,6 +178,20 @@ class BotStorage:
                     """
                 )
                 return list(cur.fetchall())
+
+    def get_account(self, account_id: str) -> Optional[Dict[str, Any]]:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select account_id, label, active, created_by, created_at, updated_at
+                    from fb_accounts
+                    where account_id=%s
+                    """,
+                    (account_id,),
+                )
+                row = cur.fetchone()
+        return dict(row) if row else None
 
     def account_exists(self, account_id: str, active_only: bool = True) -> bool:
         with self.connect() as conn:
@@ -416,6 +449,55 @@ class BotStorage:
                     (int(limit),),
                 )
                 return list(cur.fetchall())
+
+    def list_restart_targets(self) -> List[Dict[str, Any]]:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    with known_users as (
+                        select telegram_user_id, last_chat_id, last_seen_at from telegram_user_state
+                        union
+                        select created_by as telegram_user_id, created_by as last_chat_id, updated_at as last_seen_at
+                        from fb_accounts
+                        where created_by is not null
+                        union
+                        select telegram_user_id, telegram_chat_id as last_chat_id, created_at as last_seen_at
+                        from fb_post_jobs
+                        where telegram_user_id is not null
+                    )
+                    select telegram_user_id,
+                           coalesce(max(last_chat_id), telegram_user_id) as chat_id,
+                           max(last_seen_at) as last_seen_at
+                    from known_users
+                    where telegram_user_id is not null
+                    group by telegram_user_id
+                    order by max(last_seen_at) desc nulls last
+                    """
+                )
+                return list(cur.fetchall())
+
+    def get_meta(self, key: str) -> str:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("select value from bot_meta where key=%s", (key,))
+                row = cur.fetchone()
+        return str((row or {}).get("value") or "")
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into bot_meta (key, value, updated_at)
+                    values (%s, %s, now())
+                    on conflict (key) do update set
+                        value = excluded.value,
+                        updated_at = now()
+                    """,
+                    (key, value),
+                )
+            conn.commit()
 
     def create_post_job(
         self,

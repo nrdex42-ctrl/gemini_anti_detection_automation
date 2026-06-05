@@ -45,17 +45,9 @@ python telegram_bot.py
 
 ## Telegram Bot Commands
 
-- `/dashboard` opens the persistent typing-area dashboard panel.
-- `/start` or `/help` shows usage.
-- `/add_account <account_id> <raw_cookie>` stores or updates an account cookie.
-- `/add_account auto <raw_cookie>` derives the account id from `c_user`.
-- `/accounts` lists stored accounts.
-- `/remove_account <account_id>` deactivates an account.
-- `/pages <account_id>` discovers and stores managed pages.
-- `/list_pages <account_id>` lists stored pages.
-- `/post <account_id> <page_id_or_url> <text|image|video> <caption>` queues a post.
+- `/start` opens the persistent typing-area dashboard panel.
 
-For image/video posts, attach the media to the Telegram message or reply to a media message with the `/post` command.
+All account, page, posting, and admin actions are handled through dashboard buttons.
 
 ## Dashboard Panel
 
@@ -84,7 +76,7 @@ Cookie ingestion accepts:
 - JSON cookie arrays.
 - `{ "cookies": [...] }` browser-export payloads.
 - Uploaded JSON files.
-- Long JSON pasted across multiple messages, finished with `/done`.
+- Long JSON pasted across multiple messages, finished with the `✅ Done` button.
 
 The quick-post buttons use guided steps:
 
@@ -98,7 +90,7 @@ Stored page discovery is cached in Supabase. Posting uses the saved page list an
 
 Admin dashboard buttons expose system stats, users, accounts, post stats, runtime locks, and key runtime config values.
 
-Slash commands remain available for direct automation and testing.
+On each new Render deploy, the bot sends known users a refreshed dashboard message once per deploy revision.
 
 ## Deployment
 

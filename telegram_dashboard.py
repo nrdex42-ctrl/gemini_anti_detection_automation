@@ -23,6 +23,9 @@ BUTTON_DASHBOARD = "🏠 Dashboard"
 BUTTON_DISCOVER_PAGES = "🔎 Discover Pages"
 BUTTON_REFRESH_PAGES = "🔄 Refresh Pages"
 BUTTON_LIST_PAGES = "📄 Stored Pages"
+BUTTON_CHECK_THIS_ACCOUNT = "🧪 Check this account"
+BUTTON_CONTINUE_TO_PAGES = "➡️ Continue to pages"
+BUTTON_DONE = "✅ Done"
 BUTTON_CANCEL = "❌ Cancel"
 BUTTON_ADMIN = "🔒 Admin Dashboard"
 BUTTON_USER_DASHBOARD = "🔁 User Dashboard"
@@ -39,7 +42,6 @@ DASHBOARD_ACTIONS = {
     "Dashboard": "dashboard",
     "menu": "dashboard",
     "Menu": "dashboard",
-    "/dashboard": "dashboard",
     BUTTON_ADD_ACCOUNT: "add_account",
     BUTTON_POST_ACTIVE: "post_active",
     BUTTON_QUICK_TEXT: "quick_text",
@@ -55,6 +57,8 @@ DASHBOARD_ACTIONS = {
     BUTTON_DISCOVER_PAGES: "discover_pages",
     BUTTON_REFRESH_PAGES: "refresh_pages",
     BUTTON_LIST_PAGES: "list_pages",
+    BUTTON_CHECK_THIS_ACCOUNT: "check_active_account",
+    BUTTON_CONTINUE_TO_PAGES: "continue_active_account",
     BUTTON_CANCEL: "cancel",
     BUTTON_ADMIN: "admin_dashboard",
     BUTTON_USER_DASHBOARD: "user_dashboard",
@@ -64,7 +68,6 @@ DASHBOARD_ACTIONS = {
     BUTTON_POST_STATS: "admin_post_stats",
     BUTTON_RUNTIME_LOCKS: "admin_runtime_locks",
     BUTTON_SYSTEM_CONFIG: "admin_system_config",
-    "/cancel": "cancel",
     # Backward-compatible labels from the first lightweight dashboard.
     "➕ Add Account": "add_account",
     "👥 Accounts": "manage_accounts",
@@ -169,6 +172,22 @@ def cancel_markup() -> Dict[str, Any]:
     return reply_keyboard([[BUTTON_BACK, BUTTON_CANCEL]], placeholder="Send the requested value")
 
 
+def cookie_input_markup() -> Dict[str, Any]:
+    return reply_keyboard([[BUTTON_DONE], [BUTTON_BACK, BUTTON_CANCEL]], placeholder="Paste cookies or upload JSON")
+
+
+def account_post_action_markup() -> Dict[str, Any]:
+    return reply_keyboard(
+        [
+            [BUTTON_CHECK_THIS_ACCOUNT],
+            [BUTTON_CONTINUE_TO_PAGES, BUTTON_REFRESH_PAGES],
+            [BUTTON_BACK],
+        ],
+        placeholder="Choose account action",
+        persistent=False,
+    )
+
+
 def choices_markup(choices: Iterable[str], *, placeholder: str = "Choose or type a value") -> Dict[str, Any]:
     rows: List[List[str]] = []
     row: List[str] = []
@@ -202,6 +221,14 @@ def parse_choice_id(text: str) -> str:
         if value.startswith(marker):
             value = value[len(marker):].strip()
     return value.split("|", 1)[0].strip()
+
+
+def account_display_name(account: Dict[str, Any], fallback_id: str = "") -> str:
+    account_id = str(account.get("account_id") or fallback_id or "").strip()
+    label = str(account.get("label") or "").strip()
+    if label and label != account_id:
+        return f"{label} ({account_id})"
+    return label or account_id or "unknown"
 
 
 def page_choice_label(page: Dict[str, Any]) -> str:
@@ -255,7 +282,8 @@ def dashboard_text(
     if prefix:
         lines.extend([prefix, ""])
 
-    active_text = active_account or "not selected"
+    account_by_id = {str(account.get("account_id") or ""): account for account in accounts}
+    active_text = account_display_name(account_by_id.get(active_account, {}), active_account) if active_account else "not selected"
     lines.extend(
         [
             "🎛️ Smart Dashboard",
@@ -277,7 +305,7 @@ def dashboard_text(
             account_id = str(account.get("account_id") or "")
             icon = _account_health_icon(account, active_account)
             pages = int(page_counts.get(account_id, 0))
-            lines.append(f"{icon} {account_id} | pages: {pages}")
+            lines.append(f"{icon} {account_display_name(account)} | pages: {pages}")
         if len(accounts) > 6:
             lines.append(f"... {len(accounts) - 6} more")
 
@@ -306,7 +334,7 @@ def prompt_text(action: str, step: str = "") -> str:
             "Accepted formats:\n"
             "1. Raw cookie string in one message.\n"
             "2. Exported JSON file or JSON text.\n"
-            "3. Long JSON across multiple messages, then /done."
+            "3. Long JSON across multiple messages, then tap Done."
         )
     if step == "account":
         return "Choose an account from the keyboard or type its account_id."

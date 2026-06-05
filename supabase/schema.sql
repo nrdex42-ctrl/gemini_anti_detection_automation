@@ -33,8 +33,19 @@ create table if not exists fb_account_runtime (
 create table if not exists telegram_user_state (
     telegram_user_id bigint primary key,
     active_account_id text references fb_accounts(account_id) on delete set null,
+    last_chat_id bigint,
     lang text not null default 'en',
     created_at timestamptz not null default now(),
+    last_seen_at timestamptz,
+    updated_at timestamptz not null default now()
+);
+
+alter table telegram_user_state add column if not exists last_chat_id bigint;
+alter table telegram_user_state add column if not exists last_seen_at timestamptz;
+
+create table if not exists bot_meta (
+    key text primary key,
+    value text not null default '',
     updated_at timestamptz not null default now()
 );
 
