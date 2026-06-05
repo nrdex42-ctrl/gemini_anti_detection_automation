@@ -240,6 +240,8 @@ class TelegramBotApp:
         self.api_base = f"https://api.telegram.org/bot{self.token}"
         self.dashboard_sessions: Dict[str, Dict[str, Any]] = {}
         self.account_name_lookup_tasks: set[str] = set()
+        self.background_tasks: set[asyncio.Task[Any]] = set()
+        self.background_task_labels: Dict[asyncio.Task[Any], str] = {}
         self.started_at = time.monotonic()
         self.started_wall_at = datetime.now(timezone.utc)
 
@@ -269,9 +271,14 @@ class TelegramBotApp:
         if _env_bool("AUTO_SET_TELEGRAM_WEBHOOK", True):
             await self.configure_telegram_webhook()
         if _env_bool("RESTART_BROADCAST_ENABLED", True):
-            asyncio.create_task(self.notify_restart_dashboard())
+            self.start_background_task(self.notify_restart_dashboard(), "restart dashboard broadcast")
 
     async def cleanup(self, app: web.Application) -> None:
+        for task in list(self.background_tasks):
+            task.cancel()
+        if self.background_tasks:
+            await asyncio.gather(*self.background_tasks, return_exceptions=True)
+        self.background_task_labels.clear()
         if self.session is not None:
             await self.session.close()
 
@@ -450,12 +457,44 @@ class TelegramBotApp:
 
     def start_background_task(self, coro: Awaitable[Any], label: str) -> asyncio.Task[Any]:
         task = asyncio.create_task(coro)
+        self.background_tasks.add(task)
+        self.background_task_labels[task] = label
+        self.debug_event(
+            "background_task_scheduled",
+            new_debug_id("task"),
+            label=label,
+            active_background_tasks=len(self.background_tasks),
+        )
 
         def _log_done(done_task: asyncio.Task[Any]) -> None:
-            with suppress(asyncio.CancelledError):
+            self.background_tasks.discard(done_task)
+            self.background_task_labels.pop(done_task, None)
+            try:
                 exc = done_task.exception()
-                if exc:
-                    logger.error("Background task failed: %s", label, exc_info=(type(exc), exc, exc.__traceback__))
+            except asyncio.CancelledError:
+                self.debug_event(
+                    "background_task_cancelled",
+                    new_debug_id("task"),
+                    label=label,
+                    active_background_tasks=len(self.background_tasks),
+                )
+                return
+            if exc:
+                self.debug_event(
+                    "background_task_failed",
+                    new_debug_id("task"),
+                    label=label,
+                    error=compact_error(exc),
+                    active_background_tasks=len(self.background_tasks),
+                )
+                logger.error("Background task failed: %s", label, exc_info=(type(exc), exc, exc.__traceback__))
+            else:
+                self.debug_event(
+                    "background_task_complete",
+                    new_debug_id("task"),
+                    label=label,
+                    active_background_tasks=len(self.background_tasks),
+                )
 
         task.add_done_callback(_log_done)
         return task
@@ -686,7 +725,10 @@ class TelegramBotApp:
             if task_key in self.account_name_lookup_tasks:
                 continue
             self.account_name_lookup_tasks.add(task_key)
-            asyncio.create_task(self.refresh_account_name_task(account_id, owner_scope, task_key, chat_id, user_id))
+            self.start_background_task(
+                self.refresh_account_name_task(account_id, owner_scope, task_key, chat_id, user_id),
+                f"account name lookup {account_id}",
+            )
 
     async def refresh_account_name_task(
         self,
@@ -929,6 +971,7 @@ class TelegramBotApp:
                 f"Python: {platform.python_version()} ({sys.version_info.major}.{sys.version_info.minor})",
                 f"Platform: {platform.system()} {platform.release()}",
                 f"PID: {os.getpid()}",
+                f"Background tasks: {len(self.background_tasks)}",
                 "",
                 "Database:",
                 f"- users={summary.get('user_count', 0)} accounts={summary.get('total_accounts', 0)} active_accounts={summary.get('active_accounts', 0)} pages={summary.get('page_count', 0)}",
@@ -954,6 +997,20 @@ class TelegramBotApp:
                     lines.append(
                         f"- {lock.get('account_id')} until={self._format_dt(lock.get('locked_until'))} by={str(lock.get('locked_by') or '')[:42]}"
                     )
+            else:
+                lines.append("- none")
+
+            lines.extend(["", "Active background task labels:"])
+            task_labels = []
+            for task in list(self.background_tasks)[:10]:
+                label = self.background_task_labels.get(task, "")
+                if not label:
+                    coro = task.get_coro()
+                    label = getattr(coro, "__qualname__", coro.__class__.__name__)
+                task_labels.append(label)
+            if task_labels:
+                for label in task_labels:
+                    lines.append(f"- {label}")
             else:
                 lines.append("- none")
 
@@ -2009,7 +2066,7 @@ class TelegramBotApp:
         if callback_query_id:
             await self.answer_callback_query(callback_query_id)
         if user_id and chat_id:
-            asyncio.create_task(self.touch_user_seen(user_id, chat_id))
+            self.start_background_task(self.touch_user_seen(user_id, chat_id), f"touch user {user_id}")
 
         if data == "dash:back":
             self.clear_dashboard_session(chat_id, user_id)
@@ -2265,7 +2322,7 @@ class TelegramBotApp:
         command, args = split_command(text)
         action = dashboard_action(text)
         if user_id and chat_id:
-            asyncio.create_task(self.touch_user_seen(user_id, chat_id))
+            self.start_background_task(self.touch_user_seen(user_id, chat_id), f"touch user {user_id}")
 
         if command == "/start":
             self.clear_dashboard_session(chat_id, user_id)
@@ -3019,7 +3076,17 @@ class TelegramBotApp:
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
-            await asyncio.to_thread(self.storage.mark_job_started, job_id)
+            await self.try_edit_message(
+                chat_id,
+                progress_message_id,
+                progress_card("Posting...", 0, total_units, f"Debug ID: {trace_id}\nMarking job as processing..."),
+                reply_markup=await self.dashboard_reply_markup(user_id),
+            )
+            storage_timeout_seconds = _env_int("BOT_STORAGE_OPERATION_TIMEOUT_SECONDS", 45, minimum=5)
+            await asyncio.wait_for(
+                asyncio.to_thread(self.storage.mark_job_started, job_id),
+                timeout=storage_timeout_seconds,
+            )
 
             async def lock_progress(detail: str) -> None:
                 await self.try_edit_message(
@@ -3029,7 +3096,7 @@ class TelegramBotApp:
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
 
-            lock_acquired = await self.wait_for_account_slot(account_id, lock_owner, chat_id, lock_progress)
+            lock_acquired = await self.wait_for_account_slot(account_id, lock_owner, chat_id, lock_progress, trace_id=trace_id)
             self.debug_event("post_job_lock_acquired", trace_id, job_id=job_id, account_id=account_id)
             await self.try_edit_message(
                 chat_id,
@@ -3170,8 +3237,19 @@ class TelegramBotApp:
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
+            await self.try_edit_message(
+                chat_id,
+                progress_message_id,
+                progress_card("Batch posting...", 0, total_units, f"Debug ID: {trace_id}\nMarking {len(job_ids)} job(s) as processing..."),
+                reply_markup=await self.dashboard_reply_markup(user_id),
+            )
+            storage_timeout_seconds = _env_int("BOT_STORAGE_OPERATION_TIMEOUT_SECONDS", 45, minimum=5)
             for job_id in job_ids:
-                await asyncio.to_thread(self.storage.mark_job_started, job_id)
+                await asyncio.wait_for(
+                    asyncio.to_thread(self.storage.mark_job_started, job_id),
+                    timeout=storage_timeout_seconds,
+                )
+            self.debug_event("batch_post_jobs_marked_started", trace_id, batch_id=batch_id, job_count=len(job_ids))
 
             async def lock_progress(detail: str) -> None:
                 await self.try_edit_message(
@@ -3181,7 +3259,7 @@ class TelegramBotApp:
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
 
-            lock_acquired = await self.wait_for_account_slot(account_id, lock_owner, chat_id, lock_progress)
+            lock_acquired = await self.wait_for_account_slot(account_id, lock_owner, chat_id, lock_progress, trace_id=trace_id)
             self.debug_event("batch_post_lock_acquired", trace_id, batch_id=batch_id, account_id=account_id)
             await self.try_edit_message(
                 chat_id,
@@ -3316,6 +3394,8 @@ class TelegramBotApp:
         owner: str,
         chat_id: int,
         progress_update: Optional[Callable[[str], Awaitable[None]]] = None,
+        *,
+        trace_id: str = "",
     ) -> bool:
         cooldown_seconds = _env_int(
             "BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS",
@@ -3329,6 +3409,7 @@ class TelegramBotApp:
         )
         poll_seconds = _env_int("BOT_ACCOUNT_LOCK_POLL_SECONDS", 10, minimum=1)
         max_wait_seconds = _env_int("BOT_ACCOUNT_LOCK_MAX_WAIT_SECONDS", 3600, minimum=60)
+        storage_timeout_seconds = _env_int("BOT_STORAGE_OPERATION_TIMEOUT_SECONDS", 45, minimum=5)
         started = time.monotonic()
         notified_wait = False
 
@@ -3339,7 +3420,30 @@ class TelegramBotApp:
                 await self.send_message(chat_id, detail)
 
         while True:
-            runtime = await asyncio.to_thread(self.storage.claim_account_runtime, account_id, owner, lease_seconds)
+            await notify("Checking isolated account slot...")
+            self.debug_event(
+                "account_slot_claim_attempt",
+                trace_id,
+                account_id=account_id,
+                owner=owner,
+                lease_seconds=lease_seconds,
+            )
+            try:
+                runtime = await asyncio.wait_for(
+                    asyncio.to_thread(self.storage.claim_account_runtime, account_id, owner, lease_seconds),
+                    timeout=storage_timeout_seconds,
+                )
+            except asyncio.TimeoutError as exc:
+                self.debug_event(
+                    "account_slot_claim_timeout",
+                    trace_id,
+                    account_id=account_id,
+                    timeout_seconds=storage_timeout_seconds,
+                )
+                raise TimeoutError(
+                    f"Timed out after {storage_timeout_seconds}s while checking account runtime lock. "
+                    "Check DATABASE_URL/Supabase network connectivity."
+                ) from exc
             if runtime:
                 remaining = int(max(0, cooldown_seconds - seconds_since(runtime.get("last_cookie_used_at"))))
                 if remaining > 0:
@@ -3386,7 +3490,7 @@ class TelegramBotApp:
             update = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"ok": False, "error": "invalid_json"}, status=400)
-        asyncio.create_task(self.handle_update_safe(update))
+        self.start_background_task(self.handle_update_safe(update), "telegram update")
         return web.json_response({"ok": True})
 
 
