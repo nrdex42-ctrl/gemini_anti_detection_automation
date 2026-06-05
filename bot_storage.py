@@ -313,6 +313,7 @@ class BotStorage:
                         select account_id, label, active, created_by, created_at, updated_at,
                                cookie_status, cookie_status_detail, cookie_status_checked_at, cookie_status_updated_at
                         from fb_accounts
+                        where active=true
                         order by greatest(coalesce(cookie_status_updated_at, updated_at), updated_at) desc
                         """
                     )
@@ -322,7 +323,7 @@ class BotStorage:
                         select account_id, label, active, created_by, created_at, updated_at,
                                cookie_status, cookie_status_detail, cookie_status_checked_at, cookie_status_updated_at
                         from fb_accounts
-                        where created_by=%s
+                        where created_by=%s and active=true
                         order by greatest(coalesce(cookie_status_updated_at, updated_at), updated_at) desc
                         """,
                         (int(owner_id),),
