@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from page_name_utils import clean_facebook_page_name
+
 
 BUTTON_ADD_ACCOUNT = "➕ Add Facebook Account"
 BUTTON_POST_ACTIVE = "⚡ Post With Active Account"
@@ -250,7 +252,8 @@ def page_choice_label(page: Dict[str, Any]) -> str:
 
 
 def page_display_name(page: Dict[str, Any], index: int = 0) -> str:
-    name = str(page.get("page_name") or page.get("name") or "").strip()
+    page_url = str(page.get("page_url") or page.get("url") or "").strip()
+    name = clean_facebook_page_name(page.get("page_name") or page.get("name"), page_url)
     if name:
         return name
     return f"Page {index + 1}" if index >= 0 else "Page"

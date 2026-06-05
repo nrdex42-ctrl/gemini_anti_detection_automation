@@ -1804,8 +1804,8 @@ class TelegramBotApp:
                 )
                 return
             lines = [f"{'Refreshed' if refresh else 'Discovered'} and cached {len(pages)} page(s):"]
-            for page in pages:
-                lines.append(f"- {page.get('name') or page.get('id')} | {page.get('url')}")
+            for index, page in enumerate(pages):
+                lines.append(f"- {page_display_name(page, index)}")
             await self.edit_message(
                 chat_id,
                 progress_message_id,
@@ -1825,6 +1825,17 @@ class TelegramBotApp:
         from playwright.async_api import async_playwright
 
         cookie_string = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_id)
+        try:
+            from playwright_engine import discover_facebook_pages
+
+            ok, pages, detail = await discover_facebook_pages(cookies_json(parse_cookies(cookie_string)))
+            if ok and pages:
+                return pages
+            if detail:
+                logger.warning("Engine page discovery did not return pages: %s", detail[:500])
+        except Exception as exc:
+            logger.warning("Engine page discovery failed; falling back to lightweight discovery: %s", exc)
+
         cookies = parse_cookies(cookie_string)
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(
@@ -1920,7 +1931,7 @@ class TelegramBotApp:
         job_ids: List[str] = []
         for page in pages:
             page_id_or_url = str(page.get("page_url") or page.get("page_id") or "").strip()
-            page_name = str(page.get("page_name") or page.get("page_id") or page_id_or_url).strip()
+            page_name = page_display_name(page, len(job_payloads))
             if not page_id_or_url:
                 continue
             job_id = await asyncio.to_thread(

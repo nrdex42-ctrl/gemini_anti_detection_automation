@@ -13,6 +13,8 @@ import psycopg
 from cryptography.fernet import Fernet, InvalidToken
 from psycopg.rows import dict_row
 
+from page_name_utils import clean_facebook_page_name
+
 
 TOKEN_PREFIX = "fernet:"
 
@@ -286,7 +288,7 @@ class BotStorage:
                 for page in pages:
                     page_id = str(page.get("id") or "").strip()
                     page_url = str(page.get("url") or "").strip()
-                    page_name = str(page.get("name") or page_id or page_url).strip()
+                    page_name = clean_facebook_page_name(page.get("name"), page_url, page_id or page_url)
                     if not page_id and "id=" in page_url:
                         page_id = page_url.split("id=", 1)[1].split("&", 1)[0]
                     if not page_id:
