@@ -292,7 +292,15 @@ class TelegramBotApp:
         async with self.session.post(f"{self.api_base}/{method}", json=payload, timeout=timeout_seconds) as resp:
             data = await resp.json(content_type=None)
             if not data.get("ok"):
-                logger.warning("Telegram API %s failed: %s", method, data)
+                logger.warning(
+                    "Telegram API %s failed chat_id=%s message_id=%s reply_to=%s has_markup=%s: %s",
+                    method,
+                    payload.get("chat_id", "-"),
+                    payload.get("message_id", "-"),
+                    payload.get("reply_to_message_id", "-"),
+                    bool(payload.get("reply_markup")),
+                    data,
+                )
             return data
 
     async def answer_callback_query(self, callback_query_id: str, text: str = "") -> None:
@@ -427,7 +435,10 @@ class TelegramBotApp:
             payload["reply_markup"] = reply_markup
         if parse_mode:
             payload["parse_mode"] = parse_mode
-        await self.telegram_api("editMessageText", payload)
+        data = await self.telegram_api("editMessageText", payload)
+        if not data.get("ok"):
+            description = str(data.get("description") or data)
+            raise RuntimeError(description)
 
     async def try_edit_message(
         self,
@@ -452,8 +463,42 @@ class TelegramBotApp:
             )
             return True
         except Exception as exc:
-            logger.warning("Telegram editMessageText failed or timed out: %s", compact_error(exc, 300))
+            logger.warning(
+                "Telegram editMessageText failed or timed out chat_id=%s message_id=%s: %s",
+                chat_id,
+                message_id,
+                compact_error(exc, 300),
+            )
             return False
+
+    async def edit_or_send_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        reply_to_message_id: int = 0,
+        reply_markup: Optional[Dict[str, Any]] = None,
+        parse_mode: str = "",
+        timeout_seconds: int = 12,
+    ) -> int:
+        if message_id and await self.try_edit_message(
+            chat_id,
+            message_id,
+            text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+            timeout_seconds=timeout_seconds,
+        ):
+            return message_id
+        sent = await self.send_message(
+            chat_id,
+            text,
+            reply_to_message_id,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+        )
+        return int((sent.get("result") or {}).get("message_id") or 0)
 
     def start_background_task(self, coro: Awaitable[Any], label: str) -> asyncio.Task[Any]:
         task = asyncio.create_task(coro)
@@ -1553,17 +1598,16 @@ class TelegramBotApp:
             chat_id,
             progress_card("Adding Facebook account...", 1, 3, "Cookies parsed."),
             message_id,
-            reply_markup=cookie_input_markup(),
         )
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
 
         label = "Facebook Account"
         name_source = "Lookup queued"
-        await self.edit_message(
+        progress_message_id = await self.edit_or_send_message(
             chat_id,
             progress_message_id,
             progress_card("Adding Facebook account...", 2, 3, "Saving account. Name lookup will continue in background..."),
-            reply_markup=cookie_input_markup(),
+            reply_to_message_id=message_id,
         )
         try:
             await asyncio.to_thread(
@@ -1580,10 +1624,11 @@ class TelegramBotApp:
                 chat_id,
             )
         except Exception as exc:
-            await self.edit_message(
+            await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
                 progress_card("Adding Facebook account...", 3, 3, f"Account was not saved: {str(exc)[:500]}"),
+                reply_to_message_id=message_id,
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             return False
@@ -1604,10 +1649,11 @@ class TelegramBotApp:
                 "🟡 Cookies: Not verified against Facebook posting yet",
             ]
         )
-        await self.edit_message(
+        await self.edit_or_send_message(
             chat_id,
             progress_message_id,
             progress_card("Adding Facebook account...", 3, 3, "Account saved."),
+            reply_to_message_id=message_id,
             reply_markup=await self.dashboard_reply_markup(user_id),
         )
         await self.show_dashboard(
@@ -2412,7 +2458,6 @@ class TelegramBotApp:
             chat_id,
             progress_card("Checking all cookies...", 0, total, "Preparing cookie validation..."),
             message_id,
-            reply_markup=await self.dashboard_reply_markup(user_id),
         )
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
 
@@ -2423,12 +2468,11 @@ class TelegramBotApp:
         for index, account in enumerate(accounts, start=1):
             account_id = str(account.get("account_id") or "")
             display = account_display_name(account, account_id)
-            if progress_message_id:
-                await self.edit_message(
-                    chat_id,
-                    progress_message_id,
-                    progress_card("Checking all cookies...", index - 1, total, f"Checking {display}..."),
-                )
+            progress_message_id = await self.edit_or_send_message(
+                chat_id,
+                progress_message_id,
+                progress_card("Checking all cookies...", index - 1, total, f"Checking {display}..."),
+            )
             try:
                 cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, self.account_owner_scope(user_id))
                 parsed = parse_account_cookie_payload(cookie_header, account_id)
@@ -2439,12 +2483,11 @@ class TelegramBotApp:
                 lines.append(f"{icon} {display}: {status_text}")
             except Exception as exc:
                 lines.append(f"🔴 {display}: {str(exc)[:120]}")
-            if progress_message_id:
-                await self.edit_message(
-                    chat_id,
-                    progress_message_id,
-                    progress_card("Checking all cookies...", index, total, f"Finished {display}."),
-                )
+            progress_message_id = await self.edit_or_send_message(
+                chat_id,
+                progress_message_id,
+                progress_card("Checking all cookies...", index, total, f"Finished {display}."),
+            )
         lines.extend(
             [
                 "━━━━━━━━━━━━━━━━━━━━━━",
@@ -2452,25 +2495,24 @@ class TelegramBotApp:
                 f"Stored accounts checked: {len(accounts)}",
             ]
         )
-        if progress_message_id:
-            await self.edit_message(
-                chat_id,
-                progress_message_id,
-                "\n".join(
-                    [
-                        progress_card(
-                            "Checking all cookies...",
-                            total,
-                            total,
-                            f"Validation complete: {valid_count}/{total} session(s) valid.",
-                        ),
-                        "",
-                        *lines,
-                    ]
-                ),
-            )
-            return
-        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+        await self.edit_or_send_message(
+            chat_id,
+            progress_message_id,
+            "\n".join(
+                [
+                    progress_card(
+                        "Checking all cookies...",
+                        total,
+                        total,
+                        f"Validation complete: {valid_count}/{total} session(s) valid.",
+                    ),
+                    "",
+                    *lines,
+                ]
+            ),
+            reply_to_message_id=message_id,
+            reply_markup=await self.dashboard_reply_markup(user_id),
+        )
 
     async def command_check_account(self, chat_id: int, message_id: int, user_id: int, account_id: str) -> None:
         account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
@@ -2482,7 +2524,6 @@ class TelegramBotApp:
             chat_id,
             progress_card("Checking account cookie...", 0, 1, f"Validating {display}..."),
             message_id,
-            reply_markup=account_post_action_markup(),
         )
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
         try:
@@ -2509,15 +2550,13 @@ class TelegramBotApp:
             "",
             hint,
         ]
-        if progress_message_id:
-            await self.edit_message(
-                chat_id,
-                progress_message_id,
-                "\n".join([progress_card("Checking account cookie...", 1, 1, "Validation complete."), "", *lines]),
-                reply_markup=account_post_action_markup(),
-            )
-            return
-        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=account_post_action_markup())
+        await self.edit_or_send_message(
+            chat_id,
+            progress_message_id,
+            "\n".join([progress_card("Checking account cookie...", 1, 1, "Validation complete."), "", *lines]),
+            reply_to_message_id=message_id,
+            reply_markup=account_post_action_markup(),
+        )
 
     async def command_post_history(self, chat_id: int, message_id: int, user_id: int = 0) -> None:
         summary = await self.dashboard_summary(user_id)
@@ -3073,7 +3112,6 @@ class TelegramBotApp:
             progress = await self.send_message(
                 chat_id,
                 progress_card("Posting...", 0, total_units, f"Debug ID: {trace_id}\nQueued and waiting for account isolation slot."),
-                reply_markup=await self.dashboard_reply_markup(user_id),
             )
             progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
             await self.try_edit_message(
@@ -3234,7 +3272,6 @@ class TelegramBotApp:
             progress = await self.send_message(
                 chat_id,
                 progress_card("Batch posting...", 0, total_units, f"Debug ID: {trace_id}\nQueued {len(jobs)} page job(s)."),
-                reply_markup=await self.dashboard_reply_markup(user_id),
             )
             progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
             await self.try_edit_message(
