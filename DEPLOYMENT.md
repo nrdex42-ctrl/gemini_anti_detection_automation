@@ -112,10 +112,18 @@ python scripts/generate_fernet_key.py
 
 1. Deploy the Render service from the GitHub repository.
 2. Set the Telegram webhook with `scripts/set_telegram_webhook.py`.
-3. Send `/start` to the bot.
-4. Send `/add_account auto <raw_cookie>` from an admin Telegram user.
-5. Run `/pages <account_id>` to discover managed pages.
-6. Run `/post <account_id> <page_id_or_url> <text|image|video> <caption>` to queue a post.
+3. Send `/start` or `/dashboard` to the bot.
+4. Use the typing-area dashboard panel to add an account.
+5. Use `Discover Pages` to store managed pages for that account.
+6. Use `Text Post`, `Image Post`, or `Video Post` to queue posts through guided steps.
+
+Direct commands still work:
+
+```text
+/add_account auto <raw_cookie>
+/pages <account_id>
+/post <account_id> <page_id_or_url> <text|image|video> <caption>
+```
 
 ## 6. Isolation Rules
 
@@ -124,4 +132,3 @@ python scripts/generate_fernet_key.py
 - After a posting attempt uses a cookie, the bot records `last_cookie_used_at`.
 - `BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS` controls the minimum wait before the next use of the same account.
 - `BOT_ACCOUNT_LOCK_HEARTBEAT_SECONDS` refreshes long-running job leases.
-

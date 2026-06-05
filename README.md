@@ -45,6 +45,7 @@ python telegram_bot.py
 
 ## Telegram Bot Commands
 
+- `/dashboard` opens the persistent typing-area dashboard panel.
 - `/start` or `/help` shows usage.
 - `/add_account <account_id> <raw_cookie>` stores or updates an account cookie.
 - `/add_account auto <raw_cookie>` derives the account id from `c_user`.
@@ -55,6 +56,29 @@ python telegram_bot.py
 - `/post <account_id> <page_id_or_url> <text|image|video> <caption>` queues a post.
 
 For image/video posts, attach the media to the Telegram message or reply to a media message with the `/post` command.
+
+## Dashboard Panel
+
+The bot now sends a persistent Telegram reply keyboard in the typing area. The panel supports:
+
+- Add Account
+- Accounts
+- Discover Pages
+- Stored Pages
+- Text Post
+- Image Post
+- Video Post
+- Status
+- Dashboard
+- Cancel
+
+The posting buttons use guided steps:
+
+1. Choose or type the account id.
+2. Choose a stored page or type a page id/full URL.
+3. Send text, image, or video depending on the selected post type.
+
+Slash commands remain available for direct automation and testing.
 
 ## Deployment
 
@@ -67,4 +91,3 @@ See `DEPLOYMENT.md` for the Render, Supabase, Telegram webhook, and GitHub push 
 - Set `ENCRYPTION_KEY` before storing cookies. If this key changes, previously encrypted cookies cannot be decrypted.
 - Rotate any account cookie that was pasted into logs, chat history, screenshots, or committed files.
 - `BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS` defaults to `360` seconds to avoid overlapping account sessions.
-

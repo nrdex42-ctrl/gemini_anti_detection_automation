@@ -157,6 +157,49 @@ class BotStorage:
                 )
                 return list(cur.fetchall())
 
+    def dashboard_summary(self) -> Dict[str, Any]:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("select count(*)::int as page_count from fb_pages")
+                page_row = cur.fetchone() or {}
+
+                cur.execute(
+                    """
+                    select status, count(*)::int as count
+                    from fb_post_jobs
+                    group by status
+                    """
+                )
+                status_counts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
+
+                cur.execute(
+                    """
+                    select account_id, last_cookie_used_at, locked_until, locked_by
+                    from fb_account_runtime
+                    where locked_until is not null and locked_until > now()
+                    order by locked_until desc
+                    limit 10
+                    """
+                )
+                locked_accounts = list(cur.fetchall())
+
+                cur.execute(
+                    """
+                    select id::text, account_id, page_id_or_url, post_type, status, created_at
+                    from fb_post_jobs
+                    order by created_at desc
+                    limit 8
+                    """
+                )
+                recent_jobs = list(cur.fetchall())
+
+        return {
+            "page_count": int(page_row.get("page_count") or 0),
+            "job_status_counts": status_counts,
+            "locked_accounts": locked_accounts,
+            "recent_jobs": recent_jobs,
+        }
+
     def create_post_job(
         self,
         *,

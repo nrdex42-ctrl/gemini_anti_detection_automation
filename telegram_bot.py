@@ -19,6 +19,18 @@ from aiohttp import ClientSession, web
 from bot_storage import BotStorage
 from run_live_image_test import parse_cookies
 from run_live_matrix_test import cookies_json, discover_pages_from_browser
+from telegram_dashboard import (
+    POST_ACTION_TYPES,
+    account_choice_label,
+    cancel_markup,
+    choices_markup,
+    dashboard_action,
+    dashboard_markup,
+    dashboard_text,
+    page_choice_label,
+    parse_choice_id,
+    prompt_text,
+)
 
 logger = logging.getLogger("telegram_bot")
 
@@ -71,6 +83,7 @@ def split_command(text: str) -> Tuple[str, List[str]]:
 def help_text() -> str:
     return (
         "Facebook automation bot commands:\n\n"
+        "/dashboard - open the typing-area dashboard panel\n"
         "/add_account <account_id> <raw_cookie> - store/update an account cookie\n"
         "/accounts - list stored accounts\n"
         "/remove_account <account_id> - deactivate an account\n"
@@ -105,6 +118,7 @@ class TelegramBotApp:
         self.storage = BotStorage.from_env()
         self.session: Optional[ClientSession] = None
         self.api_base = f"https://api.telegram.org/bot{self.token}"
+        self.dashboard_sessions: Dict[str, Dict[str, Any]] = {}
 
     async def startup(self, app: web.Application) -> None:
         self.session = ClientSession()
@@ -134,7 +148,15 @@ class TelegramBotApp:
                 logger.warning("Telegram API %s failed: %s", method, data)
             return data
 
-    async def send_message(self, chat_id: int, text: str, reply_to_message_id: int = 0) -> None:
+    async def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        reply_to_message_id: int = 0,
+        *,
+        reply_markup: Optional[Dict[str, Any]] = None,
+        parse_mode: str = "",
+    ) -> None:
         payload: Dict[str, Any] = {
             "chat_id": chat_id,
             "text": text[:3900],
@@ -142,6 +164,10 @@ class TelegramBotApp:
         }
         if reply_to_message_id:
             payload["reply_to_message_id"] = reply_to_message_id
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         await self.telegram_api("sendMessage", payload)
 
     async def delete_message(self, chat_id: int, message_id: int) -> None:
@@ -186,6 +212,225 @@ class TelegramBotApp:
                 return str(document.get("file_id") or "")
         return ""
 
+    def dashboard_session_key(self, chat_id: int, user_id: int) -> str:
+        return f"{chat_id}:{user_id}"
+
+    def set_dashboard_session(self, chat_id: int, user_id: int, data: Dict[str, Any]) -> None:
+        data["updated_at"] = time.time()
+        self.dashboard_sessions[self.dashboard_session_key(chat_id, user_id)] = data
+
+    def get_dashboard_session(self, chat_id: int, user_id: int) -> Dict[str, Any]:
+        key = self.dashboard_session_key(chat_id, user_id)
+        session = self.dashboard_sessions.get(key) or {}
+        max_age = _env_int("BOT_DASHBOARD_SESSION_TTL_SECONDS", 1800, minimum=60)
+        if session and time.time() - float(session.get("updated_at") or 0) > max_age:
+            self.dashboard_sessions.pop(key, None)
+            return {}
+        return session
+
+    def clear_dashboard_session(self, chat_id: int, user_id: int) -> None:
+        self.dashboard_sessions.pop(self.dashboard_session_key(chat_id, user_id), None)
+
+    async def dashboard_accounts(self) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(self.storage.list_accounts)
+
+    async def dashboard_reply_markup(self) -> Dict[str, Any]:
+        accounts = await self.dashboard_accounts()
+        summary = await asyncio.to_thread(self.storage.dashboard_summary)
+        status_counts = summary.get("job_status_counts") or {}
+        active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
+        return dashboard_markup(has_accounts=bool(accounts), active_jobs=active_jobs)
+
+    async def show_dashboard(self, chat_id: int, message_id: int = 0, prefix: str = "") -> None:
+        try:
+            accounts = await self.dashboard_accounts()
+            summary = await asyncio.to_thread(self.storage.dashboard_summary)
+            text = dashboard_text(accounts=accounts, summary=summary, prefix=prefix)
+            status_counts = summary.get("job_status_counts") or {}
+            active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
+            reply_markup = dashboard_markup(has_accounts=bool(accounts), active_jobs=active_jobs)
+        except Exception as exc:
+            logger.exception("Dashboard rendering failed")
+            text = f"{prefix + chr(10) + chr(10) if prefix else ''}Dashboard is available, but database status could not be loaded: {exc}"
+            reply_markup = dashboard_markup(has_accounts=False)
+        await self.send_message(chat_id, text, message_id, reply_markup=reply_markup)
+
+    async def prompt_for_account(self, chat_id: int, message_id: int, prompt: str) -> bool:
+        accounts = await self.dashboard_accounts()
+        if not accounts:
+            await self.send_message(
+                chat_id,
+                "No accounts are stored yet. Use Add Account first.",
+                message_id,
+                reply_markup=dashboard_markup(has_accounts=False),
+            )
+            return False
+        await self.send_message(
+            chat_id,
+            prompt,
+            message_id,
+            reply_markup=choices_markup((account_choice_label(item) for item in accounts), placeholder="Choose account"),
+        )
+        return True
+
+    async def prompt_for_page(self, chat_id: int, message_id: int, account_id: str) -> None:
+        pages = await asyncio.to_thread(self.storage.list_pages, account_id)
+        if pages:
+            labels = [page_choice_label(page) for page in pages[:24]]
+            await self.send_message(
+                chat_id,
+                prompt_text("post", "page"),
+                message_id,
+                reply_markup=choices_markup(labels, placeholder="Choose page"),
+            )
+            return
+        await self.send_message(
+            chat_id,
+            "No stored pages for this account yet. Type a page id / full page URL, or run Discover Pages.",
+            message_id,
+            reply_markup=cancel_markup(),
+        )
+
+    async def handle_dashboard_button(
+        self,
+        chat_id: int,
+        user_id: int,
+        message_id: int,
+        action: str,
+    ) -> None:
+        if action in {"dashboard", "cancel"}:
+            self.clear_dashboard_session(chat_id, user_id)
+            prefix = "Current operation cancelled." if action == "cancel" else ""
+            await self.show_dashboard(chat_id, message_id, prefix=prefix)
+            return
+        if action == "accounts":
+            self.clear_dashboard_session(chat_id, user_id)
+            await self.command_accounts(chat_id, message_id)
+            return
+        if action == "status":
+            self.clear_dashboard_session(chat_id, user_id)
+            await self.show_dashboard(chat_id, message_id)
+            return
+        if action == "add_account":
+            self.set_dashboard_session(chat_id, user_id, {"action": "add_account", "step": "cookie"})
+            await self.send_message(chat_id, prompt_text("add_account"), message_id, reply_markup=cancel_markup())
+            return
+        if action in {"discover_pages", "list_pages"}:
+            self.set_dashboard_session(chat_id, user_id, {"action": action, "step": "account"})
+            if not await self.prompt_for_account(chat_id, message_id, prompt_text(action, "account")):
+                self.clear_dashboard_session(chat_id, user_id)
+            return
+        if action in POST_ACTION_TYPES:
+            post_type = POST_ACTION_TYPES[action]
+            self.set_dashboard_session(
+                chat_id,
+                user_id,
+                {"action": "post", "post_type": post_type, "step": "account"},
+            )
+            if not await self.prompt_for_account(chat_id, message_id, f"{post_type.title()} post: {prompt_text('post', 'account')}"):
+                self.clear_dashboard_session(chat_id, user_id)
+            return
+        await self.show_dashboard(chat_id, message_id)
+
+    async def handle_dashboard_session(
+        self,
+        chat_id: int,
+        user_id: int,
+        message_id: int,
+        text: str,
+        message: Dict[str, Any],
+    ) -> bool:
+        session = self.get_dashboard_session(chat_id, user_id)
+        if not session:
+            return False
+        action = str(session.get("action") or "")
+        step = str(session.get("step") or "")
+
+        if action == "add_account":
+            raw = text.strip()
+            if not raw:
+                await self.send_message(chat_id, prompt_text("add_account"), message_id, reply_markup=cancel_markup())
+                return True
+            if "=" in raw.split(maxsplit=1)[0]:
+                args = ["auto", raw]
+            else:
+                args = raw.split(maxsplit=1)
+            self.clear_dashboard_session(chat_id, user_id)
+            await self.command_add_account(chat_id, user_id, message_id, args, message)
+            return True
+
+        if step == "account":
+            account_id = parse_choice_id(text)
+            if not account_id:
+                if not await self.prompt_for_account(chat_id, message_id, prompt_text(action, "account")):
+                    self.clear_dashboard_session(chat_id, user_id)
+                return True
+            session["account_id"] = account_id
+            if action == "discover_pages":
+                self.clear_dashboard_session(chat_id, user_id)
+                await self.command_discover_pages(chat_id, message_id, [account_id])
+                return True
+            if action == "list_pages":
+                self.clear_dashboard_session(chat_id, user_id)
+                await self.command_list_pages(chat_id, message_id, [account_id])
+                return True
+            session["step"] = "page"
+            self.set_dashboard_session(chat_id, user_id, session)
+            await self.prompt_for_page(chat_id, message_id, account_id)
+            return True
+
+        if action == "post" and step == "page":
+            page_id_or_url = parse_choice_id(text)
+            if not page_id_or_url:
+                await self.prompt_for_page(chat_id, message_id, str(session.get("account_id") or ""))
+                return True
+            post_type = str(session.get("post_type") or "text")
+            session["page_id_or_url"] = page_id_or_url
+            session["step"] = "caption" if post_type == "text" else f"media_{post_type}"
+            self.set_dashboard_session(chat_id, user_id, session)
+            await self.send_message(chat_id, prompt_text("post", session["step"]), message_id, reply_markup=cancel_markup())
+            return True
+
+        if action == "post" and step == "caption":
+            caption = text.strip()
+            if not caption:
+                await self.send_message(chat_id, "Caption cannot be empty. Send the post text.", message_id, reply_markup=cancel_markup())
+                return True
+            self.clear_dashboard_session(chat_id, user_id)
+            await self.queue_post_job(
+                chat_id,
+                user_id,
+                str(session.get("account_id") or ""),
+                str(session.get("page_id_or_url") or ""),
+                "text",
+                caption,
+                "",
+            )
+            return True
+
+        if action == "post" and step in {"media_image", "media_video"}:
+            post_type = str(session.get("post_type") or "").strip()
+            file_id = self.extract_media_file_id(message, post_type)
+            if not file_id:
+                await self.send_message(chat_id, prompt_text("post", step), message_id, reply_markup=cancel_markup())
+                return True
+            media_path = await self.download_file(file_id, str(session.get("account_id") or ""))
+            self.clear_dashboard_session(chat_id, user_id)
+            await self.queue_post_job(
+                chat_id,
+                user_id,
+                str(session.get("account_id") or ""),
+                str(session.get("page_id_or_url") or ""),
+                post_type,
+                text.strip(),
+                media_path,
+            )
+            return True
+
+        self.clear_dashboard_session(chat_id, user_id)
+        await self.show_dashboard(chat_id, message_id, prefix="The previous dashboard flow expired.")
+        return True
+
     async def handle_update(self, update: Dict[str, Any]) -> None:
         if not self.authorized(update):
             message = update.get("message") or {}
@@ -202,9 +447,20 @@ class TelegramBotApp:
         user_id = int(user.get("id") or 0)
         message_id = int(message.get("message_id") or 0)
         command, args = split_command(text)
+        action = dashboard_action(text)
 
-        if command in {"", "/start", "/help"}:
-            await self.send_message(chat_id, help_text(), message_id)
+        if command in {"/start", "/help", "/dashboard"}:
+            self.clear_dashboard_session(chat_id, user_id)
+            prefix = help_text() if command == "/help" else ""
+            await self.show_dashboard(chat_id, message_id, prefix=prefix)
+            return
+        if action:
+            await self.handle_dashboard_button(chat_id, user_id, message_id, action)
+            return
+        if await self.handle_dashboard_session(chat_id, user_id, message_id, text, message):
+            return
+        if command == "":
+            await self.show_dashboard(chat_id, message_id)
             return
         if command == "/add_account":
             await self.command_add_account(chat_id, user_id, message_id, args, message)
@@ -224,7 +480,12 @@ class TelegramBotApp:
         if command == "/post":
             await self.command_post(chat_id, user_id, message_id, args, message)
             return
-        await self.send_message(chat_id, "Unknown command.\n\n" + help_text(), message_id)
+        await self.send_message(
+            chat_id,
+            "Unknown command.\n\n" + help_text(),
+            message_id,
+            reply_markup=await self.dashboard_reply_markup(),
+        )
 
     async def command_add_account(
         self,
@@ -235,62 +496,81 @@ class TelegramBotApp:
         message: Dict[str, Any],
     ) -> None:
         if len(args) < 1:
-            await self.send_message(chat_id, "Usage: /add_account <account_id> <raw_cookie>", message_id)
+            await self.send_message(chat_id, "Usage: /add_account <account_id> <raw_cookie>", message_id, reply_markup=cancel_markup())
             return
         account_id = args[0]
         cookie_string = " ".join(args[1:]).strip()
+        cookie_message_ids = [message_id]
         if not cookie_string and message.get("reply_to_message"):
             reply = message["reply_to_message"]
             cookie_string = str(reply.get("text") or reply.get("caption") or "").strip()
+            reply_message_id = int(reply.get("message_id") or 0)
+            if reply_message_id:
+                cookie_message_ids.append(reply_message_id)
         if not cookie_string:
-            await self.send_message(chat_id, "Missing cookie string. Reply to the cookie message or pass it after account_id.", message_id)
+            await self.send_message(
+                chat_id,
+                "Missing cookie string. Reply to the cookie message or pass it after account_id.",
+                message_id,
+                reply_markup=cancel_markup(),
+            )
             return
-        parsed_account_id = account_id_from_cookie(cookie_string)
+        try:
+            parsed_account_id = account_id_from_cookie(cookie_string)
+        except ValueError as exc:
+            await self.send_message(chat_id, str(exc), message_id, reply_markup=cancel_markup())
+            return
         if account_id in {"auto", "-"}:
             account_id = parsed_account_id
         await asyncio.to_thread(self.storage.upsert_account, account_id, cookie_string, account_id, user_id)
         if _env_bool("DELETE_COOKIE_MESSAGES", True):
-            await self.delete_message(chat_id, message_id)
-        await self.send_message(chat_id, f"Stored account {account_id}.")
+            for cookie_message_id in dict.fromkeys(cookie_message_ids):
+                await self.delete_message(chat_id, cookie_message_id)
+        await self.show_dashboard(chat_id, prefix=f"Stored account {account_id}.")
 
     async def command_accounts(self, chat_id: int, message_id: int) -> None:
         accounts = await asyncio.to_thread(self.storage.list_accounts)
         if not accounts:
-            await self.send_message(chat_id, "No accounts stored.", message_id)
+            await self.send_message(chat_id, "No accounts stored.", message_id, reply_markup=dashboard_markup(has_accounts=False))
             return
         lines = ["Stored accounts:"]
         for item in accounts:
             status = "active" if item.get("active") else "inactive"
             lines.append(f"- {item['account_id']} ({status})")
-        await self.send_message(chat_id, "\n".join(lines), message_id)
+        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=await self.dashboard_reply_markup())
 
     async def command_remove_account(self, chat_id: int, message_id: int, args: List[str]) -> None:
         if len(args) != 1:
-            await self.send_message(chat_id, "Usage: /remove_account <account_id>", message_id)
+            await self.send_message(chat_id, "Usage: /remove_account <account_id>", message_id, reply_markup=await self.dashboard_reply_markup())
             return
         changed = await asyncio.to_thread(self.storage.deactivate_account, args[0])
-        await self.send_message(chat_id, "Account deactivated." if changed else "Account not found.", message_id)
+        await self.send_message(
+            chat_id,
+            "Account deactivated." if changed else "Account not found.",
+            message_id,
+            reply_markup=await self.dashboard_reply_markup(),
+        )
 
     async def command_discover_pages(self, chat_id: int, message_id: int, args: List[str]) -> None:
         if len(args) != 1:
-            await self.send_message(chat_id, "Usage: /pages <account_id>", message_id)
+            await self.send_message(chat_id, "Usage: /pages <account_id>", message_id, reply_markup=await self.dashboard_reply_markup())
             return
         account_id = args[0]
-        await self.send_message(chat_id, f"Discovering pages for {account_id}...", message_id)
+        await self.send_message(chat_id, f"Discovering pages for {account_id}...", message_id, reply_markup=cancel_markup())
         try:
             pages = await self.discover_pages(account_id)
             if pages:
                 await asyncio.to_thread(self.storage.upsert_pages, account_id, pages)
             if not pages:
-                await self.send_message(chat_id, "No managed pages discovered.")
+                await self.send_message(chat_id, "No managed pages discovered.", reply_markup=await self.dashboard_reply_markup())
                 return
             lines = [f"Discovered {len(pages)} page(s):"]
             for page in pages:
                 lines.append(f"- {page.get('name') or page.get('id')} | {page.get('url')}")
-            await self.send_message(chat_id, "\n".join(lines))
+            await self.send_message(chat_id, "\n".join(lines), reply_markup=await self.dashboard_reply_markup())
         except Exception as exc:
             logger.exception("Page discovery failed")
-            await self.send_message(chat_id, f"Page discovery failed: {exc}")
+            await self.send_message(chat_id, f"Page discovery failed: {exc}", reply_markup=await self.dashboard_reply_markup())
 
     async def discover_pages(self, account_id: str) -> List[Dict[str, str]]:
         from playwright.async_api import async_playwright
@@ -309,16 +589,59 @@ class TelegramBotApp:
 
     async def command_list_pages(self, chat_id: int, message_id: int, args: List[str]) -> None:
         if len(args) != 1:
-            await self.send_message(chat_id, "Usage: /list_pages <account_id>", message_id)
+            await self.send_message(chat_id, "Usage: /list_pages <account_id>", message_id, reply_markup=await self.dashboard_reply_markup())
             return
         pages = await asyncio.to_thread(self.storage.list_pages, args[0])
         if not pages:
-            await self.send_message(chat_id, "No pages stored. Run /pages <account_id> first.", message_id)
+            await self.send_message(
+                chat_id,
+                "No pages stored. Run /pages <account_id> first.",
+                message_id,
+                reply_markup=await self.dashboard_reply_markup(),
+            )
             return
         lines = [f"Stored pages for {args[0]}:"]
         for page in pages:
             lines.append(f"- {page['page_name'] or page['page_id']} | {page['page_url'] or page['page_id']}")
-        await self.send_message(chat_id, "\n".join(lines), message_id)
+        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=await self.dashboard_reply_markup())
+
+    async def queue_post_job(
+        self,
+        chat_id: int,
+        user_id: int,
+        account_id: str,
+        page_id_or_url: str,
+        post_type: str,
+        caption: str,
+        media_path: str,
+    ) -> str:
+        if post_type not in POST_TYPES:
+            raise ValueError(f"post_type must be one of {sorted(POST_TYPES)}")
+        if not account_id:
+            raise ValueError("account_id is required")
+        if not page_id_or_url:
+            raise ValueError("page_id_or_url is required")
+        if post_type in {"image", "video"} and not media_path:
+            raise ValueError(f"{post_type} media is required")
+
+        job_id = await asyncio.to_thread(
+            self.storage.create_post_job,
+            telegram_chat_id=chat_id,
+            telegram_user_id=user_id,
+            account_id=account_id,
+            page_id_or_url=page_id_or_url,
+            page_name="",
+            post_type=post_type,
+            caption=caption,
+            media_path=media_path,
+        )
+        await self.send_message(
+            chat_id,
+            f"Queued post job {job_id}.",
+            reply_markup=await self.dashboard_reply_markup(),
+        )
+        asyncio.create_task(self.run_post_job(job_id, chat_id, account_id, page_id_or_url, post_type, caption, media_path))
+        return job_id
 
     async def command_post(
         self,
@@ -333,13 +656,19 @@ class TelegramBotApp:
                 chat_id,
                 "Usage: /post <account_id> <page_id_or_url> <text|image|video> <caption>",
                 message_id,
+                reply_markup=await self.dashboard_reply_markup(),
             )
             return
         account_id, page_id_or_url, post_type = args[:3]
         post_type = post_type.lower()
         caption = " ".join(args[3:]).strip()
         if post_type not in POST_TYPES:
-            await self.send_message(chat_id, f"post_type must be one of {sorted(POST_TYPES)}", message_id)
+            await self.send_message(
+                chat_id,
+                f"post_type must be one of {sorted(POST_TYPES)}",
+                message_id,
+                reply_markup=await self.dashboard_reply_markup(),
+            )
             return
 
         media_path = ""
@@ -348,22 +677,23 @@ class TelegramBotApp:
             if file_id:
                 media_path = await self.download_file(file_id, account_id)
             else:
-                await self.send_message(chat_id, f"Attach or reply to a {post_type} file for this post.", message_id)
+                await self.send_message(
+                    chat_id,
+                    f"Attach or reply to a {post_type} file for this post.",
+                    message_id,
+                    reply_markup=await self.dashboard_reply_markup(),
+                )
                 return
 
-        job_id = await asyncio.to_thread(
-            self.storage.create_post_job,
-            telegram_chat_id=chat_id,
-            telegram_user_id=user_id,
-            account_id=account_id,
-            page_id_or_url=page_id_or_url,
-            page_name="",
-            post_type=post_type,
-            caption=caption,
-            media_path=media_path,
+        await self.queue_post_job(
+            chat_id,
+            user_id,
+            account_id,
+            page_id_or_url,
+            post_type,
+            caption,
+            media_path,
         )
-        await self.send_message(chat_id, f"Queued post job {job_id}.")
-        asyncio.create_task(self.run_post_job(job_id, chat_id, account_id, page_id_or_url, post_type, caption, media_path))
 
     async def run_post_job(
         self,
@@ -400,13 +730,13 @@ class TelegramBotApp:
             error = "" if success else str(result.get("result") or result.get("status") or result.get("error") or "posting failed")
             await asyncio.to_thread(self.storage.mark_job_completed, job_id, success, result, error)
             if success:
-                await self.send_message(chat_id, f"Post job {job_id} succeeded.")
+                await self.send_message(chat_id, f"Post job {job_id} succeeded.", reply_markup=await self.dashboard_reply_markup())
             else:
-                await self.send_message(chat_id, f"Post job {job_id} failed: {error[:500]}")
+                await self.send_message(chat_id, f"Post job {job_id} failed: {error[:500]}", reply_markup=await self.dashboard_reply_markup())
         except Exception as exc:
             logger.exception("Post job failed")
             await asyncio.to_thread(self.storage.mark_job_completed, job_id, False, {"exception": str(exc)}, str(exc))
-            await self.send_message(chat_id, f"Post job {job_id} failed: {exc}")
+            await self.send_message(chat_id, f"Post job {job_id} failed: {exc}", reply_markup=await self.dashboard_reply_markup())
         finally:
             if heartbeat_task is not None:
                 heartbeat_task.cancel()
