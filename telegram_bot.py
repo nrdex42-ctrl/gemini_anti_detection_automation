@@ -777,6 +777,20 @@ class TelegramBotApp:
     async def active_account_id(self, user_id: int) -> str:
         return await asyncio.to_thread(self.storage.get_active_account, user_id, self.account_owner_scope(user_id))
 
+    async def dashboard_state(self, user_id: int = 0) -> Tuple[List[Dict[str, Any]], Dict[str, Any], str]:
+        owner_scope = self.account_owner_scope(user_id)
+        tasks: List[Awaitable[Any]] = [
+            asyncio.to_thread(self.storage.list_accounts, owner_scope),
+            asyncio.to_thread(self.storage.dashboard_summary, owner_scope),
+        ]
+        if user_id:
+            tasks.append(asyncio.to_thread(self.storage.get_active_account, user_id, owner_scope))
+        results = await asyncio.gather(*tasks)
+        accounts = results[0]
+        summary = results[1]
+        active_account = str(results[2] or "") if user_id and len(results) > 2 else ""
+        return accounts, summary, active_account
+
     def account_label_needs_refresh(self, account: Dict[str, Any]) -> bool:
         account_id = str(account.get("account_id") or "").strip()
         label = str(account.get("label") or "").strip()
@@ -829,11 +843,7 @@ class TelegramBotApp:
             self.account_name_lookup_tasks.discard(task_key)
 
     async def dashboard_reply_markup(self, user_id: int = 0) -> Dict[str, Any]:
-        accounts = await self.dashboard_accounts(user_id)
-        summary = await self.dashboard_summary(user_id)
-        active_account = ""
-        if user_id:
-            active_account = await self.active_account_id(user_id)
+        accounts, summary, active_account = await self.dashboard_state(user_id)
         status_counts = summary.get("job_status_counts") or {}
         active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
         return dashboard_markup(
@@ -845,11 +855,8 @@ class TelegramBotApp:
 
     async def show_dashboard(self, chat_id: int, message_id: int = 0, prefix: str = "", user_id: int = 0) -> None:
         try:
-            accounts = await self.dashboard_accounts(user_id)
-            summary = await self.dashboard_summary(user_id)
-            active_account = ""
+            accounts, summary, active_account = await self.dashboard_state(user_id)
             if user_id:
-                active_account = await self.active_account_id(user_id)
                 self.schedule_account_name_refresh(user_id, accounts, chat_id)
             text = dashboard_text(accounts=accounts, summary=summary, active_account=active_account, prefix=prefix)
             status_counts = summary.get("job_status_counts") or {}
@@ -2875,28 +2882,29 @@ class TelegramBotApp:
         if not await asyncio.to_thread(self.storage.account_exists, account_id, True, self.account_owner_scope(user_id)):
             raise ValueError("Active account not found for this Telegram user")
 
+        started = time.monotonic()
+        jobs_to_create: List[Dict[str, Any]] = []
         job_payloads: List[Dict[str, str]] = []
-        job_ids: List[str] = []
         for page in pages:
             page_id_or_url = str(page.get("page_url") or page.get("page_id") or "").strip()
             page_name = page_display_name(page, len(job_payloads))
             if not page_id_or_url:
                 continue
-            job_id = await asyncio.to_thread(
-                self.storage.create_post_job,
-                telegram_chat_id=chat_id,
-                telegram_user_id=user_id,
-                account_id=account_id,
-                page_id_or_url=page_id_or_url,
-                page_name=page_name,
-                post_type=post_type,
-                caption=caption,
-                media_path=media_path,
+            jobs_to_create.append(
+                {
+                    "telegram_chat_id": chat_id,
+                    "telegram_user_id": user_id,
+                    "account_id": account_id,
+                    "page_id_or_url": page_id_or_url,
+                    "page_name": page_name,
+                    "post_type": post_type,
+                    "caption": caption,
+                    "media_path": media_path,
+                }
             )
-            job_ids.append(job_id)
             job_payloads.append(
                 {
-                    "job_id": job_id,
+                    "job_id": "",
                     "page_id_or_url": page_id_or_url,
                     "page_name": page_name,
                     "post_type": post_type,
@@ -2905,8 +2913,21 @@ class TelegramBotApp:
                 }
             )
 
+        job_ids = await asyncio.to_thread(self.storage.create_post_jobs, jobs_to_create)
+        if len(job_ids) != len(job_payloads):
+            raise RuntimeError(f"Created {len(job_ids)} job id(s) for {len(job_payloads)} queued post(s)")
+        for index, job_id in enumerate(job_ids):
+            job_payloads[index]["job_id"] = job_id
+
         if not job_ids:
             raise ValueError("No usable stored pages were found")
+        self.debug_event(
+            "queue_bulk_jobs_created",
+            new_debug_id("queue"),
+            account_id=account_id,
+            job_count=len(job_ids),
+            elapsed_seconds=round(time.monotonic() - started, 3),
+        )
         await self.send_message(
             chat_id,
             f"Queued {len(job_ids)} post job(s) for all stored pages.",
@@ -2939,29 +2960,30 @@ class TelegramBotApp:
         if not await asyncio.to_thread(self.storage.account_exists, account_id, True, self.account_owner_scope(user_id)):
             raise ValueError("Active account not found for this Telegram user")
 
+        started = time.monotonic()
+        jobs_to_create: List[Dict[str, Any]] = []
         job_payloads: List[Dict[str, str]] = []
-        job_ids: List[str] = []
         for index, page in enumerate(pages):
             page_id_or_url = str(page.get("page_url") or page.get("page_id") or "").strip()
             page_name = page_display_name(page, len(job_payloads))
             media_path = str(media_paths[index] or "").strip()
             if not page_id_or_url or not media_path:
                 continue
-            job_id = await asyncio.to_thread(
-                self.storage.create_post_job,
-                telegram_chat_id=chat_id,
-                telegram_user_id=user_id,
-                account_id=account_id,
-                page_id_or_url=page_id_or_url,
-                page_name=page_name,
-                post_type=post_type,
-                caption=caption,
-                media_path=media_path,
+            jobs_to_create.append(
+                {
+                    "telegram_chat_id": chat_id,
+                    "telegram_user_id": user_id,
+                    "account_id": account_id,
+                    "page_id_or_url": page_id_or_url,
+                    "page_name": page_name,
+                    "post_type": post_type,
+                    "caption": caption,
+                    "media_path": media_path,
+                }
             )
-            job_ids.append(job_id)
             job_payloads.append(
                 {
-                    "job_id": job_id,
+                    "job_id": "",
                     "page_id_or_url": page_id_or_url,
                     "page_name": page_name,
                     "post_type": post_type,
@@ -2970,8 +2992,21 @@ class TelegramBotApp:
                 }
             )
 
+        job_ids = await asyncio.to_thread(self.storage.create_post_jobs, jobs_to_create)
+        if len(job_ids) != len(job_payloads):
+            raise RuntimeError(f"Created {len(job_ids)} job id(s) for {len(job_payloads)} queued post(s)")
+        for index, job_id in enumerate(job_ids):
+            job_payloads[index]["job_id"] = job_id
+
         if not job_ids:
             raise ValueError("No usable selected pages/media were found")
+        self.debug_event(
+            "queue_paired_jobs_created",
+            new_debug_id("queue"),
+            account_id=account_id,
+            job_count=len(job_ids),
+            elapsed_seconds=round(time.monotonic() - started, 3),
+        )
         await self.send_message(
             chat_id,
             f"Queued {len(job_ids)} paired {post_type} post job(s).",
@@ -3314,11 +3349,10 @@ class TelegramBotApp:
                 progress_card("Batch posting...", 0, total_units, f"Debug ID: {trace_id}\nMarking {len(job_ids)} job(s) as processing..."),
             )
             storage_timeout_seconds = _env_int("BOT_STORAGE_OPERATION_TIMEOUT_SECONDS", 45, minimum=5)
-            for job_id in job_ids:
-                await asyncio.wait_for(
-                    asyncio.to_thread(self.storage.mark_job_started, job_id),
-                    timeout=storage_timeout_seconds,
-                )
+            await asyncio.wait_for(
+                asyncio.to_thread(self.storage.mark_jobs_started, job_ids),
+                timeout=storage_timeout_seconds,
+            )
             self.debug_event("batch_post_jobs_marked_started", trace_id, batch_id=batch_id, job_count=len(job_ids))
 
             async def lock_progress(detail: str) -> None:
@@ -3407,13 +3441,21 @@ class TelegramBotApp:
                 progress_card("Batch posting...", total_units, total_units, f"Debug ID: {trace_id}\nFacebook returned batch results."),
             )
             success_count = 0
+            completions: List[Dict[str, Any]] = []
             for index, job in enumerate(jobs):
                 result = results[index] if index < len(results) else {"success": False, "status": "no_result"}
                 success = bool(result.get("success"))
                 if success:
                     success_count += 1
                 error = "" if success else str(result.get("result") or result.get("status") or result.get("error") or "posting failed")
-                await asyncio.to_thread(self.storage.mark_job_completed, str(job["job_id"]), success, result, error)
+                completions.append(
+                    {
+                        "job_id": str(job["job_id"]),
+                        "success": success,
+                        "result": result,
+                        "error": error,
+                    }
+                )
                 self.debug_event(
                     "batch_post_page_result",
                     trace_id,
@@ -3423,6 +3465,7 @@ class TelegramBotApp:
                     success=success,
                     error=error[:300],
                 )
+            await asyncio.to_thread(self.storage.mark_jobs_completed, completions)
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
@@ -3433,8 +3476,19 @@ class TelegramBotApp:
         except Exception as exc:
             logger.exception("Batch post job failed")
             self.debug_event("batch_post_failed", trace_id, batch_id=batch_id, error=compact_error(exc))
-            for job_id in job_ids:
-                await asyncio.to_thread(self.storage.mark_job_completed, job_id, False, {"exception": str(exc)}, str(exc))
+            with suppress(Exception):
+                await asyncio.to_thread(
+                    self.storage.mark_jobs_completed,
+                    [
+                        {
+                            "job_id": job_id,
+                            "success": False,
+                            "result": {"exception": str(exc)},
+                            "error": str(exc),
+                        }
+                        for job_id in job_ids
+                    ],
+                )
             if progress_message_id:
                 await self.edit_or_send_message(
                     chat_id,

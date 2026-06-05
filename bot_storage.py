@@ -678,6 +678,37 @@ class BotStorage:
             conn.commit()
         return job_id
 
+    def create_post_jobs(self, jobs: List[Dict[str, Any]]) -> List[str]:
+        if not jobs:
+            return []
+        job_ids: List[str] = []
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                for job in jobs:
+                    cur.execute(
+                        """
+                        insert into fb_post_jobs (
+                            telegram_chat_id, telegram_user_id, account_id, page_id_or_url,
+                            page_name, post_type, caption, media_path
+                        )
+                        values (%s, %s, %s, %s, %s, %s, %s, %s)
+                        returning id::text
+                        """,
+                        (
+                            int(job["telegram_chat_id"]),
+                            int(job["telegram_user_id"]),
+                            str(job["account_id"]),
+                            str(job["page_id_or_url"]),
+                            str(job.get("page_name") or ""),
+                            str(job["post_type"]),
+                            str(job.get("caption") or ""),
+                            str(job.get("media_path") or ""),
+                        ),
+                    )
+                    job_ids.append(str(cur.fetchone()["id"]))
+            conn.commit()
+        return job_ids
+
     def claim_account_runtime(self, account_id: str, owner: str, lease_seconds: int) -> Optional[Dict[str, Any]]:
         with self.connect() as conn:
             with conn.cursor() as cur:
@@ -741,6 +772,15 @@ class BotStorage:
                 cur.execute("update fb_post_jobs set status='processing', started_at=now() where id=%s", (job_id,))
             conn.commit()
 
+    def mark_jobs_started(self, job_ids: List[str]) -> None:
+        if not job_ids:
+            return
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                for job_id in job_ids:
+                    cur.execute("update fb_post_jobs set status='processing', started_at=now() where id=%s", (job_id,))
+            conn.commit()
+
     def mark_job_completed(self, job_id: str, success: bool, result: Dict[str, Any], error: str = "") -> None:
         status = "success" if success else "failed"
         with self.connect() as conn:
@@ -753,4 +793,26 @@ class BotStorage:
                     """,
                     (status, json.dumps(result, ensure_ascii=False), error, job_id),
                 )
+            conn.commit()
+
+    def mark_jobs_completed(self, completions: List[Dict[str, Any]]) -> None:
+        if not completions:
+            return
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                for item in completions:
+                    status = "success" if bool(item.get("success")) else "failed"
+                    cur.execute(
+                        """
+                        update fb_post_jobs
+                        set status=%s, result=%s::jsonb, error=%s, completed_at=now()
+                        where id=%s
+                        """,
+                        (
+                            status,
+                            json.dumps(item.get("result") or {}, ensure_ascii=False),
+                            str(item.get("error") or ""),
+                            str(item["job_id"]),
+                        ),
+                    )
             conn.commit()
