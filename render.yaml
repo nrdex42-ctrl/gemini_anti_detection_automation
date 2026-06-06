@@ -63,6 +63,30 @@ services:
         value: "1200"
       - key: BOT_VIDEO_URL_PROBE_TIMEOUT_SECONDS
         value: "12"
+      - key: POST_BATCH_PAGE_TIMEOUT_SECONDS
+        value: "110"
+      - key: POST_BATCH_PAGE_TIMEOUT_MAX_SECONDS
+        value: "150"
+      - key: POST_DIRECT_COMPOSER_TIMEOUT_SECONDS
+        value: "35"
+      - key: POST_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS
+        value: "90"
+      - key: POST_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS
+        value: "150"
+      - key: POST_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS
+        value: "180"
+      - key: POST_PUBLISH_IN_PROGRESS_TIMEOUT_MS
+        value: "30000"
+      - key: POST_PARALLEL_BATCH_ENABLED
+        value: "true"
+      - key: POST_ALLOW_PARALLEL_SAME_COOKIE
+        value: "true"
+      - key: POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS
+        value: "2"
+      - key: MAX_PARALLEL_PAGES
+        value: "2"
+      - key: POST_PARALLEL_SAME_COOKIE_STAGGER_SECONDS
+        value: "8"
       - key: POST_COOKIE_MIN_INTERVAL_SECONDS
         value: "360"
       - key: POST_COOKIE_SESSION_LOCK_ENABLED
@@ -80,13 +104,13 @@ services:
       - key: POST_PAGES_PORTAL_FALLBACK_VIDEO_ENABLED
         value: "true"
       - key: POST_PAGES_PORTAL_FIRST
-        value: "true"
+        value: "false"
       - key: POST_PAGES_PORTAL_FIRST_TEXT_ENABLED
-        value: "true"
+        value: "false"
       - key: POST_PAGES_PORTAL_FIRST_IMAGE_ENABLED
-        value: "true"
+        value: "false"
       - key: POST_PAGES_PORTAL_FIRST_VIDEO_ENABLED
-        value: "true"
+        value: "false"
       - key: FACEBOOK_BROWSER_NO_SANDBOX
         value: "true"
       - key: FACEBOOK_IMAGE_FORCE_SANITIZE_UPLOAD
