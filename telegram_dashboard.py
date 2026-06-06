@@ -426,9 +426,10 @@ def account_display_name(account: Dict[str, Any], fallback_id: str = "", *, incl
     account_id = str(account.get("account_id") or fallback_id or "").strip()
     label = str(account.get("label") or "").strip()
     if label and label != account_id:
-        display = "Facebook Account" if label.startswith("Facebook Account ") else label
-        return f"{display} ({account_id})" if include_id and account_id else display
-    if include_id and account_id:
+        display = "Facebook Account" if label == "Facebook Account" or label.startswith("Facebook Account ") else label
+        should_show_id = include_id or display == "Facebook Account"
+        return f"{display} ({account_id})" if should_show_id and account_id else display
+    if account_id:
         return account_id
     return "Facebook Account"
 

@@ -199,6 +199,11 @@ def cookie_validation_summary(session_ok: bool, detail: str, max_length: int = 1
     return "🔴", compact_detail[:max_length] or "Facebook session is not valid"
 
 
+def is_encryption_key_error(exc: BaseException) -> bool:
+    detail = str(exc or "").lower()
+    return "encryption_key" in detail or "could not be decrypted" in detail
+
+
 def compact_error(exc: BaseException, max_length: int = 700) -> str:
     detail = " ".join(str(exc or "").split())
     if not detail:
@@ -1009,8 +1014,21 @@ class TelegramBotApp:
                     )
             elif error:
                 logger.info("Facebook account label refresh did not resolve %s: %s", account_id, error[:200])
-        except Exception:
-            logger.warning("Facebook account label refresh failed for %s", account_id, exc_info=True)
+        except Exception as exc:
+            if is_encryption_key_error(exc):
+                await asyncio.to_thread(
+                    self.storage.update_account_cookie_validation,
+                    account_id,
+                    "invalid",
+                    "Stored cookies cannot be decrypted with this ENCRYPTION_KEY. Restore the old key or re-add the account cookies.",
+                    owner_id,
+                )
+                logger.warning(
+                    "Facebook account label refresh skipped for %s because stored cookies cannot decrypt with this ENCRYPTION_KEY",
+                    account_id,
+                )
+            else:
+                logger.warning("Facebook account label refresh failed for %s", account_id, exc_info=True)
         finally:
             self.account_name_lookup_tasks.discard(task_key)
 
@@ -2103,6 +2121,35 @@ class TelegramBotApp:
             )
             return True
 
+        if action == "manage_accounts" and step == "rename_input":
+            account_id = str(session.get("rename_account_id") or "")
+            new_label = " ".join(text.strip().split())[:80]
+            if not account_id:
+                self.clear_dashboard_session(chat_id, user_id)
+                await self.command_accounts(chat_id, message_id, user_id)
+                return True
+            if not new_label:
+                await self.send_message(
+                    chat_id,
+                    "ابعت اسم واضح للحساب." if lang == "ar" else "Send a clear account display name.",
+                    message_id,
+                    reply_markup=cancel_markup(lang=lang),
+                )
+                return True
+            changed = await asyncio.to_thread(
+                self.storage.update_account_label,
+                account_id,
+                new_label,
+                self.account_owner_scope(user_id),
+            )
+            self.clear_dashboard_session(chat_id, user_id)
+            if changed:
+                prefix = f"تم تحديث اسم الحساب إلى: {new_label}" if lang == "ar" else f"Account name updated to: {new_label}"
+            else:
+                prefix = "لم يتم العثور على الحساب." if lang == "ar" else "Account not found."
+            await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
+            return True
+
         if step == "account":
             account_choices = session.get("account_choices") if isinstance(session.get("account_choices"), dict) else {}
             account_id = str(account_choices.get(text.strip()) or parse_choice_id(text))
@@ -2592,6 +2639,47 @@ class TelegramBotApp:
             await self.command_accounts(chat_id, message_id, user_id)
             return
 
+        if data.startswith("acctren:"):
+            choice_key = data.split(":", 1)[1]
+            choices = session.get("account_manage_choices") if isinstance(session.get("account_manage_choices"), dict) else {}
+            account_id = str(choices.get(choice_key) or "")
+            if not account_id:
+                await self.command_accounts(chat_id, message_id, user_id)
+                return
+            account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
+            if not account:
+                await self.command_accounts(chat_id, message_id, user_id)
+                return
+            session["step"] = "rename_input"
+            session["rename_account_id"] = account_id
+            self.set_dashboard_session(chat_id, user_id, session)
+            display = account_display_name(account, account_id, include_id=True)
+            await self.edit_message(
+                chat_id,
+                message_id,
+                "\n".join(
+                    (
+                        [
+                            "✏️ تسمية الحساب",
+                            "━━━━━━━━━━━━━━━━━━",
+                            f"الحساب الحالي: {display}",
+                            "",
+                            "ابعت الاسم اللي تحب يظهر في لوحة التحكم.",
+                        ]
+                        if lang == "ar"
+                        else [
+                            "✏️ Rename Account",
+                            "━━━━━━━━━━━━━━━━━━",
+                            f"Current account: {display}",
+                            "",
+                            "Send the display name you want to show in the dashboard.",
+                        ]
+                    )
+                ),
+                reply_markup={"inline_keyboard": []},
+            )
+            return
+
         if data == "acctdel:confirm":
             account_id = str(session.get("delete_account_id") or "")
             if not account_id:
@@ -2615,7 +2703,7 @@ class TelegramBotApp:
 
         if data.startswith("acctdel:"):
             choice_key = data.split(":", 1)[1]
-            choices = session.get("account_delete_choices") if isinstance(session.get("account_delete_choices"), dict) else {}
+            choices = session.get("account_manage_choices") if isinstance(session.get("account_manage_choices"), dict) else {}
             account_id = str(choices.get(choice_key) or "")
             if not account_id:
                 await self.command_accounts(chat_id, message_id, user_id)
@@ -3023,12 +3111,14 @@ class TelegramBotApp:
             text = "لا توجد حسابات محفوظة." if lang == "ar" else "No accounts stored."
             await self.send_message(chat_id, text, message_id, reply_markup=dashboard_markup(has_accounts=False, lang=lang))
             return
+        if user_id:
+            self.schedule_account_name_refresh(user_id, accounts, chat_id)
         active_account = ""
         if user_id:
             active_account = await self.active_account_id(user_id)
         lines = ["👤 حساباتي" if lang == "ar" else "👤 My Accounts", "━━━━━━━━━━━━━━━━━━"]
-        delete_choices: Dict[str, str] = {}
-        delete_rows: List[List[Dict[str, str]]] = []
+        account_choices: Dict[str, str] = {}
+        account_rows: List[List[Dict[str, str]]] = []
         for index, item in enumerate(accounts):
             status = (
                 ("نشط" if item.get("active") else "غير نشط")
@@ -3036,23 +3126,27 @@ class TelegramBotApp:
                 else ("active" if item.get("active") else "inactive")
             )
             marker = "✅" if item["account_id"] == active_account else "-"
-            lines.append(f"{marker} {account_display_name(item)} ({status})")
+            unresolved = self.account_label_needs_refresh(item)
+            display = account_display_name(item, str(item.get("account_id") or ""), include_id=unresolved)
+            lines.append(f"{marker} {display} ({status})")
             choice_key = str(index)
-            delete_choices[choice_key] = str(item.get("account_id") or "")
-            delete_label = f"🗑 حذف {account_display_name(item)}" if lang == "ar" else f"🗑 Delete {account_display_name(item)}"
-            delete_rows.append([inline_button(delete_label, f"acctdel:{choice_key}")])
-        delete_rows.append([inline_button("⬅️ رجوع" if lang == "ar" else "⬅️ Back", "dash:back")])
+            account_choices[choice_key] = str(item.get("account_id") or "")
+            rename_label = f"✏️ تسمية {display}" if lang == "ar" else f"✏️ Rename {display}"
+            delete_label = f"🗑 حذف {display}" if lang == "ar" else f"🗑 Delete {display}"
+            account_rows.append([inline_button(rename_label, f"acctren:{choice_key}")])
+            account_rows.append([inline_button(delete_label, f"acctdel:{choice_key}")])
+        account_rows.append([inline_button("⬅️ رجوع" if lang == "ar" else "⬅️ Back", "dash:back")])
         self.set_dashboard_session(
             chat_id,
             user_id,
             {
                 "action": "manage_accounts",
-                "step": "delete_select",
-                "account_delete_choices": delete_choices,
+                "step": "account_manage_select",
+                "account_manage_choices": account_choices,
                 "lang": lang,
             },
         )
-        await self.edit_or_send_message(chat_id, message_id, "\n".join(lines), reply_markup=inline_markup(delete_rows))
+        await self.edit_or_send_message(chat_id, message_id, "\n".join(lines), reply_markup=inline_markup(account_rows))
 
     async def command_check_cookies(self, chat_id: int, message_id: int, user_id: int = 0) -> None:
         lang = await self.user_language(user_id)
@@ -3100,15 +3194,19 @@ class TelegramBotApp:
                     valid_count += 1
                 lines.append(f"{icon} {display}: {status_text}")
             except Exception as exc:
-                error_text = str(exc)[:120]
+                error_text = (
+                    self.encryption_key_recovery_text(lang)
+                    if is_encryption_key_error(exc)
+                    else compact_error(exc, 500)
+                )
                 await asyncio.to_thread(
                     self.storage.update_account_cookie_validation,
                     account_id,
                     "invalid",
-                    error_text,
+                    compact_error(exc, 500),
                     owner_scope,
                 )
-                lines.append(f"🔴 {display}: {error_text}")
+                lines.append(f"🔴 {display}: {error_text[:900]}")
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
@@ -3194,20 +3292,31 @@ class TelegramBotApp:
                     else "Add/update this account again if Facebook reports the session as invalid."
                 )
         except Exception as exc:
-            error_text = str(exc)[:160]
+            error_text = (
+                self.encryption_key_recovery_text(lang)
+                if is_encryption_key_error(exc)
+                else compact_error(exc, 500)
+            )
             await asyncio.to_thread(
                 self.storage.update_account_cookie_validation,
                 account_id,
                 "invalid",
-                error_text,
+                compact_error(exc, 500),
                 owner_scope,
             )
             status_line = (
-                f"🔴 بيانات الكوكيز غير قابلة للاستخدام: {error_text}"
+                f"🔴 بيانات الكوكيز غير قابلة للاستخدام:\n{error_text[:900]}"
                 if lang == "ar"
-                else f"🔴 Cookie payload is not usable: {error_text}"
+                else f"🔴 Cookie payload is not usable:\n{error_text[:900]}"
             )
-            hint = "ضيف/حدّث الحساب مرة أخرى." if lang == "ar" else "Add/update this account again."
+            if is_encryption_key_error(exc):
+                hint = (
+                    "نفّذ خطوات الحل بالأعلى، ثم جرّب الفحص مرة أخرى."
+                    if lang == "ar"
+                    else "Apply the recovery steps above, then run the check again."
+                )
+            else:
+                hint = "ضيف/حدّث الحساب مرة أخرى." if lang == "ar" else "Add/update this account again."
         lines = [
             "🧪 فحص الكوكيز" if lang == "ar" else "🧪 Cookie Check",
             "━━━━━━━━━━━━━━━━━━",
@@ -3523,6 +3632,60 @@ class TelegramBotApp:
             lines.append(f"- {page_display_name(page, index)}")
         await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=await self.dashboard_reply_markup(user_id))
 
+    def encryption_key_recovery_text(self, lang: str = "en") -> str:
+        if lang == "ar":
+            return "\n".join(
+                [
+                    "مفتاح التشفير لا يطابق الكوكيز المحفوظة في Supabase.",
+                    "",
+                    "الحل:",
+                    "1. لو معاك ENCRYPTION_KEY القديم من Render السابق، ضعه في Render الحالي ثم أعد deploy.",
+                    "2. لو المفتاح القديم غير متاح، احذف/أعد إضافة حساب فيسبوك داخل البوت بكوكيز جديدة.",
+                    "",
+                    "الكوكيز المشفرة لا يمكن فكها بدون نفس المفتاح القديم.",
+                ]
+            )
+        return "\n".join(
+            [
+                "The encryption key does not match the cookies stored in Supabase.",
+                "",
+                "Fix:",
+                "1. If you still have the old Render ENCRYPTION_KEY, set it on the current Render service and redeploy.",
+                "2. If the old key is unavailable, delete/re-add the Facebook account in the bot with fresh cookies.",
+                "",
+                "Encrypted cookies cannot be recovered without the original key.",
+            ]
+        )
+
+    async def ensure_account_cookie_readable(self, account_id: str, user_id: int, lang: str = "en") -> None:
+        owner_scope = self.account_owner_scope(user_id)
+        try:
+            cookie_string = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
+            if not str(cookie_string or "").strip():
+                raise RuntimeError("Stored cookie is empty")
+        except Exception as exc:
+            detail = compact_error(exc, 500)
+            if is_encryption_key_error(exc):
+                await asyncio.to_thread(
+                    self.storage.update_account_cookie_validation,
+                    account_id,
+                    "invalid",
+                    "Stored cookies cannot be decrypted with this ENCRYPTION_KEY. Restore the old key or re-add the account cookies.",
+                    owner_scope,
+                )
+                raise RuntimeError(self.encryption_key_recovery_text(lang)) from exc
+            raise RuntimeError(detail) from exc
+
+    async def queue_failure_card(self, exc: BaseException, user_id: int, *, label: str = "post job") -> str:
+        lang = await self.user_language(user_id)
+        detail = str(exc or "").strip() or exc.__class__.__name__
+        if "مفتاح التشفير" in detail or "The encryption key does not match" in detail:
+            title = "لا يمكن بدء النشر" if lang == "ar" else "Posting cannot start"
+            return "\n".join([title, "━━━━━━━━━━━━━━━━━━", detail[:1400]])
+        if lang == "ar":
+            return "\n".join(["لا يمكن بدء النشر", "━━━━━━━━━━━━━━━━━━", f"فشل إنشاء مهمة النشر: {detail[:900]}"])
+        return "\n".join(["Posting cannot start", "━━━━━━━━━━━━━━━━━━", f"Could not queue {label}: {detail[:900]}"])
+
     async def queue_post_job(
         self,
         chat_id: int,
@@ -3545,6 +3708,7 @@ class TelegramBotApp:
             raise ValueError(f"{post_type} media is required")
         if not await asyncio.to_thread(self.storage.account_exists, account_id, True, self.account_owner_scope(user_id)):
             raise ValueError("Active account not found for this Telegram user")
+        await self.ensure_account_cookie_readable(account_id, user_id, await self.user_language(user_id))
 
         job_id = await asyncio.to_thread(
             self.storage.create_post_job,
@@ -3599,6 +3763,7 @@ class TelegramBotApp:
             raise ValueError("At least one stored page is required")
         if not await asyncio.to_thread(self.storage.account_exists, account_id, True, self.account_owner_scope(user_id)):
             raise ValueError("Active account not found for this Telegram user")
+        await self.ensure_account_cookie_readable(account_id, user_id, await self.user_language(user_id))
 
         started = time.monotonic()
         jobs_to_create: List[Dict[str, Any]] = []
@@ -3680,6 +3845,7 @@ class TelegramBotApp:
             raise ValueError(f"Media count ({len(media_paths)}) does not match selected pages ({len(pages)})")
         if not await asyncio.to_thread(self.storage.account_exists, account_id, True, self.account_owner_scope(user_id)):
             raise ValueError("Active account not found for this Telegram user")
+        await self.ensure_account_cookie_readable(account_id, user_id, await self.user_language(user_id))
 
         started = time.monotonic()
         jobs_to_create: List[Dict[str, Any]] = []
@@ -3771,7 +3937,7 @@ class TelegramBotApp:
             await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                f"Could not queue post job: {str(exc)[:500]}",
+                await self.queue_failure_card(exc, user_id, label="post job"),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             return None
@@ -3805,7 +3971,7 @@ class TelegramBotApp:
             await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                f"Could not queue paired post jobs: {str(exc)[:500]}",
+                await self.queue_failure_card(exc, user_id, label="paired post jobs"),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             return []
@@ -3837,7 +4003,7 @@ class TelegramBotApp:
             await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                f"Could not queue post jobs: {str(exc)[:500]}",
+                await self.queue_failure_card(exc, user_id, label="post jobs"),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             return []
