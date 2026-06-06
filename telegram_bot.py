@@ -692,6 +692,10 @@ class TelegramBotApp:
         )
         return int((sent.get("result") or {}).get("message_id") or 0)
 
+    def refresh_pages_inline_markup(self, lang: str = "en") -> Dict[str, Any]:
+        dashboard_label = "🏠 لوحة التحكم" if lang == "ar" else "🏠 Dashboard"
+        return inline_markup([[inline_button(dashboard_label, "dash:back")]])
+
     def start_background_task(self, coro: Awaitable[Any], label: str) -> asyncio.Task[Any]:
         task = asyncio.create_task(coro)
         self.background_tasks.add(task)
@@ -3418,6 +3422,7 @@ class TelegramBotApp:
             user_id=user_id,
             refresh=refresh,
         )
+        refresh_markup = self.refresh_pages_inline_markup(lang)
         progress = await self.send_message(
             chat_id,
             progress_card(
@@ -3427,21 +3432,42 @@ class TelegramBotApp:
                 f"Debug ID: {trace_id}\n{'جاري تجهيز جلسة فيسبوك...' if lang == 'ar' else 'Preparing Facebook session...'}",
             ),
             message_id,
-            reply_markup=cancel_markup(lang=lang),
+            reply_markup=refresh_markup,
         )
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
-        try:
-            progress_message_id = await self.edit_or_send_message(
+
+        async def update_refresh_card(text: str) -> None:
+            nonlocal progress_message_id
+            if progress_message_id:
+                if await self.try_edit_message(
+                    chat_id,
+                    progress_message_id,
+                    text,
+                    reply_markup=refresh_markup,
+                    timeout_seconds=8,
+                ):
+                    return
+                logger.warning(
+                    "Refresh-pages progress edit failed; keeping existing card to avoid duplicate Telegram messages trace_id=%s",
+                    trace_id,
+                )
+                return
+            sent = await self.send_message(
                 chat_id,
-                progress_message_id,
+                text,
+                message_id,
+                reply_markup=refresh_markup,
+            )
+            progress_message_id = int((sent.get("result") or {}).get("message_id") or 0)
+
+        try:
+            await update_refresh_card(
                 progress_card(
                     f"{verb}...",
                     1,
                     3,
                     f"Debug ID: {trace_id}\n{'جاري فتح مدير الصفحات...' if lang == 'ar' else 'Opening pages manager...'}",
                 ),
-                reply_to_message_id=message_id,
-                reply_markup=cancel_markup(lang=lang),
             )
             discovery_timeout = _env_int("BOT_PAGE_DISCOVERY_TIMEOUT_SECONDS", 150, minimum=30)
             heartbeat_seconds = _env_int("BOT_PROGRESS_HEARTBEAT_SECONDS", 8, minimum=2)
@@ -3486,17 +3512,9 @@ class TelegramBotApp:
                             if lang == "ar"
                             else " If this repeats, check Render logs for Playwright launch or Facebook login errors."
                         )
-                    progress_message_id = await self.edit_or_send_message(
-                        chat_id,
-                        progress_message_id,
-                        progress_card(f"{verb}...", 2, 3, detail),
-                        reply_to_message_id=message_id,
-                        reply_markup=cancel_markup(lang=lang),
-                    )
+                    await update_refresh_card(progress_card(f"{verb}...", 2, 3, detail))
             if pages:
-                progress_message_id = await self.edit_or_send_message(
-                    chat_id,
-                    progress_message_id,
+                await update_refresh_card(
                     progress_card(
                         f"{verb}...",
                         2,
@@ -3508,29 +3526,18 @@ class TelegramBotApp:
                             else f"Saving {len(pages)} discovered page(s) to cache..."
                         ),
                     ),
-                    reply_to_message_id=message_id,
-                    reply_markup=cancel_markup(lang=lang),
                 )
                 await asyncio.to_thread(self.storage.upsert_pages, account_id, pages)
             if not pages:
-                progress_message_id = await self.edit_or_send_message(
-                    chat_id,
-                    progress_message_id,
+                await update_refresh_card(
                     progress_card(
                         f"{verb}...",
                         3,
                         3,
                         f"Debug ID: {trace_id}\n{'لم يتم العثور على صفحات مُدارة.' if lang == 'ar' else 'No managed pages discovered.'}",
                     ),
-                    reply_to_message_id=message_id,
-                    reply_markup=await self.dashboard_reply_markup(user_id),
                 )
                 self.debug_event("page_discovery_empty", trace_id, account_id=account_id, elapsed_seconds=round(time.monotonic() - started, 3))
-                await self.send_message(
-                    chat_id,
-                    "تم استرجاع لوحة التحكم." if lang == "ar" else "Dashboard keyboard restored.",
-                    reply_markup=await self.dashboard_reply_markup(user_id),
-                )
                 return
             lines = [
                 f"{'تم تحديث' if refresh else 'تم اكتشاف'} وحفظ {len(pages)} صفحة:"
@@ -3539,9 +3546,7 @@ class TelegramBotApp:
             ]
             for index, page in enumerate(pages):
                 lines.append(f"- {page_display_name(page, index)}")
-            progress_message_id = await self.edit_or_send_message(
-                chat_id,
-                progress_message_id,
+            await update_refresh_card(
                 "\n".join(
                     [
                         progress_card(
@@ -3554,8 +3559,6 @@ class TelegramBotApp:
                         *lines,
                     ]
                 ),
-                reply_to_message_id=message_id,
-                reply_markup=await self.dashboard_reply_markup(user_id),
             )
             self.debug_event(
                 "page_discovery_complete",
@@ -3564,17 +3567,10 @@ class TelegramBotApp:
                 page_count=len(pages),
                 elapsed_seconds=round(time.monotonic() - started, 3),
             )
-            await self.send_message(
-                chat_id,
-                "تم استرجاع لوحة التحكم." if lang == "ar" else "Dashboard keyboard restored.",
-                reply_markup=await self.dashboard_reply_markup(user_id),
-            )
         except Exception as exc:
             logger.exception("Page discovery failed")
             self.debug_event("page_discovery_failed", trace_id, account_id=account_id, error=compact_error(exc))
-            await self.edit_or_send_message(
-                chat_id,
-                progress_message_id,
+            await update_refresh_card(
                 "\n".join(
                     [
                         progress_card(
@@ -3594,13 +3590,6 @@ class TelegramBotApp:
                         ),
                     ]
                 ),
-                reply_to_message_id=message_id,
-                reply_markup=await self.dashboard_reply_markup(user_id),
-            )
-            await self.send_message(
-                chat_id,
-                "تم استرجاع لوحة التحكم." if lang == "ar" else "Dashboard keyboard restored.",
-                reply_markup=await self.dashboard_reply_markup(user_id),
             )
 
     async def discover_pages(self, account_id: str, owner_id: Optional[int] = None) -> List[Dict[str, str]]:
