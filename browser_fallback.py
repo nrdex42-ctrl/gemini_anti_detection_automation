@@ -73,6 +73,10 @@ class BrowserTokenExtractor:
                     '--disable-dev-shm-usage',
                     '--no-sandbox',
                     '--disable-gpu',
+                    '--no-first-run',
+                    '--no-default-browser-check',
+                    '--profile-directory=Default',
+                    '--guest',
                 ],
             )
             context_args = self.identity.to_browser_args()
@@ -133,6 +137,61 @@ class BrowserTokenExtractor:
                     tokens['cookie_header'] = cookies_json_to_header(cookies_json)
                 except Exception as exc:
                     logger.warning('Failed to derive cookie header for cached tokens: %s', exc)
+
+                # Try to extract doc_id dynamically from JS modules and page script contents
+                doc_id = ''
+                try:
+                    js_doc_id = await page.evaluate(
+                        """() => {
+                            try {
+                                if (typeof require === 'function') {
+                                    const modules = require.getModules();
+                                    for (const mod of modules) {
+                                        try {
+                                            const exp = require(mod);
+                                            if (exp && (exp.doc_id || exp.docID)) {
+                                                const id = String(exp.doc_id || exp.docID);
+                                                if (id.length >= 8) return id;
+                                            }
+                                        } catch (_) {}
+                                    }
+                                }
+                            } catch (_) {}
+                            return '';
+                        }"""
+                    )
+                    if js_doc_id:
+                        doc_id = js_doc_id
+                except Exception as exc:
+                    logger.debug('Failed to extract doc_id from JS modules: %s', exc)
+
+                if not doc_id:
+                    try:
+                        import re
+                        content = await page.content()
+                        patterns = (
+                            r'ComposerStoryCreateMutation(?:\.graphql)?[\s\S]{0,3000}?"doc_id"\s*:\s*"?(\d{8,})"?',
+                            r'"doc_id"\s*:\s*"?(\d{8,})"?[\s\S]{0,3000}?ComposerStoryCreateMutation',
+                            r'ComposerStoryCreateMutation(?:\.graphql)?[\s\S]{0,3000}?__dr"\s*:\s*"(\d{8,})"',
+                            r'ComposerStoryCreateMutation\.graphql[\s\S]{0,1200}?(?:e\.exports=|module\.exports=)?"?(\d{8,})"?',
+                            r'CometComposerStoryCreateMutation(?:\.graphql)?[\s\S]{0,3000}?"?(\d{8,})"?',
+                        )
+                        for pattern in patterns:
+                            match = re.search(pattern, content)
+                            if match:
+                                doc_id = match.group(1)
+                                break
+                    except Exception as exc:
+                        logger.debug('Failed to extract doc_id from page content: %s', exc)
+
+                if doc_id and self.token_vault.redis:
+                    from .utils import redis_setex
+                    try:
+                        await redis_setex(self.token_vault.redis, 'fb_graphql_doc_id', 604800, doc_id)
+                        logger.info('Discovered and cached Facebook GraphQL doc_id: %s', doc_id)
+                    except Exception as exc:
+                        logger.warning('Failed to cache discovered doc_id in Redis: %s', exc)
+
                 await self.token_vault.set(self.identity.account_id, tokens)
                 return tokens
             finally:

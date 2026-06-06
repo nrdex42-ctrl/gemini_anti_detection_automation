@@ -469,6 +469,13 @@ async def run_test():
         # ─── Step 1: Navigate to Facebook and extract tokens ─────────
         logger.info("Navigating to Facebook...")
         await page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=30000)
+        
+        # Wait for the splash screen to disappear and main content to load
+        try:
+            await page.wait_for_selector('div[role="navigation"], form[action*="login"]', timeout=15000)
+        except Exception:
+            logger.warning("Main content took too long to load, proceeding anyway...")
+            
         await asyncio.sleep(3)
 
         # Take screenshot
@@ -509,7 +516,7 @@ async def run_test():
         logger.info("Discovering managed pages...")
         await page.goto(
             "https://www.facebook.com/pages/?category=your_pages",
-            wait_until="networkidle",
+            wait_until="domcontentloaded",
             timeout=30000,
         )
         await asyncio.sleep(3)
@@ -518,35 +525,94 @@ async def run_test():
         await page.screenshot(path=str(ss_path3))
         logger.info("Screenshot saved: %s", ss_path3)
 
-        # Extract page IDs from page source
+        # --- Strategy A: Extract page IDs from page HTML source ---
+        # Only use specific page-related JSON keys (NOT generic "id" which matches everything)
         page_content = await page.content()
         page_ids = list(set(
             re.findall(r'"pageID":"(\d+)"', page_content)
             + re.findall(r'"page_id":"(\d+)"', page_content)
+            + re.findall(r'"ownerID":"(\d+)"', page_content)
+            + re.findall(r'"pageId":"(\d+)"', page_content)
         ))
-        logger.info("Found page IDs from source: %s", page_ids)
+        # Remove the logged-in user's own ID from page candidates
+        user_id = tokens.get("user_id", "")
+        page_ids = [pid for pid in page_ids if pid != user_id]
+        logger.info("Found page IDs from source regex: %s", page_ids)
 
-        # Also find page links by looking at the DOM
-        page_links = await page.evaluate("""() => {
-            const links = [];
-            document.querySelectorAll('a[href*="/profile.php"], a[href*="facebook.com/"]').forEach(a => {
+        # --- Strategy B: Extract pages from visible DOM cards ---
+        dom_pages = await page.evaluate("""() => {
+            const pages = [];
+            // Find all links that contain profile.php?id= (page links on the cards)
+            document.querySelectorAll('a[href*="profile.php?id="]').forEach(a => {
                 const href = a.href || '';
                 const text = (a.textContent || '').trim();
-                if (text && href && !href.includes('/pages/') && !href.includes('category')) {
-                    links.push({ url: href, name: text.substring(0, 80) });
+                // Skip navigation links, settings, category filters
+                if (!text || text.length > 100) return;
+                if (href.includes('category') || href.includes('?sk=')) return;
+                const idMatch = href.match(/id=(\d+)/);
+                if (idMatch) {
+                    pages.push({ id: idMatch[1], name: text, url: href });
                 }
             });
-            return links;
+            // Also look for page name heading elements near "Create Post" buttons
+            document.querySelectorAll('span').forEach(span => {
+                const text = (span.textContent || '').trim();
+                if (!text || text.length < 2 || text.length > 60) return;
+                const parent = span.closest('div');
+                if (!parent) return;
+                // Check if a sibling/nearby element has "Create Post" text
+                const parentHTML = parent.parentElement?.innerHTML || '';
+                if (parentHTML.includes('Create Post') || parentHTML.includes('إنشاء منشور')) {
+                    // Look for a nearby link with profile ID
+                    const nearbyLink = parent.closest('div')?.querySelector('a[href*="profile.php?id="]');
+                    if (nearbyLink) {
+                        const idMatch = nearbyLink.href.match(/id=(\d+)/);
+                        if (idMatch) {
+                            pages.push({ id: idMatch[1], name: text, url: nearbyLink.href });
+                        }
+                    }
+                }
+            });
+            return pages;
         }""")
+        logger.info("Found pages from DOM cards: %s", [(p.get("name"), p.get("id")) for p in dom_pages])
 
-        # Try profile switcher too
+        # --- Strategy C: GraphQL API fallback ---
+        graphql_pages = []
+        if tokens.get("fb_dtsg"):
+            try:
+                graphql_pages = await page.evaluate("""async (fb_dtsg) => {
+                    try {
+                        const resp = await fetch('https://www.facebook.com/api/graphql/', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: new URLSearchParams({
+                                fb_dtsg: fb_dtsg,
+                                fb_api_req_friendly_name: 'ProfileCometManagedPagesQuery',
+                                variables: JSON.stringify({count: 20}),
+                                doc_id: '6939853642762493'
+                            }).toString()
+                        });
+                        const text = await resp.text();
+                        const ids = [...text.matchAll(/"id":"(\d{10,})"/g)].map(m => m[1]);
+                        const names = [...text.matchAll(/"name":"([^"]+)"/g)].map(m => m[1]);
+                        const pages = [];
+                        for (let i = 0; i < ids.length; i++) {
+                            pages.push({ id: ids[i], name: names[i] || ids[i], url: 'https://www.facebook.com/profile.php?id=' + ids[i] });
+                        }
+                        return pages;
+                    } catch (e) { return []; }
+                }""", tokens.get("fb_dtsg", ""))
+                logger.info("Found pages from GraphQL API: %s", [(p.get("name"), p.get("id")) for p in graphql_pages])
+            except Exception as e:
+                logger.warning("GraphQL page discovery failed: %s", e)
+
+        # --- Strategy D: Profile switcher in account menu ---
         await page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=15000)
         await asyncio.sleep(2)
 
-        # Look for page switcher in the account menu
         profile_pages = []
         try:
-            # Click avatar/account menu
             account_btn = page.locator('[aria-label="Your profile"], [aria-label="Account"], [aria-label="Account controls and settings"]').first
             if await account_btn.count() > 0:
                 await account_btn.click(timeout=3000)
@@ -555,7 +621,6 @@ async def run_test():
                 ss_path4 = ARTIFACT_DIR / f"03_account_menu_{timestamp}.png"
                 await page.screenshot(path=str(ss_path4))
 
-                # Look for "See all profiles" or page names
                 see_all = page.locator('text="See all profiles"').first
                 if await see_all.count() > 0:
                     await see_all.click(timeout=3000)
@@ -564,7 +629,6 @@ async def run_test():
                     ss_path5 = ARTIFACT_DIR / f"04_profile_switcher_{timestamp}.png"
                     await page.screenshot(path=str(ss_path5))
 
-                    # Get all profile/page entries
                     profile_pages = await page.evaluate("""() => {
                         const pages = [];
                         document.querySelectorAll('[role="dialog"] a, [role="menu"] a').forEach(a => {
@@ -577,40 +641,43 @@ async def run_test():
                         return pages;
                     }""")
 
-                # Close menu if still open by pressing Escape
                 await page.keyboard.press("Escape")
                 await asyncio.sleep(0.5)
         except Exception as e:
             logger.warning("Profile switcher exploration failed: %s", e)
 
-        # Combine all discovered pages
+        # ── Combine all discovered pages ──
         all_pages = []
         seen_ids = set()
 
-        for pid in page_ids:
-            if pid not in seen_ids:
+        def _add_page(pid, url, name):
+            if pid and pid != user_id and pid not in seen_ids:
                 seen_ids.add(pid)
-                all_pages.append({"id": pid, "url": f"https://www.facebook.com/profile.php?id={pid}", "name": pid})
+                all_pages.append({"id": pid, "url": url or f"https://www.facebook.com/profile.php?id={pid}", "name": name or pid})
 
+        # Source: regex from HTML
+        for pid in page_ids:
+            _add_page(pid, f"https://www.facebook.com/profile.php?id={pid}", pid)
+
+        # Source: DOM cards (highest quality — has real page names)
+        for item in dom_pages:
+            _add_page(item.get("id", ""), item.get("url", ""), item.get("name", ""))
+
+        # Source: GraphQL API
+        for item in graphql_pages:
+            _add_page(item.get("id", ""), item.get("url", ""), item.get("name", ""))
+
+        # Source: profile switcher
         for item in profile_pages:
             name = item.get("name", "")
             url = item.get("url", "")
             pid_match = re.search(r'id=(\d+)', url)
             pid = pid_match.group(1) if pid_match else ""
-            if pid and pid not in seen_ids:
-                seen_ids.add(pid)
-                all_pages.append({"id": pid, "url": url, "name": name})
-            elif not pid and url and name:
-                all_pages.append({"id": "", "url": url, "name": name})
+            _add_page(pid, url, name)
 
-        # If no pages found, use the user_id as the default page
-        if not all_pages and tokens.get("user_id"):
-            uid = tokens["user_id"]
-            all_pages.append({
-                "id": uid,
-                "url": f"https://www.facebook.com/profile.php?id={uid}",
-                "name": f"Profile {uid}",
-            })
+        # Last resort: if STILL nothing found, do NOT fall back to user profile
+        if not all_pages:
+            logger.warning("⚠️ No managed pages discovered by any strategy. Skipping profile fallback.")
 
         logger.info("=" * 60)
         logger.info("  📄 DISCOVERED PAGES: %d", len(all_pages))
@@ -637,48 +704,175 @@ async def run_test():
             logger.info("   URL: %s", page_url)
 
             try:
-                # Navigate to the page
-                await page.goto(page_url, wait_until="domcontentloaded", timeout=20000)
+                # helper function to switch identity via account menu
+                async def switch_profile_via_menu(target_name: str) -> bool:
+                    logger.info("   Switching profile to '%s' via Account Menu...", target_name)
+                    # 1. Click Account Button
+                    account_btn = page.locator(
+                        "div[role='banner'] div[aria-label*='profile' i], "
+                        "div[role='banner'] div[aria-label*='Profile' i], "
+                        "div[role='banner'] div[aria-label*='Account' i], "
+                        "div[role='banner'] div[aria-label*='الملف الشخصي' i], "
+                        "div[role='banner'] div[aria-label*='الحساب' i]"
+                    ).first
+                    
+                    if await account_btn.count() == 0:
+                        logger.warning("   Account button not found in banner.")
+                        return False
+                        
+                    await account_btn.click(timeout=5000)
+                    await asyncio.sleep(1.5)
+                    
+                    # 2. Click "See all profiles" if visible
+                    see_all = page.locator(
+                        "text='See all profiles', "
+                        "text='عرض كل الملفات الشخصية', "
+                        "text='See All Profiles'"
+                    ).first
+                    if await see_all.count() > 0 and await see_all.is_visible():
+                        await see_all.click(timeout=5000)
+                        await asyncio.sleep(1.5)
+                        
+                    # 3. Click the target page profile
+                    target_btn = page.locator(
+                        f"div[role='button']:has-text('{target_name}'), "
+                        f"div[role='link']:has-text('{target_name}'), "
+                        f"text='{target_name}'"
+                    ).first
+                    
+                    if await target_btn.count() > 0:
+                        await target_btn.click(timeout=5000)
+                        logger.info("   Switch clicked. Waiting for profile switch reload...")
+                        await asyncio.sleep(6) # Wait for page switch reload
+                        return True
+                    else:
+                        logger.warning("   Target profile '%s' not found in switcher menu.", target_name)
+                        await page.keyboard.press("Escape")
+                        await asyncio.sleep(1)
+                        return False
+
+                # Reset identity to main user before switching (ensures we start from a clean slate)
+                await context.clear_cookies()
+                await context.add_cookies(cookies)
+                
+                # Navigate to facebook home to have a clean header menu
+                await page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=20000)
                 await asyncio.sleep(3)
+                
+                # Perform the profile switch
+                switched = await switch_profile_via_menu(page_name)
+                if not switched:
+                    logger.warning("   UI profile switch failed, falling back to direct navigation...")
+                    await page.goto(page_url, wait_until="domcontentloaded", timeout=20000)
+                    await asyncio.sleep(5)
+                
+                # --- Validate page is accessible (skip "page isn't available" errors) ---
+                page_body = await page.text_content('body') or ''
+                if any(phrase in page_body for phrase in [
+                    "This page isn't available",
+                    "This content isn't available",
+                    "هذه الصفحة غير متاحة",
+                    "Reload page",
+                ]):
+                    logger.warning("   ⚠️ Page %s is not accessible — skipping", page_name)
+                    results.append({
+                        "page": page_name,
+                        "success": False,
+                        "error": "Page not accessible",
+                        "upload_trace": upload_tracker["events"],
+                    })
+                    continue
 
                 ss_before = ARTIFACT_DIR / f"05_page_{page_id}_{timestamp}.png"
                 await page.screenshot(path=str(ss_before))
 
-                # Switch to this page's identity if needed
-                # Look for "Switch Now" or page identity switch
-                switch_btn = page.locator('text="Switch Now"').first
-                if await switch_btn.count() > 0:
-                    await switch_btn.click(timeout=3000)
-                    await asyncio.sleep(2)
-
-                # Find and click the composer
-                composer_selectors = [
-                    "div[role='button']:has-text(\"What's on your mind\")",
-                    "[aria-label='Create post']",
-                    "div[role='button']:has-text('Create post')",
-                    "div[role='button']:has-text('Write something')",
-                ]
-
+                # Check if composer is ALREADY open (clicking 'Create Post' on the card may open it directly)
                 composer_found = False
-                for sel in composer_selectors:
-                    composer = page.locator(sel).first
-                    if await composer.count() > 0:
-                        await composer.click(timeout=5000)
+                try:
+                    if await page.locator("div[role='dialog']").count() > 0 and await page.locator("div[role='dialog']").first.is_visible():
                         composer_found = True
-                        logger.info("   Clicked composer: %s", sel)
-                        break
+                        logger.info("   ✅ Composer popup is already open from directory card!")
+                except Exception:
+                    pass
 
+                # Find and click the composer (with scrolling + Arabic selectors) if not already open
                 if not composer_found:
-                    logger.warning("   ⚠️ No composer found on page %s, trying direct URL", page_name)
-                    # Try going to the page's composer directly
-                    await page.goto(f"{page_url}&sk=composer", wait_until="domcontentloaded", timeout=15000)
-                    await asyncio.sleep(2)
-                    for sel in composer_selectors:
-                        composer = page.locator(sel).first
-                        if await composer.count() > 0:
-                            await composer.click(timeout=5000)
-                            composer_found = True
+                    composer_selectors = [
+                        "div[role='button']:has-text(\"What's on your mind\")",
+                        "div[role='button']:has-text('بم تفكر')",
+                        "[aria-label='Create post']",
+                        "[aria-label='إنشاء منشور']",
+                        "div[role='button']:has-text('Create post')",
+                        "div[role='button']:has-text('إنشاء منشور')",
+                        "div[role='button']:has-text('Write something')",
+                        "div[role='button']:has-text('اكتب شيئًا')",
+                    ]
+
+                    # Try multiple scroll positions to find the composer below the fold
+                    # Try multiple scroll positions to find the composer below the fold
+                    for scroll_y in [0, 400, 800, 1200]:
+                        if scroll_y > 0:
+                            await page.evaluate(f"window.scrollTo(0, {scroll_y})")
+                            await asyncio.sleep(1.5)
+
+                        for sel in composer_selectors:
+                            composer = page.locator(sel).first
+                            try:
+                                if await composer.count() > 0 and await composer.is_visible():
+                                    await composer.scroll_into_view_if_needed(timeout=3000)
+                                    await asyncio.sleep(0.5)
+                                    await composer.click(timeout=5000)
+                                    
+                                    # Wait to see if dialog actually opens
+                                    try:
+                                        await page.wait_for_selector("div[role='dialog']", state="visible", timeout=4000)
+                                        composer_found = True
+                                    except Exception:
+                                        # Dialog didn't open. Likely a profile switch page refresh occurred.
+                                        logger.warning("   ⚠️ Dialog didn't open. Possible identity switch refresh. Retrying...")
+                                        await asyncio.sleep(4) # Wait for page reload
+                                        
+                                        composer_retry = page.locator(sel).first
+                                        if await composer_retry.count() > 0 and await composer_retry.is_visible():
+                                            await composer_retry.scroll_into_view_if_needed(timeout=3000)
+                                            await asyncio.sleep(0.5)
+                                            await composer_retry.click(timeout=5000)
+                                            try:
+                                                await page.wait_for_selector("div[role='dialog']", state="visible", timeout=4000)
+                                                composer_found = True
+                                            except Exception:
+                                                pass
+                                    
+                                    if composer_found:
+                                        logger.info("   ✅ Opened composer popup (scroll=%d): %s", scroll_y, sel)
+                                        break
+                            except Exception:
+                                continue
+
+                        if composer_found:
                             break
+
+                    if not composer_found:
+                        logger.warning("   ⚠️ No composer found on page %s after scrolling, trying direct URL", page_name)
+                        try:
+                            await page.goto(f"{page_url}&sk=composer", wait_until="domcontentloaded", timeout=15000)
+                        except Exception:
+                            pass
+                        await asyncio.sleep(3)
+                        for sel in composer_selectors:
+                            composer = page.locator(sel).first
+                            try:
+                                if await composer.count() > 0:
+                                    await composer.click(timeout=5000)
+                                    try:
+                                        await page.wait_for_selector("div[role='dialog']", state="visible", timeout=4000)
+                                        composer_found = True
+                                        logger.info("   ✅ Opened composer popup (direct URL): %s", sel)
+                                        break
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                continue
 
                 if not composer_found:
                     results.append({

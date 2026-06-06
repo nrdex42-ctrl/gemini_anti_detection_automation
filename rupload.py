@@ -22,7 +22,8 @@ from urllib import request as urllib_request
 
 from .config import AppConfig, SafetyConfig
 from .models import IdentityContext
-from .network import HeaderForge, ProxyManager, StealthConnector
+from .network import ProxyManager, StealthConnector
+from .header_forge import AdvancedHeaderForge
 from .timing import StochasticTimer
 from .tokens import TokenVault
 from .utils import classify_error, generate_client_id
@@ -213,7 +214,16 @@ class HardenedRupload:
     ) -> Dict[str, str]:
         content_length = len(image_bytes)
         entity_name = self._entity_name(image_bytes)
-        headers = HeaderForge.forge_rupload_headers(tokens, self.identity, content_length, offset=0)
+        
+        forge = AdvancedHeaderForge(
+            chrome_version=self.identity.chrome_version,
+            user_agent=self.identity.user_agent,
+            platform=self.identity.platform,
+            locale=self.identity.locale,
+        )
+        
+        cookie_header = str(tokens.get('cookie_header') or '').strip() or None
+        
         updates = {
             'Content-Type': 'application/x-www-form-urlencoded' if init_request else 'image/jpeg',
             'Content-Length': '0' if init_request else str(content_length),
@@ -222,12 +232,16 @@ class HardenedRupload:
             'X-Entity-Name': entity_name,
             'X-Attempts-Count': '1',
         }
-        cookie_header = str(tokens.get('cookie_header') or '').strip()
-        if cookie_header:
-            updates['Cookie'] = cookie_header
         if not init_request:
             updates['X-Start-Offset'] = '0'
-        return self._headers_with_updates(headers, updates)
+            
+        return forge.build_rupload_headers(
+            tokens=tokens,
+            file_size=content_length,
+            offset=0,
+            cookies=cookie_header,
+            extra=updates,
+        )
 
     async def _rupload_init(
         self,
@@ -324,6 +338,28 @@ class HardenedRupload:
         proxy: str,
         timeout_seconds: int,
     ) -> Tuple[int, str]:
+        # 1. Attempt to use StealthConnector (TLS fingerprint protection)
+        try:
+            from .stealth_connector import get_stealth_connector
+            stealth_conn = get_stealth_connector()
+        except ImportError:
+            stealth_conn = None
+
+        if stealth_conn is not None:
+            try:
+                session = stealth_conn.get_http_session(proxy_url=proxy or None)
+                def _do_post() -> Tuple[int, str]:
+                    post_data = data
+                    req_headers = {str(k): str(v) for k, v in headers.items()}
+                    response = session.post(url, data=post_data, headers=req_headers, timeout=timeout_seconds)
+                    return int(response.status_code), response.text
+
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(None, _do_post)
+            except Exception as exc:
+                logger.warning(f"Failed to post via stealth connector: {exc}. Falling back to default HTTP client.")
+
+        # 2. Fallback to default asynchronous client (aiohttp)
         try:
             import aiohttp  # type: ignore[reportMissingImports]
         except Exception:
@@ -341,6 +377,7 @@ class HardenedRupload:
                 ) as resp:
                     return int(resp.status), await resp.text()
 
+        # 3. Fallback to synchronous standard library client (urllib)
         def _sync_post() -> Tuple[int, str]:
             request_headers = dict(headers)
             request_headers['accept-encoding'] = 'identity'
@@ -365,7 +402,8 @@ class HardenedRupload:
             except urllib_error.HTTPError as exc:
                 return int(exc.code), exc.read().decode('utf-8', errors='replace')
 
-        return await asyncio.to_thread(_sync_post)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _sync_post)
 
     @staticmethod
     def _loads_json(text: str) -> Any:

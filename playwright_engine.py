@@ -3854,6 +3854,8 @@ async def launch_browser_session(cookies_json: str) -> Tuple[Any, Browser, Brows
             '--no-default-browser-check',
             '--password-store=basic',
             '--use-mock-keychain',
+            '--profile-directory=Default',
+            '--guest',
         ]
         if FACEBOOK_BROWSER_NO_SANDBOX:
             launch_args.extend(['--no-sandbox', '--disable-setuid-sandbox'])

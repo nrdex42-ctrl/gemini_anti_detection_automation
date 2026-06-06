@@ -115,12 +115,12 @@ def test_rupload_mocked_success_uploads_mutated_image(tmp_path: Path):
         assert uploader.calls[0]['headers']['Content-Type'] == 'application/x-www-form-urlencoded'
         assert uploader.calls[0]['headers']['Content-Length'] == '0'
         assert uploader.calls[0]['headers']['X-Entity-Type'] == 'image/jpeg'
-        assert uploader.calls[0]['headers']['sec-fetch-site'] == 'same-site'
-        assert uploader.calls[0]['headers']['host'] == 'rupload.facebook.com'
-        assert uploader.calls[0]['headers']['x-fb-lsd'] == 'l'
-        assert uploader.calls[0]['headers']['x-fb-fb-dtsg'] == 'd'
-        assert uploader.calls[0]['headers']['x-fb-upload-retry-count'] == '0'
-        assert 'x-fb-friendly-name' not in uploader.calls[0]['headers']
+        assert uploader.calls[0]['headers']['Sec-Fetch-Site'] == 'same-site'
+        assert uploader.calls[0]['headers']['Host'] == 'rupload.facebook.com'
+        assert uploader.calls[0]['headers']['X-FB-LSD'] == 'l'
+        assert uploader.calls[0]['headers']['X-FB-DTSG'] == 'd'
+        assert uploader.calls[0]['headers']['X-FB-Upload-Retry-Count'] == '0'
+        assert 'X-FB-Friendly-Name' not in uploader.calls[0]['headers']
         assert uploader.calls[0]['proxy'] == 'http://proxy-1'
         assert uploader.calls[1]['url'] == 'https://rupload.facebook.com/photo-upload/v1/session-1'
         assert isinstance(uploader.calls[1]['data'], bytes)

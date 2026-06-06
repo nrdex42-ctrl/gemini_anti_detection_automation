@@ -79,7 +79,12 @@ class HardenedGraphQLPoster:
         try:
             payload = await self.build_payload(page_id, caption, tokens, media_fbid, idempotence)
             proxy_url = await self.proxy.get_proxy_for_account(self.identity.account_id)
-            forge = AdvancedHeaderForge(chrome_version=self.identity.chrome_version)
+            forge = AdvancedHeaderForge(
+                chrome_version=self.identity.chrome_version,
+                user_agent=self.identity.user_agent,
+                platform=self.identity.platform,
+                locale=self.identity.locale,
+            )
             encoded_payload = urllib_parse.urlencode(payload).encode('utf-8')
             request_cookie_header = cookie_header or str(tokens.get('cookie_header') or '').strip() or None
             headers = forge.build_xhr_headers(
@@ -236,6 +241,28 @@ class HardenedGraphQLPoster:
         proxy: str,
         timeout_seconds: int,
     ) -> Tuple[int, str]:
+        # 1. Attempt to use StealthConnector (TLS fingerprint protection)
+        try:
+            from .stealth_connector import get_stealth_connector
+            stealth_conn = get_stealth_connector()
+        except ImportError:
+            stealth_conn = None
+
+        if stealth_conn is not None:
+            try:
+                session = stealth_conn.get_http_session(proxy_url=proxy or None)
+                def _do_post() -> Tuple[int, str]:
+                    post_data = data
+                    req_headers = {str(k): str(v) for k, v in headers.items()}
+                    response = session.post(url, data=post_data, headers=req_headers, timeout=timeout_seconds)
+                    return int(response.status_code), response.text
+
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(None, _do_post)
+            except Exception as exc:
+                logger.warning(f"Failed to post via stealth connector: {exc}. Falling back to default HTTP client.")
+
+        # 2. Fallback to default asynchronous client (aiohttp)
         try:
             import aiohttp  # type: ignore[reportMissingImports]
         except Exception:
@@ -253,6 +280,7 @@ class HardenedGraphQLPoster:
                 ) as resp:
                     return int(resp.status), await resp.text()
 
+        # 3. Fallback to synchronous standard library client (urllib)
         def _sync_post() -> Tuple[int, str]:
             request_headers = dict(headers)
             request_headers['accept-encoding'] = 'identity'
@@ -277,7 +305,8 @@ class HardenedGraphQLPoster:
             except urllib_error.HTTPError as exc:
                 return int(exc.code), exc.read().decode('utf-8', errors='replace')
 
-        return await asyncio.to_thread(_sync_post)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _sync_post)
 
     async def _wait_for_idempotent_result(self, key: str, attempts: int = 30) -> Optional[str]:
         if not self.redis:

@@ -259,7 +259,7 @@ class AdvancedStealthConnector:
         profile = self.select_profile()
 
         session_options = {
-            "client_identifier": f"chrome_{profile.version.replace('.', '_')}",
+            "client_identifier": f"chrome_{profile.version.split('.')[0]}",
             "random_tls_extension_order": True,
         }
 
