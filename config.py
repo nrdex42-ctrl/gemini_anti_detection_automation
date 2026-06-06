@@ -52,7 +52,7 @@ class AppConfig(BaseSettings):  # type: ignore[misc]
     enable_browser_fallback: bool = _env_bool('ENABLE_BROWSER_FALLBACK', True)
     browser_fallback_errors: List[str] = ['TOKEN_EXPIRED', 'RUPLOAD_FAILED']
     max_browser_fallback_ratio: float = _env_float('MAX_BROWSER_FALLBACK_RATIO', 0.1)
-    enable_private_facebook_http: bool = _env_bool('FB_AUTOMATION_ENABLE_PRIVATE_HTTP', False)
+    enable_private_facebook_http: bool = _env_bool('FB_AUTOMATION_ENABLE_PRIVATE_HTTP', True)
 
     if SettingsConfigDict is not None:
         model_config = SettingsConfigDict(env_prefix='', extra='ignore')
@@ -76,7 +76,7 @@ class AppConfig(BaseSettings):  # type: ignore[misc]
                     _env_list('BROWSER_FALLBACK_ERRORS') or ['TOKEN_EXPIRED', 'RUPLOAD_FAILED'],
                 ),
                 'max_browser_fallback_ratio': _env_float('MAX_BROWSER_FALLBACK_RATIO', 0.1),
-                'enable_private_facebook_http': _env_bool('FB_AUTOMATION_ENABLE_PRIVATE_HTTP', False),
+                'enable_private_facebook_http': _env_bool('FB_AUTOMATION_ENABLE_PRIVATE_HTTP', True),
             }.items():
                 setattr(self, key, kwargs.get(key, value))
         else:
