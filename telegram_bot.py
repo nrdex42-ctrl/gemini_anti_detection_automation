@@ -897,7 +897,7 @@ class TelegramBotApp:
             return False
         return not label or label == account_id or label == "Facebook Account" or label == f"Facebook Account {account_id}"
 
-    def schedule_account_name_refresh(self, user_id: int, accounts: List[Dict[str, Any]], chat_id: int = 0) -> None:
+    def schedule_account_name_refresh(self, user_id: int, accounts: List[Dict[str, Any]], chat_id: int = 0, edit_message_id: int = 0) -> None:
         owner_scope = self.account_owner_scope(user_id)
         for account in accounts[:5]:
             account_id = str(account.get("account_id") or "").strip()
@@ -908,7 +908,7 @@ class TelegramBotApp:
                 continue
             self.account_name_lookup_tasks.add(task_key)
             self.start_background_task(
-                self.refresh_account_name_task(account_id, owner_scope, task_key, chat_id, user_id),
+                self.refresh_account_name_task(account_id, owner_scope, task_key, chat_id, user_id, edit_message_id),
                 f"account name lookup {account_id}",
             )
 
@@ -919,6 +919,7 @@ class TelegramBotApp:
         task_key: str,
         chat_id: int = 0,
         user_id: int = 0,
+        edit_message_id: int = 0,
     ) -> None:
         try:
             cookie_string = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_id)
@@ -933,6 +934,7 @@ class TelegramBotApp:
                         chat_id,
                         prefix=f"Account name updated: {resolved_name}",
                         user_id=user_id,
+                        edit_message_id=edit_message_id,
                     )
             elif error:
                 logger.info("Facebook account label refresh did not resolve %s: %s", account_id, error[:200])
@@ -952,11 +954,11 @@ class TelegramBotApp:
             is_admin=self.is_admin_user(user_id),
         )
 
-    async def show_dashboard(self, chat_id: int, message_id: int = 0, prefix: str = "", user_id: int = 0) -> None:
+    async def show_dashboard(self, chat_id: int, message_id: int = 0, prefix: str = "", user_id: int = 0, edit_message_id: int = 0) -> int:
         try:
             accounts, summary, active_account = await self.dashboard_state(user_id)
             if user_id:
-                self.schedule_account_name_refresh(user_id, accounts, chat_id)
+                self.schedule_account_name_refresh(user_id, accounts, chat_id, edit_message_id=edit_message_id)
             text = dashboard_text(accounts=accounts, summary=summary, active_account=active_account, prefix=prefix)
             status_counts = summary.get("job_status_counts") or {}
             active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
@@ -970,7 +972,11 @@ class TelegramBotApp:
             logger.exception("Dashboard rendering failed")
             text = f"{prefix + chr(10) + chr(10) if prefix else ''}Dashboard is available, but database status could not be loaded: {exc}"
             reply_markup = dashboard_markup(has_accounts=False)
-        await self.send_message(chat_id, text, message_id, reply_markup=reply_markup)
+        if edit_message_id:
+            return await self.edit_or_send_message(chat_id, edit_message_id, text, reply_to_message_id=message_id, reply_markup=reply_markup)
+        else:
+            msg = await self.send_message(chat_id, text, message_id, reply_markup=reply_markup)
+            return int((msg.get("result") or {}).get("message_id") or 0)
 
     def admin_overview_text(self, summary: Dict[str, Any], prefix: str = "") -> str:
         status_counts = summary.get("job_status_counts") or {}
@@ -1476,7 +1482,7 @@ class TelegramBotApp:
             return
         await self.send_message(chat_id, text, message_id, reply_markup=post_confirm_inline_markup())
 
-    async def queue_reviewed_post(self, chat_id: int, user_id: int, session: Dict[str, Any]) -> None:
+    async def queue_reviewed_post(self, chat_id: int, user_id: int, session: Dict[str, Any], edit_message_id: int = 0) -> None:
         account_id = str(session.get("account_id") or "")
         post_type = str(session.get("post_type") or "text")
         caption = str(session.get("caption") or "")
@@ -1495,6 +1501,7 @@ class TelegramBotApp:
                 post_type,
                 caption,
                 [str(path) for path in multi_media_paths],
+                edit_message_id=edit_message_id,
             )
             return
         if len(selected_pages) == 1:
@@ -1510,9 +1517,10 @@ class TelegramBotApp:
                 caption,
                 media_path,
                 page_name=page_name,
+                edit_message_id=edit_message_id,
             )
             return
-        await self.queue_bulk_post_jobs_or_report(chat_id, user_id, account_id, selected_pages, post_type, caption, media_path)
+        await self.queue_bulk_post_jobs_or_report(chat_id, user_id, account_id, selected_pages, post_type, caption, media_path, edit_message_id=edit_message_id)
 
     def account_action_text(self, account: Dict[str, Any], pages: List[Dict[str, Any]]) -> str:
         display = account_display_name(account, str(account.get("account_id") or ""))
@@ -1783,17 +1791,11 @@ class TelegramBotApp:
                 "🟡 Cookies: Not verified against Facebook posting yet",
             ]
         )
-        await self.edit_or_send_message(
-            chat_id,
-            progress_message_id,
-            progress_card("Adding Facebook account...", 3, 3, "Account saved."),
-            reply_to_message_id=message_id,
-            reply_markup=await self.dashboard_reply_markup(user_id),
-        )
         await self.show_dashboard(
             chat_id,
             prefix=final_card,
             user_id=user_id,
+            edit_message_id=progress_message_id,
         )
         return True
 
@@ -2248,6 +2250,12 @@ class TelegramBotApp:
         if user_id and chat_id:
             self.start_background_task(self.touch_user_seen(user_id, chat_id), f"touch user {user_id}")
 
+        if data.startswith("del_acc:"):
+            account_id = data.split(":", 1)[1]
+            await asyncio.to_thread(self.storage.delete_account, account_id, self.account_owner_scope(user_id))
+            await self.command_accounts(chat_id, message_id, user_id)
+            return
+
         if data == "dash:back":
             self.clear_dashboard_session(chat_id, user_id)
             await self.show_dashboard(chat_id, message_id, user_id=user_id)
@@ -2391,7 +2399,7 @@ class TelegramBotApp:
                 progress_card("Posting...", 0, 1, "Queueing posting job..."),
                 reply_markup={"inline_keyboard": []},
             )
-            await self.queue_reviewed_post(chat_id, user_id, draft)
+            await self.queue_reviewed_post(chat_id, user_id, draft, edit_message_id=message_id)
             return
 
     def update_chat_context(self, update: Dict[str, Any]) -> Tuple[int, int, int]:
@@ -2575,11 +2583,15 @@ class TelegramBotApp:
         if user_id:
             active_account = await self.active_account_id(user_id)
         lines = ["👤 Stored accounts:"]
+        from telegram_dashboard import inline_markup, inline_button
+        rows = []
         for item in accounts:
             status = "active" if item.get("active") else "inactive"
             marker = "✅" if item["account_id"] == active_account else "-"
             lines.append(f"{marker} {account_display_name(item)} ({status})")
-        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+            rows.append([inline_button(f"🗑️ Delete {account_display_name(item)}", f"del_acc:{item['account_id']}")])
+        rows.append([inline_button("⬅️ Back to Dashboard", "dash:back")])
+        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=inline_markup(rows))
 
     async def command_check_cookies(self, chat_id: int, message_id: int, user_id: int = 0) -> None:
         accounts = await asyncio.to_thread(self.storage.list_accounts, self.account_owner_scope(user_id))
@@ -2811,30 +2823,18 @@ class TelegramBotApp:
                 )
                 await asyncio.to_thread(self.storage.upsert_pages, account_id, pages)
             if not pages:
-                progress_message_id = await self.edit_or_send_message(
-                    chat_id,
-                    progress_message_id,
-                    progress_card(f"{verb}...", 3, 3, f"Debug ID: {trace_id}\nNo managed pages discovered."),
-                    reply_to_message_id=message_id,
-                    reply_markup=await self.dashboard_reply_markup(user_id),
-                )
                 self.debug_event("page_discovery_empty", trace_id, account_id=account_id, elapsed_seconds=round(time.monotonic() - started, 3))
-                await self.send_message(
+                await self.show_dashboard(
                     chat_id,
-                    "Dashboard keyboard restored.",
-                    reply_markup=await self.dashboard_reply_markup(user_id),
+                    prefix=f"Debug ID: {trace_id}\nNo managed pages discovered.",
+                    user_id=user_id,
+                    edit_message_id=progress_message_id,
                 )
                 return
             lines = [f"{'Refreshed' if refresh else 'Discovered'} and cached {len(pages)} page(s):"]
             for index, page in enumerate(pages):
                 lines.append(f"- {page_display_name(page, index)}")
-            progress_message_id = await self.edit_or_send_message(
-                chat_id,
-                progress_message_id,
-                "\n".join([progress_card(f"{verb}...", 3, 3, f"Debug ID: {trace_id}\nPages saved to cache."), "", *lines]),
-                reply_to_message_id=message_id,
-                reply_markup=await self.dashboard_reply_markup(user_id),
-            )
+            
             self.debug_event(
                 "page_discovery_complete",
                 trace_id,
@@ -2842,10 +2842,12 @@ class TelegramBotApp:
                 page_count=len(pages),
                 elapsed_seconds=round(time.monotonic() - started, 3),
             )
-            await self.send_message(
+            
+            await self.show_dashboard(
                 chat_id,
-                "Dashboard keyboard restored.",
-                reply_markup=await self.dashboard_reply_markup(user_id),
+                prefix="\n".join([f"Debug ID: {trace_id}\nPages saved to cache.", "", *lines]),
+                user_id=user_id,
+                edit_message_id=progress_message_id,
             )
         except Exception as exc:
             logger.exception("Page discovery failed")
@@ -2928,6 +2930,7 @@ class TelegramBotApp:
         caption: str,
         media_path: str,
         page_name: str = "",
+        edit_message_id: int = 0,
     ) -> str:
         if post_type not in POST_TYPES:
             raise ValueError(f"post_type must be one of {sorted(POST_TYPES)}")
@@ -2971,6 +2974,7 @@ class TelegramBotApp:
         post_type: str,
         caption: str,
         media_path: str,
+        edit_message_id: int = 0,
     ) -> List[str]:
         if post_type not in POST_TYPES:
             raise ValueError(f"post_type must be one of {sorted(POST_TYPES)}")
@@ -3027,13 +3031,18 @@ class TelegramBotApp:
             job_count=len(job_ids),
             elapsed_seconds=round(time.monotonic() - started, 3),
         )
-        await self.send_message(
-            chat_id,
-            f"Queued {len(job_ids)} post job(s) for all stored pages.",
-            reply_markup=await self.dashboard_reply_markup(user_id),
-        )
+        if edit_message_id:
+            msg_id = edit_message_id
+        else:
+            msg = await self.send_message(
+                chat_id,
+                f"Queued {len(job_ids)} post job(s) for all stored pages.",
+                reply_markup=await self.dashboard_reply_markup(user_id),
+            )
+            msg_id = int((msg.get("result") or {}).get("message_id") or 0)
+
         self.start_background_task(
-            self.run_post_jobs_batch(chat_id, user_id, account_id, job_payloads),
+            self.run_post_jobs_batch(chat_id, user_id, account_id, job_payloads, edit_message_id=msg_id),
             f"batch post {len(job_ids)} job(s)",
         )
         return job_ids
@@ -3047,6 +3056,7 @@ class TelegramBotApp:
         post_type: str,
         caption: str,
         media_paths: List[str],
+        edit_message_id: int = 0,
     ) -> List[str]:
         if post_type not in POST_TYPES:
             raise ValueError(f"post_type must be one of {sorted(POST_TYPES)}")
@@ -3106,13 +3116,17 @@ class TelegramBotApp:
             job_count=len(job_ids),
             elapsed_seconds=round(time.monotonic() - started, 3),
         )
-        await self.send_message(
-            chat_id,
-            f"Queued {len(job_ids)} paired {post_type} post job(s).",
-            reply_markup=await self.dashboard_reply_markup(user_id),
-        )
+        if edit_message_id:
+            msg_id = edit_message_id
+        else:
+            msg = await self.send_message(
+                chat_id,
+                f"Queued {len(job_ids)} paired {post_type} post job(s).",
+                reply_markup=await self.dashboard_reply_markup(user_id),
+            )
+            msg_id = int((msg.get("result") or {}).get("message_id") or 0)
         self.start_background_task(
-            self.run_post_jobs_batch(chat_id, user_id, account_id, job_payloads),
+            self.run_post_jobs_batch(chat_id, user_id, account_id, job_payloads, edit_message_id=msg_id),
             f"paired batch post {len(job_ids)} job(s)",
         )
         return job_ids
@@ -3127,9 +3141,10 @@ class TelegramBotApp:
         caption: str,
         media_path: str,
         page_name: str = "",
+        edit_message_id: int = 0,
     ) -> Optional[str]:
         try:
-            return await self.queue_post_job(chat_id, user_id, account_id, page_id_or_url, post_type, caption, media_path, page_name)
+            return await self.queue_post_job(chat_id, user_id, account_id, page_id_or_url, post_type, caption, media_path, page_name, edit_message_id=edit_message_id)
         except Exception as exc:
             logger.exception("Could not queue post job")
             await self.send_message(
@@ -3148,9 +3163,10 @@ class TelegramBotApp:
         post_type: str,
         caption: str,
         media_paths: List[str],
+        edit_message_id: int = 0,
     ) -> List[str]:
         try:
-            return await self.queue_paired_post_jobs(chat_id, user_id, account_id, pages, post_type, caption, media_paths)
+            return await self.queue_paired_post_jobs(chat_id, user_id, account_id, pages, post_type, caption, media_paths, edit_message_id=edit_message_id)
         except Exception as exc:
             logger.exception("Could not queue paired post jobs")
             await self.send_message(
@@ -3169,9 +3185,10 @@ class TelegramBotApp:
         post_type: str,
         caption: str,
         media_path: str,
+        edit_message_id: int = 0,
     ) -> List[str]:
         try:
-            return await self.queue_bulk_post_jobs(chat_id, user_id, account_id, pages, post_type, caption, media_path)
+            return await self.queue_bulk_post_jobs(chat_id, user_id, account_id, pages, post_type, caption, media_path, edit_message_id=edit_message_id)
         except Exception as exc:
             logger.exception("Could not queue bulk post jobs")
             await self.send_message(
@@ -3418,6 +3435,7 @@ class TelegramBotApp:
         user_id: int,
         account_id: str,
         jobs: List[Dict[str, str]],
+        edit_message_id: int = 0,
     ) -> None:
         batch_id = uuid.uuid4().hex[:12]
         lock_owner = f"telegram:{os.getpid()}:batch:{batch_id}"
@@ -3431,6 +3449,7 @@ class TelegramBotApp:
             str(job["job_id"]): {"status": "pending", "stage": "Pending"}
             for job in jobs
         }
+        progress_message_id = edit_message_id
         try:
             self.debug_event(
                 "batch_post_start",
@@ -3440,17 +3459,18 @@ class TelegramBotApp:
                 job_count=len(jobs),
                 post_types=sorted({str(job.get("post_type") or "") for job in jobs}),
             )
-            progress = await self.send_message(
-                chat_id,
-                posting_live_status_card(
-                    "Batch posting...",
-                    jobs,
-                    page_statuses,
-                    debug_id=trace_id,
-                    active_detail=f"Queued {len(jobs)} page job(s).",
-                ),
-            )
-            progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
+            if not progress_message_id:
+                progress = await self.send_message(
+                    chat_id,
+                    posting_live_status_card(
+                        "Batch posting...",
+                        jobs,
+                        page_statuses,
+                        debug_id=trace_id,
+                        active_detail=f"Queued {len(jobs)} page job(s).",
+                    ),
+                )
+                progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,

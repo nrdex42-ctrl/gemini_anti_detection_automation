@@ -216,6 +216,20 @@ class BotStorage:
             conn.commit()
         return changed
 
+    def delete_account(self, account_id: str, owner_id: Optional[int] = None) -> bool:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                if owner_id is None:
+                    cur.execute("delete from fb_accounts where account_id=%s", (account_id,))
+                else:
+                    cur.execute(
+                        "delete from fb_accounts where account_id=%s and created_by=%s",
+                        (account_id, int(owner_id)),
+                    )
+                changed = cur.rowcount > 0
+            conn.commit()
+        return changed
+
     def list_accounts(self, owner_id: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.connect() as conn:
             with conn.cursor() as cur:

@@ -1174,7 +1174,7 @@ async def _enable_fast_posting_mode(context: BrowserContext, page: Page) -> None
         'googleadservices',
         'facebook.com/tr',
     )
-    blocked_resource_types = {'font'}
+    blocked_resource_types = {'font', 'image', 'media'}
 
     async def _route_handler(route: Any) -> None:
         try:
@@ -1202,7 +1202,7 @@ async def _enable_fast_posting_mode(context: BrowserContext, page: Page) -> None
             })();
             """
         )
-        logger.info('POST_FAST_MODE stage="enabled" blocked_resource_types=font')
+        logger.info('POST_FAST_MODE stage="enabled" blocked_resource_types=font,image,media')
     except Exception as exc:
         logger.debug(f'Could not enable fast posting mode: {exc}')
 
