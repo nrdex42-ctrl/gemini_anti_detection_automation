@@ -2524,12 +2524,7 @@ class TelegramBotApp:
         if command == "":
             await self.show_dashboard(chat_id, message_id, user_id=user_id)
             return
-        await self.send_message(
-            chat_id,
-            "Only /start is supported. Use the dashboard buttons for all actions.",
-            message_id,
-            reply_markup=await self.dashboard_reply_markup(user_id),
-        )
+        pass
 
     async def command_add_account(
         self,
