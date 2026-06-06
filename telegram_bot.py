@@ -3439,19 +3439,24 @@ class TelegramBotApp:
         async def update_refresh_card(text: str) -> None:
             nonlocal progress_message_id
             if progress_message_id:
-                if await self.try_edit_message(
-                    chat_id,
-                    progress_message_id,
-                    text,
-                    reply_markup=refresh_markup,
-                    timeout_seconds=8,
-                ):
-                    return
+                max_retries = 3
+                for attempt in range(max_retries):
+                    if await self.try_edit_message(
+                        chat_id,
+                        progress_message_id,
+                        text,
+                        reply_markup=refresh_markup,
+                        timeout_seconds=12,
+                    ):
+                        return
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(0.5)
                 logger.warning(
-                    "Refresh-pages progress edit failed; keeping existing card to avoid duplicate Telegram messages trace_id=%s",
+                    "Refresh-pages progress edit failed after %d attempts; resending card trace_id=%s",
+                    max_retries,
                     trace_id,
                 )
-                return
+                progress_message_id = 0
             sent = await self.send_message(
                 chat_id,
                 text,
