@@ -1032,6 +1032,23 @@ class TelegramBotApp:
         finally:
             self.account_name_lookup_tasks.discard(task_key)
 
+    async def resolve_account_label_from_cookie_header(self, cookie_header: str, fallback_label: str = "Facebook Account") -> Tuple[str, str, str, bool]:
+        timeout_seconds = _env_int("BOT_ACCOUNT_NAME_LOOKUP_TIMEOUT_SECONDS", 45, minimum=3)
+        try:
+            from playwright_engine import get_facebook_account_name
+
+            resolved, resolved_name, _error = await asyncio.wait_for(
+                get_facebook_account_name(cookies_json(parse_cookies(cookie_header))),
+                timeout=timeout_seconds,
+            )
+            if resolved and str(resolved_name or "").strip():
+                return str(resolved_name).strip(), "Auto-detected", "تم الكشف تلقائيًا", True
+        except asyncio.TimeoutError:
+            logger.info("Facebook account name lookup timed out after %ss", timeout_seconds)
+        except Exception:
+            logger.warning("Facebook account name lookup failed during account add", exc_info=True)
+        return fallback_label, "Lookup queued", "البحث عن الاسم في الانتظار", False
+
     async def dashboard_reply_markup(self, user_id: int = 0) -> Dict[str, Any]:
         accounts, summary, active_account = await self.dashboard_state(user_id)
         lang = await self.user_language(user_id)
@@ -1962,7 +1979,8 @@ class TelegramBotApp:
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
 
         label = "Facebook Account"
-        name_source = "Lookup queued"
+        name_source_en = "Lookup queued"
+        name_source_ar = "البحث عن الاسم في الانتظار"
         progress_message_id = await self.edit_or_send_message(
             chat_id,
             progress_message_id,
@@ -1970,11 +1988,15 @@ class TelegramBotApp:
                 progress_title,
                 2,
                 3,
-                "جاري حفظ الحساب. البحث عن الاسم هيكمل في الخلفية..."
+                "جاري قراءة اسم الحساب من فيسبوك..."
                 if lang == "ar"
-                else "Saving account. Name lookup will continue in background...",
+                else "Reading the Facebook account name...",
             ),
             reply_to_message_id=message_id,
+        )
+        label, name_source_en, name_source_ar, name_resolved = await self.resolve_account_label_from_cookie_header(
+            parsed.cookie_header,
+            label,
         )
         try:
             await asyncio.to_thread(
@@ -1985,11 +2007,12 @@ class TelegramBotApp:
                 user_id,
             )
             await asyncio.to_thread(self.storage.set_active_account, user_id, parsed.account_id)
-            self.schedule_account_name_refresh(
-                user_id,
-                [{"account_id": parsed.account_id, "label": label, "active": True}],
-                chat_id,
-            )
+            if not name_resolved:
+                self.schedule_account_name_refresh(
+                    user_id,
+                    [{"account_id": parsed.account_id, "label": label, "active": True}],
+                    chat_id,
+                )
         except Exception as exc:
             await self.edit_or_send_message(
                 chat_id,
@@ -2017,7 +2040,7 @@ class TelegramBotApp:
                     "━━━━━━━━━━━━━━━━━━━━━━",
                     f"👤 {label}",
                     f"🆔 {parsed.account_id}",
-                    "📋 البحث عن الاسم في الانتظار",
+                    f"📋 {name_source_ar}",
                     "🟢 المحدد: نشط",
                     "🔴 الكوكيز: لم يتم التحقق منها ضد فيسبوك بعد",
                 ]
@@ -2029,7 +2052,7 @@ class TelegramBotApp:
                     "━━━━━━━━━━━━━━━━━━━━━━",
                     f"👤 {label}",
                     f"🆔 {parsed.account_id}",
-                    f"📋 {name_source}",
+                    f"📋 {name_source_en}",
                     "🟢 Selected: Active",
                     "🔴 Cookies: Not verified against Facebook posting yet",
                 ]

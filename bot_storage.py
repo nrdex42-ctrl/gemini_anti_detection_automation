@@ -73,10 +73,25 @@ class BotStorage:
 
     def upsert_account(self, account_id: str, cookie_string: str, label: str = "", created_by: int = 0) -> None:
         encrypted_cookie = self.cipher.encrypt(cookie_string)
+        allow_owner_transfer = os.getenv("BOT_ALLOW_ACCOUNT_OWNERSHIP_TRANSFER", "true").lower() == "true"
         with self.connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
+                conflict_owner_clause = (
+                    "created_by = excluded.created_by,"
+                    if allow_owner_transfer
+                    else "created_by = coalesce(fb_accounts.created_by, excluded.created_by),"
+                )
+                ownership_guard = (
+                    ""
+                    if allow_owner_transfer
+                    else """
+                    where fb_accounts.created_by is null
+                       or fb_accounts.created_by = excluded.created_by
+                       or excluded.created_by is null
                     """
+                )
+                cur.execute(
+                    f"""
                     insert into fb_accounts (
                         account_id,
                         label,
@@ -92,22 +107,23 @@ class BotStorage:
                     on conflict (account_id) do update set
                         label = excluded.label,
                         cookie_ciphertext = excluded.cookie_ciphertext,
-                        created_by = coalesce(fb_accounts.created_by, excluded.created_by),
+                        {conflict_owner_clause}
                         active = true,
                         cookie_status = 'unverified',
                         cookie_status_detail = 'New or updated cookie is not verified against Facebook yet.',
                         cookie_status_checked_at = null,
                         cookie_status_updated_at = now(),
                         updated_at = now()
-                    where fb_accounts.created_by is null
-                       or fb_accounts.created_by = excluded.created_by
-                       or excluded.created_by is null
+                    {ownership_guard}
                     returning account_id
                     """,
                     (account_id, label or account_id, encrypted_cookie, created_by or None),
                 )
                 if cur.fetchone() is None:
-                    raise RuntimeError("This Facebook account is already stored by another Telegram user")
+                    raise RuntimeError(
+                        "This Facebook account is already stored by another Telegram user. "
+                        "Set BOT_ALLOW_ACCOUNT_OWNERSHIP_TRANSFER=true to allow re-adding refreshed cookies to transfer ownership."
+                    )
             conn.commit()
 
     def update_account_label(self, account_id: str, label: str, owner_id: Optional[int] = None) -> bool:
