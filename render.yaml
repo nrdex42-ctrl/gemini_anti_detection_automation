@@ -127,5 +127,3 @@ services:
         sync: false
       - key: ENCRYPTION_KEY
         generateValue: true
-      - key: PUBLIC_BASE_URL
-        sync: false

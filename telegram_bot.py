@@ -288,6 +288,60 @@ def _placeholder(value: str) -> bool:
     )
 
 
+def _normalize_base_url(value: str) -> str:
+    raw = (value or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    if not raw.startswith(("http://", "https://")):
+        raw = f"https://{raw}"
+    return raw.rstrip("/")
+
+
+def _url_hostname(value: str) -> str:
+    try:
+        return (urlparse(value).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _is_onrender_url(value: str) -> bool:
+    host = _url_hostname(value)
+    return host == "onrender.com" or host.endswith(".onrender.com")
+
+
+def render_runtime_public_url() -> str:
+    runtime_url = _normalize_base_url(os.getenv("RENDER_EXTERNAL_URL", ""))
+    if runtime_url and not _placeholder(runtime_url):
+        return runtime_url
+    runtime_host = (os.getenv("RENDER_EXTERNAL_HOSTNAME", "") or "").strip()
+    if runtime_host and not _placeholder(runtime_host):
+        return _normalize_base_url(runtime_host)
+    return ""
+
+
+def selected_public_base_url() -> Tuple[str, str]:
+    """Choose the public URL used for Telegram webhooks.
+
+    PUBLIC_BASE_URL remains the explicit custom-domain override. For Render
+    onrender.com hosts, prefer Render's runtime URL when a moved service keeps
+    an old stale PUBLIC_BASE_URL.
+    """
+
+    configured_url = _normalize_base_url(os.getenv("PUBLIC_BASE_URL", ""))
+    runtime_url = render_runtime_public_url()
+    if _placeholder(configured_url):
+        return (runtime_url, "RENDER_EXTERNAL_URL") if runtime_url else ("", "missing")
+    if (
+        runtime_url
+        and _is_onrender_url(configured_url)
+        and _is_onrender_url(runtime_url)
+        and _url_hostname(configured_url) != _url_hostname(runtime_url)
+        and not _env_bool("PUBLIC_BASE_URL_FORCE", False)
+    ):
+        return runtime_url, "RENDER_EXTERNAL_URL_STALE_PUBLIC_BASE_URL"
+    return configured_url, "PUBLIC_BASE_URL"
+
+
 class HealthzAccessLogFilter(logging.Filter):
     """Suppress noisy Render health-check access log lines while keeping other access logs."""
 
@@ -429,7 +483,7 @@ class TelegramBotApp:
         await self.telegram_api("answerCallbackQuery", payload)
 
     async def configure_telegram_webhook(self) -> None:
-        public_base_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+        public_base_url, public_base_url_source = selected_public_base_url()
         if _placeholder(public_base_url):
             logger.warning("Skipping Telegram webhook setup because PUBLIC_BASE_URL is not configured")
             return
@@ -441,6 +495,14 @@ class TelegramBotApp:
             return
 
         webhook_url = f"{public_base_url}/telegram/webhook"
+        configured_url = _normalize_base_url(os.getenv("PUBLIC_BASE_URL", ""))
+        runtime_url = render_runtime_public_url()
+        if public_base_url_source == "RENDER_EXTERNAL_URL_STALE_PUBLIC_BASE_URL":
+            logger.warning(
+                "PUBLIC_BASE_URL=%s does not match Render runtime URL=%s; using runtime URL for Telegram webhook",
+                configured_url,
+                runtime_url,
+            )
         payload = {
             "url": webhook_url,
             "secret_token": self.webhook_secret,
@@ -449,7 +511,7 @@ class TelegramBotApp:
         }
         data = await self.telegram_api("setWebhook", payload)
         if data.get("ok"):
-            logger.info("Telegram webhook configured for %s", webhook_url)
+            logger.info("Telegram webhook configured for %s source=%s", webhook_url, public_base_url_source)
         else:
             logger.error("Telegram webhook setup failed: %s", data)
 
@@ -4331,7 +4393,14 @@ class TelegramBotApp:
             await asyncio.to_thread(self.storage.extend_account_runtime, account_id, owner, lease_seconds)
 
     async def health(self, request: web.Request) -> web.Response:
-        return web.json_response({"status": "ok"})
+        public_base_url, public_base_url_source = selected_public_base_url()
+        return web.json_response(
+            {
+                "status": "ok",
+                "telegram_webhook_base_url": public_base_url,
+                "telegram_webhook_base_url_source": public_base_url_source,
+            }
+        )
 
     async def webhook(self, request: web.Request) -> web.Response:
         path_secret = request.match_info.get("secret", "")
