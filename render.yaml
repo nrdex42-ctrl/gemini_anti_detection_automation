@@ -87,6 +87,16 @@ services:
         value: "2"
       - key: POST_PARALLEL_SAME_COOKIE_STAGGER_SECONDS
         value: "8"
+      - key: POST_PARALLEL_ENABLE_PAGES_PORTAL_FALLBACK
+        value: "true"
+      - key: POST_PARALLEL_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS
+        value: "60"
+      - key: POST_PARALLEL_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS
+        value: "90"
+      - key: POST_PARALLEL_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS
+        value: "120"
+      - key: FACEBOOK_MEDIA_UPLOAD_MAX_ZERO_NETWORK_ATTEMPTS
+        value: "2"
       - key: POST_COOKIE_MIN_INTERVAL_SECONDS
         value: "360"
       - key: POST_COOKIE_SESSION_LOCK_ENABLED
