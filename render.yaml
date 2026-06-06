@@ -62,7 +62,7 @@ services:
       - key: BOT_POSTING_ENGINE_TIMEOUT_SECONDS
         value: "900"
       - key: BOT_BATCH_POSTING_ENGINE_TIMEOUT_SECONDS
-        value: "1200"
+        value: "3600"
       - key: BOT_VIDEO_URL_PROBE_TIMEOUT_SECONDS
         value: "12"
       - key: BOT_ACCOUNT_NAME_LOOKUP_TIMEOUT_SECONDS
@@ -70,19 +70,29 @@ services:
       - key: FACEBOOK_BROWSER_ACCOUNT_LOOKUP_FALLBACK_ENABLED
         value: "true"
       - key: POST_BATCH_PAGE_TIMEOUT_SECONDS
-        value: "110"
-      - key: POST_BATCH_PAGE_TIMEOUT_MAX_SECONDS
-        value: "150"
-      - key: POST_DIRECT_COMPOSER_TIMEOUT_SECONDS
-        value: "35"
-      - key: POST_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS
-        value: "90"
-      - key: POST_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS
-        value: "150"
-      - key: POST_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS
         value: "180"
+      - key: POST_BATCH_PAGE_TIMEOUT_MAX_SECONDS
+        value: "300"
+      - key: POST_DIRECT_COMPOSER_TIMEOUT_SECONDS
+        value: "45"
+      - key: POST_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS
+        value: "120"
+      - key: POST_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS
+        value: "180"
+      - key: POST_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS
+        value: "240"
       - key: POST_PUBLISH_IN_PROGRESS_TIMEOUT_MS
-        value: "30000"
+        value: "45000"
+      - key: POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS
+        value: "3"
+      - key: POST_COMPOSER_BUTTON_TIMEOUT_MS
+        value: "5000"
+      - key: POST_COMPOSER_DIALOG_TIMEOUT_MS
+        value: "6500"
+      - key: MEDIA_UPLOAD_READY_IMAGE_TIMEOUT
+        value: "30"
+      - key: MEDIA_UPLOAD_READY_VIDEO_TIMEOUT
+        value: "120"
       - key: POST_PARALLEL_BATCH_ENABLED
         value: "false"
       - key: POST_ALLOW_PARALLEL_SAME_COOKIE
