@@ -353,6 +353,13 @@ def cookie_input_markup(lang: str = "en") -> Dict[str, Any]:
     )
 
 
+def done_cancel_markup(lang: str = "en", *, placeholder: str = "") -> Dict[str, Any]:
+    return reply_keyboard(
+        [[button_text("done", lang)], [button_text("back", lang), button_text("cancel", lang)]],
+        placeholder=placeholder or tr(lang, "Send value, then tap Done", "ابعت القيمة، ثم اضغط تم"),
+    )
+
+
 def account_post_action_markup(lang: str = "en") -> Dict[str, Any]:
     return reply_keyboard(
         [
