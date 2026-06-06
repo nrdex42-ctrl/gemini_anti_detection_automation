@@ -51,6 +51,7 @@ create table if not exists telegram_user_state (
 
 alter table telegram_user_state add column if not exists last_chat_id bigint;
 alter table telegram_user_state add column if not exists last_seen_at timestamptz;
+alter table telegram_user_state add column if not exists lang text not null default 'en';
 
 create table if not exists bot_meta (
     key text primary key,

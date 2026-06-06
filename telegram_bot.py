@@ -27,7 +27,6 @@ from facebook_cookie_parser import parse_account_cookie_payload
 from run_live_image_test import parse_cookies
 from run_live_matrix_test import cookies_json, discover_pages_from_browser
 from telegram_dashboard import (
-    POST_TYPE_CHOICES,
     POST_ACTION_TYPES,
     BUTTON_DONE,
     account_display_name,
@@ -48,6 +47,7 @@ from telegram_dashboard import (
     page_selection_markup,
     parse_choice_id,
     parse_post_type_choice,
+    post_type_choices,
     post_confirm_inline_markup,
     post_input_card,
     post_review_card,
@@ -486,13 +486,15 @@ class TelegramBotApp:
                 summary = await asyncio.to_thread(self.storage.dashboard_summary, owner_scope)
                 accounts = await asyncio.to_thread(self.storage.list_accounts, owner_scope)
                 active_account = await asyncio.to_thread(self.storage.get_active_account, user_id, owner_scope)
+                lang = await asyncio.to_thread(self.storage.get_user_language, user_id)
                 status_counts = summary.get("job_status_counts") or {}
                 active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
                 text = dashboard_text(
                     accounts=accounts,
                     summary=summary,
                     active_account=active_account,
-                    prefix="🔄 Bot updated after a new deploy. Dashboard refreshed.",
+                    prefix="🔄 تم تحديث البوت بعد Deploy جديد. تم تحديث لوحة التحكم." if lang == "ar" else "🔄 Bot updated after a new deploy. Dashboard refreshed.",
+                    lang=lang,
                 )
                 await self.send_message(
                     chat_id,
@@ -502,6 +504,7 @@ class TelegramBotApp:
                         active_account=active_account,
                         active_jobs=active_jobs,
                         is_admin=self.is_admin_user(user_id),
+                        lang=lang,
                     ),
                 )
                 sent += 1
@@ -874,6 +877,9 @@ class TelegramBotApp:
     async def dashboard_summary(self, user_id: int = 0) -> Dict[str, Any]:
         return await asyncio.to_thread(self.storage.dashboard_summary, self.account_owner_scope(user_id))
 
+    async def user_language(self, user_id: int = 0) -> str:
+        return await asyncio.to_thread(self.storage.get_user_language, user_id) if user_id else "en"
+
     async def active_account_id(self, user_id: int) -> str:
         return await asyncio.to_thread(self.storage.get_active_account, user_id, self.account_owner_scope(user_id))
 
@@ -944,6 +950,7 @@ class TelegramBotApp:
 
     async def dashboard_reply_markup(self, user_id: int = 0) -> Dict[str, Any]:
         accounts, summary, active_account = await self.dashboard_state(user_id)
+        lang = await self.user_language(user_id)
         status_counts = summary.get("job_status_counts") or {}
         active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
         return dashboard_markup(
@@ -951,14 +958,16 @@ class TelegramBotApp:
             active_account=active_account,
             active_jobs=active_jobs,
             is_admin=self.is_admin_user(user_id),
+            lang=lang,
         )
 
     async def show_dashboard(self, chat_id: int, message_id: int = 0, prefix: str = "", user_id: int = 0) -> None:
         try:
             accounts, summary, active_account = await self.dashboard_state(user_id)
+            lang = await self.user_language(user_id)
             if user_id:
                 self.schedule_account_name_refresh(user_id, accounts, chat_id)
-            text = dashboard_text(accounts=accounts, summary=summary, active_account=active_account, prefix=prefix)
+            text = dashboard_text(accounts=accounts, summary=summary, active_account=active_account, prefix=prefix, lang=lang)
             status_counts = summary.get("job_status_counts") or {}
             active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
             reply_markup = dashboard_markup(
@@ -966,30 +975,31 @@ class TelegramBotApp:
                 active_account=active_account,
                 active_jobs=active_jobs,
                 is_admin=self.is_admin_user(user_id),
+                lang=lang,
             )
         except Exception as exc:
             logger.exception("Dashboard rendering failed")
+            lang = "en"
             text = f"{prefix + chr(10) + chr(10) if prefix else ''}Dashboard is available, but database status could not be loaded: {exc}"
-            reply_markup = dashboard_markup(has_accounts=False)
+            reply_markup = dashboard_markup(has_accounts=False, lang=lang)
         await self.send_message(chat_id, text, message_id, reply_markup=reply_markup)
 
     async def show_language_card(self, chat_id: int, message_id: int = 0, user_id: int = 0, prefix: str = "") -> None:
-        lang = await asyncio.to_thread(self.storage.get_user_language, user_id) if user_id else "en"
-        current = "Arabic (Egyptian)" if lang == "ar" else "English"
+        lang = await self.user_language(user_id)
+        current = "العربية" if lang == "ar" else "English"
         lines = []
         if prefix:
             lines.extend([prefix, ""])
         lines.extend(
             [
-                "🌐 Language",
+                "🌐 اللغة" if lang == "ar" else "🌐 Language",
                 "━━━━━━━━━━━━━━━━━━",
-                f"Current: {current}",
+                f"اللغة الحالية: {current}" if lang == "ar" else f"Current: {current}",
                 "",
-                "Choose the dashboard language.",
-                "Arabic uses Egyptian Arabic wording where translations are available.",
+                "اختار لغة لوحة التحكم." if lang == "ar" else "Choose the dashboard language.",
             ]
         )
-        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=language_selection_markup())
+        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=language_selection_markup(lang=lang))
 
     def admin_overview_text(self, summary: Dict[str, Any], prefix: str = "") -> str:
         status_counts = summary.get("job_status_counts") or {}
@@ -1248,13 +1258,14 @@ class TelegramBotApp:
             )
 
     async def prompt_for_account(self, chat_id: int, message_id: int, prompt: str, user_id: int = 0) -> bool:
+        lang = await self.user_language(user_id)
         accounts = await self.dashboard_accounts(user_id)
         if not accounts:
             await self.send_message(
                 chat_id,
-                "No accounts are stored yet. Use Add Account first.",
+                "لا توجد حسابات محفوظة بعد. استخدم ضيف حساب أولاً." if lang == "ar" else "No accounts are stored yet. Use Add Account first.",
                 message_id,
-                reply_markup=dashboard_markup(has_accounts=False),
+                reply_markup=dashboard_markup(has_accounts=False, lang=lang),
             )
             return False
         active_account = ""
@@ -1278,11 +1289,16 @@ class TelegramBotApp:
             chat_id,
             prompt,
             message_id,
-            reply_markup=choices_markup(choice_labels, placeholder="Choose account"),
+            reply_markup=choices_markup(
+                choice_labels,
+                placeholder="اختار حساب" if lang == "ar" else "Choose account",
+                lang=lang,
+            ),
         )
         return True
 
     async def prompt_for_page(self, chat_id: int, message_id: int, account_id: str, user_id: int = 0) -> None:
+        lang = await self.user_language(user_id)
         pages = await asyncio.to_thread(self.storage.list_pages, account_id, self.account_owner_scope(user_id))
         account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
         account_name = account_display_name(account or {}, account_id)
@@ -1298,9 +1314,9 @@ class TelegramBotApp:
         if pages:
             await self.send_message(
                 chat_id,
-                page_selection_card(account_name=account_name, pages=pages, selected_indexes=selected_pages),
+                page_selection_card(account_name=account_name, pages=pages, selected_indexes=selected_pages, lang=lang),
                 message_id,
-                reply_markup=page_selection_markup(pages, selected_pages),
+                reply_markup=page_selection_markup(pages, selected_pages, lang=lang),
             )
             return
         await self.send_message(
@@ -1309,10 +1325,11 @@ class TelegramBotApp:
                 account_name=account_name,
                 pages=[],
                 selected_indexes=[],
-                prefix="No stored pages for this account yet.",
+                prefix="لا توجد صفحات محفوظة لهذا الحساب بعد." if lang == "ar" else "No stored pages for this account yet.",
+                lang=lang,
             ),
             message_id,
-            reply_markup=page_selection_markup([], []),
+            reply_markup=page_selection_markup([], [], lang=lang),
         )
 
     def selected_pages_from_session(self, session: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1325,47 +1342,50 @@ class TelegramBotApp:
         ]
 
     def multi_video_prompt(self, session: Dict[str, Any]) -> str:
+        lang = str(session.get("lang") or "en")
         selected_pages = self.selected_pages_from_session(session)
         received = len(session.get("multi_media_paths") or []) if isinstance(session.get("multi_media_paths"), list) else 0
         next_index = min(received, max(0, len(selected_pages) - 1))
         page_name = page_display_name(selected_pages[next_index], next_index) if selected_pages else "Page"
         return "\n".join(
             [
-                "📚 Multi Video Upload",
+                "📚 رفع فيديوهات متعددة" if lang == "ar" else "📚 Multi Video Upload",
                 "━━━━━━━━━━━━━━━━━━",
-                f"Received: {received}/{len(selected_pages)}",
-                f"Next page: {page_name}",
+                f"تم الاستلام: {received}/{len(selected_pages)}" if lang == "ar" else f"Received: {received}/{len(selected_pages)}",
+                f"الصفحة التالية: {page_name}" if lang == "ar" else f"Next page: {page_name}",
                 "",
-                f"Send video {received + 1} of {len(selected_pages)} now.",
+                f"ابعت فيديو {received + 1} من {len(selected_pages)} دلوقتي." if lang == "ar" else f"Send video {received + 1} of {len(selected_pages)} now.",
             ]
         )
 
     def multi_video_url_prompt(self, session: Dict[str, Any]) -> str:
+        lang = str(session.get("lang") or "en")
         selected_pages = self.selected_pages_from_session(session)
         received = len(session.get("multi_media_paths") or []) if isinstance(session.get("multi_media_paths"), list) else 0
         next_index = min(received, max(0, len(selected_pages) - 1))
         page_name = page_display_name(selected_pages[next_index], next_index) if selected_pages else "Page"
         return "\n".join(
             [
-                "🔗 Multi Video URLs",
+                "🔗 روابط فيديو متعددة" if lang == "ar" else "🔗 Multi Video URLs",
                 "━━━━━━━━━━━━━━━━━━",
-                f"Received: {received}/{len(selected_pages)}",
-                f"Next page: {page_name}",
+                f"تم الاستلام: {received}/{len(selected_pages)}" if lang == "ar" else f"Received: {received}/{len(selected_pages)}",
+                f"الصفحة التالية: {page_name}" if lang == "ar" else f"Next page: {page_name}",
                 "",
-                f"Paste direct video URL {received + 1} of {len(selected_pages)} now.",
+                f"الصق رابط الفيديو المباشر {received + 1} من {len(selected_pages)} دلوقتي." if lang == "ar" else f"Paste direct video URL {received + 1} of {len(selected_pages)} now.",
             ]
         )
 
-    async def validate_video_url_or_reply(self, chat_id: int, message_id: int, text: str) -> str:
+    async def validate_video_url_or_reply(self, chat_id: int, message_id: int, text: str, lang: str = "en") -> str:
         ok, value = parse_video_media_url(text)
         if not ok:
-            await self.send_message(chat_id, value, message_id, reply_markup=cancel_markup())
+            await self.send_message(chat_id, value, message_id, reply_markup=cancel_markup(lang=lang))
             return ""
+        title = "فحص رابط الفيديو..." if lang == "ar" else "Checking video URL..."
         progress = await self.send_message(
             chat_id,
-            progress_card("Checking video URL...", 0, 1, "Validating direct URL..."),
+            progress_card(title, 0, 1, "جاري التحقق من الرابط المباشر..." if lang == "ar" else "Validating direct URL..."),
             message_id,
-            reply_markup=cancel_markup(),
+            reply_markup=cancel_markup(lang=lang),
         )
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
         reachable, error, size = await asyncio.to_thread(probe_video_media_url, value)
@@ -1373,18 +1393,22 @@ class TelegramBotApp:
             await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Checking video URL...", 1, 1, error or "Video URL is not reachable."),
+                progress_card(title, 1, 1, error or ("رابط الفيديو غير متاح." if lang == "ar" else "Video URL is not reachable.")),
                 reply_to_message_id=message_id,
-                reply_markup=cancel_markup(),
+                reply_markup=cancel_markup(lang=lang),
             )
             return ""
-        size_detail = f" Accepted. Size: about {size} bytes." if size else " Accepted. Size unknown."
+        size_detail = (
+            (f" مقبول. الحجم حوالي {size} بايت." if size else " مقبول. الحجم غير معروف.")
+            if lang == "ar"
+            else (f" Accepted. Size: about {size} bytes." if size else " Accepted. Size unknown.")
+        )
         await self.edit_or_send_message(
             chat_id,
             progress_message_id,
-            progress_card("Checking video URL...", 1, 1, size_detail),
+            progress_card(title, 1, 1, size_detail),
             reply_to_message_id=message_id,
-            reply_markup=cancel_markup(),
+            reply_markup=cancel_markup(lang=lang),
         )
         return value
 
@@ -1396,6 +1420,7 @@ class TelegramBotApp:
         session: Dict[str, Any],
         prefix: str = "",
     ) -> None:
+        lang = await self.user_language(user_id)
         account_id = str(session.get("account_id") or "")
         account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
         account_name = account_display_name(account or {}, account_id)
@@ -1404,8 +1429,8 @@ class TelegramBotApp:
         await self.edit_message(
             chat_id,
             message_id,
-            page_selection_card(account_name=account_name, pages=pages, selected_indexes=selected, prefix=prefix),
-            reply_markup=page_selection_markup(pages, selected),
+            page_selection_card(account_name=account_name, pages=pages, selected_indexes=selected, prefix=prefix, lang=lang),
+            reply_markup=page_selection_markup(pages, selected, lang=lang),
         )
 
     async def show_post_type_card(
@@ -1415,18 +1440,20 @@ class TelegramBotApp:
         user_id: int,
         session: Dict[str, Any],
     ) -> None:
+        lang = await self.user_language(user_id)
         account_id = str(session.get("account_id") or "")
         account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
         account_name = account_display_name(account or {}, account_id)
         pages = session.get("pages") if isinstance(session.get("pages"), list) else []
         selected = session.get("selected_pages") if isinstance(session.get("selected_pages"), list) else []
         session["step"] = "post_type_inline"
+        session["lang"] = lang
         self.set_dashboard_session(chat_id, user_id, session)
         await self.edit_message(
             chat_id,
             message_id,
-            post_type_card(account_name=account_name, pages=pages, selected_indexes=selected),
-            reply_markup=post_type_inline_markup(),
+            post_type_card(account_name=account_name, pages=pages, selected_indexes=selected, lang=lang),
+            reply_markup=post_type_inline_markup(lang=lang),
         )
 
     async def show_video_mode_card(
@@ -1436,6 +1463,7 @@ class TelegramBotApp:
         user_id: int,
         session: Dict[str, Any],
     ) -> None:
+        lang = await self.user_language(user_id)
         account_id = str(session.get("account_id") or "")
         account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
         account_name = account_display_name(account or {}, account_id)
@@ -1443,14 +1471,15 @@ class TelegramBotApp:
         selected = session.get("selected_pages") if isinstance(session.get("selected_pages"), list) else []
         session["post_type"] = "video"
         session["step"] = "video_mode"
+        session["lang"] = lang
         session.pop("media_path", None)
         session.pop("multi_media_paths", None)
         self.set_dashboard_session(chat_id, user_id, session)
         await self.edit_message(
             chat_id,
             message_id,
-            video_mode_card(account_name=account_name, pages=pages, selected_indexes=selected),
-            reply_markup=video_mode_inline_markup(),
+            video_mode_card(account_name=account_name, pages=pages, selected_indexes=selected, lang=lang),
+            reply_markup=video_mode_inline_markup(lang=lang),
         )
 
     async def show_post_input_card(
@@ -1460,13 +1489,15 @@ class TelegramBotApp:
         user_id: int,
         session: Dict[str, Any],
     ) -> None:
+        lang = await self.user_language(user_id)
         post_type = str(session.get("post_type") or "text")
         if post_type == "video":
             await self.show_video_mode_card(chat_id, message_id, user_id, session)
             return
         session["step"] = "caption" if post_type == "text" else f"media_{post_type}"
+        session["lang"] = lang
         self.set_dashboard_session(chat_id, user_id, session)
-        await self.edit_message(chat_id, message_id, post_input_card(post_type), reply_markup={"inline_keyboard": []})
+        await self.edit_message(chat_id, message_id, post_input_card(post_type, lang=lang), reply_markup={"inline_keyboard": []})
 
     async def show_post_review(
         self,
@@ -1477,6 +1508,7 @@ class TelegramBotApp:
         *,
         edit: bool = False,
     ) -> None:
+        lang = await self.user_language(user_id)
         account_id = str(session.get("account_id") or "")
         account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
         account_name = account_display_name(account or {}, account_id)
@@ -1490,13 +1522,15 @@ class TelegramBotApp:
             media_path=str(session.get("media_path") or ""),
             multi_media_count=len(session.get("multi_media_paths") or []) if isinstance(session.get("multi_media_paths"), list) else 0,
             multi_caption_count=sum(1 for item in multi_captions if str(item or "").strip()),
+            lang=lang,
         )
         session["step"] = "review"
+        session["lang"] = lang
         self.set_dashboard_session(chat_id, user_id, session)
         if edit:
-            await self.edit_message(chat_id, message_id, text, reply_markup=post_confirm_inline_markup())
+            await self.edit_message(chat_id, message_id, text, reply_markup=post_confirm_inline_markup(lang=lang))
             return
-        await self.send_message(chat_id, text, message_id, reply_markup=post_confirm_inline_markup())
+        await self.send_message(chat_id, text, message_id, reply_markup=post_confirm_inline_markup(lang=lang))
 
     async def queue_reviewed_post(self, chat_id: int, user_id: int, session: Dict[str, Any]) -> None:
         account_id = str(session.get("account_id") or "")
@@ -1555,14 +1589,34 @@ class TelegramBotApp:
             progress_message_id=progress_message_id,
         )
 
-    def account_action_text(self, account: Dict[str, Any], pages: List[Dict[str, Any]]) -> str:
+    def account_action_text(self, account: Dict[str, Any], pages: List[Dict[str, Any]], lang: str = "en") -> str:
         display = account_display_name(account, str(account.get("account_id") or ""))
         updated = self._format_dt(account.get("updated_at"))
         if pages:
             newest_page_update = max((page.get("updated_at") for page in pages if page.get("updated_at")), default="")
-            pages_line = f"Cached pages: {len(pages)} | refreshed: {self._format_dt(newest_page_update)}"
+            pages_line = (
+                f"الصفحات المحفوظة: {len(pages)} | آخر تحديث: {self._format_dt(newest_page_update)}"
+                if lang == "ar"
+                else f"Cached pages: {len(pages)} | refreshed: {self._format_dt(newest_page_update)}"
+            )
         else:
-            pages_line = "Cached pages: 0 | tap Refresh Pages before all-page posting"
+            pages_line = (
+                "الصفحات المحفوظة: 0 | اضغط حدّث الصفحات قبل النشر لكل الصفحات"
+                if lang == "ar"
+                else "Cached pages: 0 | tap Refresh Pages before all-page posting"
+            )
+        if lang == "ar":
+            return "\n".join(
+                [
+                    f"الحساب المحدد: {display}",
+                    "━━━━━━━━━━━━━━━━━━",
+                    f"الحالة: {'نشط' if account.get('active') else 'غير نشط'}",
+                    f"آخر تحديث: {updated}",
+                    pages_line,
+                    "",
+                    "تقدر تفحص كوكيز الحساب، تكمل بالصفحات المحفوظة، أو تحدّث كاش الصفحات.",
+                ]
+            )
         return "\n".join(
             [
                 f"Account selected: {display}",
@@ -1586,12 +1640,13 @@ class TelegramBotApp:
         if not account:
             await self.send_message(chat_id, f"Account not found: {account_id}", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
             return
+        lang = await self.user_language(user_id)
         pages = await asyncio.to_thread(self.storage.list_pages, account_id, self.account_owner_scope(user_id))
         await self.send_message(
             chat_id,
-            self.account_action_text(account, pages),
+            self.account_action_text(account, pages, lang=lang),
             message_id,
-            reply_markup=account_post_action_markup(),
+            reply_markup=account_post_action_markup(lang=lang),
         )
 
     async def active_account_or_warn(self, chat_id: int, message_id: int, user_id: int) -> str:
@@ -1600,7 +1655,11 @@ class TelegramBotApp:
             return active_account
         await self.send_message(
             chat_id,
-            "No active account selected. Use Switch Active Account or Add Facebook Account first.",
+            (
+                "لا يوجد حساب نشط. استخدم غيّر الحساب النشط أو ضيف حساب فيسبوك أولاً."
+                if await self.user_language(user_id) == "ar"
+                else "No active account selected. Use Switch Active Account or Add Facebook Account first."
+            ),
             message_id,
             reply_markup=await self.dashboard_reply_markup(user_id),
         )
@@ -1613,9 +1672,10 @@ class TelegramBotApp:
         message_id: int,
         action: str,
     ) -> None:
+        lang = await self.user_language(user_id)
         if action in {"dashboard", "cancel"}:
             self.clear_dashboard_session(chat_id, user_id)
-            prefix = "Current operation cancelled." if action == "cancel" else ""
+            prefix = "تم إلغاء العملية الحالية." if action == "cancel" and lang == "ar" else ("Current operation cancelled." if action == "cancel" else "")
             await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
             return
         if action == "language":
@@ -1672,12 +1732,13 @@ class TelegramBotApp:
             await self.command_check_cookies(chat_id, message_id, user_id)
             return
         if action == "add_account":
-            self.set_dashboard_session(chat_id, user_id, {"action": "add_account", "step": "cookie", "cookie_chunks": []})
-            await self.send_message(chat_id, prompt_text("add_account"), message_id, reply_markup=cookie_input_markup())
+            self.set_dashboard_session(chat_id, user_id, {"action": "add_account", "step": "cookie", "cookie_chunks": [], "lang": lang})
+            await self.send_message(chat_id, prompt_text("add_account", lang=lang), message_id, reply_markup=cookie_input_markup(lang=lang))
             return
         if action == "switch_account":
-            self.set_dashboard_session(chat_id, user_id, {"action": "switch_account", "step": "account"})
-            if not await self.prompt_for_account(chat_id, message_id, "Select the account to make active.", user_id):
+            self.set_dashboard_session(chat_id, user_id, {"action": "switch_account", "step": "account", "lang": lang})
+            prompt = "اختار الحساب اللي هيبقى نشط." if lang == "ar" else "Select the account to make active."
+            if not await self.prompt_for_account(chat_id, message_id, prompt, user_id):
                 self.clear_dashboard_session(chat_id, user_id)
             return
         if action == "refresh_pages":
@@ -1686,8 +1747,9 @@ class TelegramBotApp:
                 self.clear_dashboard_session(chat_id, user_id)
                 await self.command_discover_pages(chat_id, message_id, [active_account], user_id, refresh=True)
                 return
-            self.set_dashboard_session(chat_id, user_id, {"action": "refresh_pages", "step": "account"})
-            if not await self.prompt_for_account(chat_id, message_id, "Select the account to refresh managed pages for.", user_id):
+            self.set_dashboard_session(chat_id, user_id, {"action": "refresh_pages", "step": "account", "lang": lang})
+            prompt = "اختار الحساب اللي عايز تحدث صفحاته." if lang == "ar" else "Select the account to refresh managed pages for."
+            if not await self.prompt_for_account(chat_id, message_id, prompt, user_id):
                 self.clear_dashboard_session(chat_id, user_id)
             return
         if action == "check_active_account":
@@ -1701,13 +1763,13 @@ class TelegramBotApp:
                 self.set_dashboard_session(
                     chat_id,
                     user_id,
-                    {"action": "post", "account_id": active_account, "step": "page_then_type"},
+                    {"action": "post", "account_id": active_account, "step": "page_then_type", "lang": lang},
                 )
                 await self.prompt_for_page(chat_id, message_id, active_account, user_id)
             return
         if action == "select_account":
-            self.set_dashboard_session(chat_id, user_id, {"action": "post", "step": "account"})
-            if not await self.prompt_for_account(chat_id, message_id, prompt_text("post", "account"), user_id):
+            self.set_dashboard_session(chat_id, user_id, {"action": "post", "step": "account", "lang": lang})
+            if not await self.prompt_for_account(chat_id, message_id, prompt_text("post", "account", lang=lang), user_id):
                 self.clear_dashboard_session(chat_id, user_id)
             return
         if action == "post_active":
@@ -1727,13 +1789,14 @@ class TelegramBotApp:
                     "account_id": active_account,
                     "step": "page_select",
                     "select_all_pages": True,
+                    "lang": lang,
                 },
             )
             await self.prompt_for_page(chat_id, message_id, active_account, user_id)
             return
         if action in {"discover_pages", "list_pages"}:
-            self.set_dashboard_session(chat_id, user_id, {"action": action, "step": "account"})
-            if not await self.prompt_for_account(chat_id, message_id, prompt_text(action, "account"), user_id):
+            self.set_dashboard_session(chat_id, user_id, {"action": action, "step": "account", "lang": lang})
+            if not await self.prompt_for_account(chat_id, message_id, prompt_text(action, "account", lang=lang), user_id):
                 self.clear_dashboard_session(chat_id, user_id)
             return
         if action in POST_ACTION_TYPES:
@@ -1743,16 +1806,17 @@ class TelegramBotApp:
                 self.set_dashboard_session(
                     chat_id,
                     user_id,
-                    {"action": "post", "post_type": post_type, "account_id": active_account, "step": "page"},
+                    {"action": "post", "post_type": post_type, "account_id": active_account, "step": "page", "lang": lang},
                 )
                 await self.prompt_for_page(chat_id, message_id, active_account, user_id)
                 return
             self.set_dashboard_session(
                 chat_id,
                 user_id,
-                {"action": "post", "post_type": post_type, "step": "account"},
+                {"action": "post", "post_type": post_type, "step": "account", "lang": lang},
             )
-            if not await self.prompt_for_account(chat_id, message_id, f"{post_type.title()} post: {prompt_text('post', 'account')}", user_id):
+            post_type_label = {"text": "نصي", "image": "صورة", "video": "فيديو"}.get(post_type, post_type) if lang == "ar" else post_type.title()
+            if not await self.prompt_for_account(chat_id, message_id, f"{post_type_label} post: {prompt_text('post', 'account', lang=lang)}", user_id):
                 self.clear_dashboard_session(chat_id, user_id)
             return
         await self.show_dashboard(chat_id, message_id, user_id=user_id)
@@ -1767,15 +1831,18 @@ class TelegramBotApp:
         account_hint: str = "auto",
         cookie_message_ids: Optional[List[int]] = None,
     ) -> bool:
+        lang = await self.user_language(user_id)
         try:
             parsed = parse_account_cookie_payload(payload, account_hint)
         except Exception as exc:
-            await self.send_message(chat_id, f"Could not parse cookies: {exc}", message_id, reply_markup=cookie_input_markup())
+            error_text = f"لم أقدر أقرأ الكوكيز: {exc}" if lang == "ar" else f"Could not parse cookies: {exc}"
+            await self.send_message(chat_id, error_text, message_id, reply_markup=cookie_input_markup(lang=lang))
             return False
 
+        progress_title = "إضافة حساب فيسبوك..." if lang == "ar" else "Adding Facebook account..."
         progress = await self.send_message(
             chat_id,
-            progress_card("Adding Facebook account...", 1, 3, "Cookies parsed."),
+            progress_card(progress_title, 1, 3, "تمت قراءة الكوكيز." if lang == "ar" else "Cookies parsed."),
             message_id,
         )
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
@@ -1785,7 +1852,14 @@ class TelegramBotApp:
         progress_message_id = await self.edit_or_send_message(
             chat_id,
             progress_message_id,
-            progress_card("Adding Facebook account...", 2, 3, "Saving account. Name lookup will continue in background..."),
+            progress_card(
+                progress_title,
+                2,
+                3,
+                "جاري حفظ الحساب. البحث عن الاسم هيكمل في الخلفية..."
+                if lang == "ar"
+                else "Saving account. Name lookup will continue in background...",
+            ),
             reply_to_message_id=message_id,
         )
         try:
@@ -1806,7 +1880,12 @@ class TelegramBotApp:
             await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Adding Facebook account...", 3, 3, f"Account was not saved: {str(exc)[:500]}"),
+                progress_card(
+                    progress_title,
+                    3,
+                    3,
+                    f"لم يتم حفظ الحساب: {str(exc)[:500]}" if lang == "ar" else f"Account was not saved: {str(exc)[:500]}",
+                ),
                 reply_to_message_id=message_id,
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
@@ -1817,21 +1896,34 @@ class TelegramBotApp:
                 if cookie_message_id:
                     await self.delete_message(chat_id, cookie_message_id)
 
-        final_card = "\n".join(
-            [
-                "✅ Account Added Successfully",
-                "━━━━━━━━━━━━━━━━━━━━━━",
-                f"👤 {label}",
-                f"🆔 {parsed.account_id}",
-                f"📋 {name_source}",
-                "🟢 Selected: Active",
-                "🔴 Cookies: Not verified against Facebook posting yet",
-            ]
-        )
+        if lang == "ar":
+            final_card = "\n".join(
+                [
+                    "✅ تم إضافة الحساب بنجاح",
+                    "━━━━━━━━━━━━━━━━━━━━━━",
+                    f"👤 {label}",
+                    f"🆔 {parsed.account_id}",
+                    "📋 البحث عن الاسم في الانتظار",
+                    "🟢 المحدد: نشط",
+                    "🔴 الكوكيز: لم يتم التحقق منها ضد فيسبوك بعد",
+                ]
+            )
+        else:
+            final_card = "\n".join(
+                [
+                    "✅ Account Added Successfully",
+                    "━━━━━━━━━━━━━━━━━━━━━━",
+                    f"👤 {label}",
+                    f"🆔 {parsed.account_id}",
+                    f"📋 {name_source}",
+                    "🟢 Selected: Active",
+                    "🔴 Cookies: Not verified against Facebook posting yet",
+                ]
+            )
         await self.edit_or_send_message(
             chat_id,
             progress_message_id,
-            progress_card("Adding Facebook account...", 3, 3, "Account saved."),
+            progress_card(progress_title, 3, 3, "تم حفظ الحساب." if lang == "ar" else "Account saved."),
             reply_to_message_id=message_id,
             reply_markup=await self.dashboard_reply_markup(user_id),
         )
@@ -1855,17 +1947,20 @@ class TelegramBotApp:
             return False
         action = str(session.get("action") or "")
         step = str(session.get("step") or "")
+        lang = str(session.get("lang") or await self.user_language(user_id))
+        session["lang"] = lang
 
         if action == "add_account":
             cookie_message_ids: List[int] = []
-            if text.strip() in {"Done", BUTTON_DONE}:
+            if text.strip() in {"Done", BUTTON_DONE, "✅ تم", "تم"}:
                 payload = "\n".join(session.get("cookie_chunks") or []).strip()
                 cookie_message_ids = [message_id]
             else:
                 try:
                     payload, cookie_message_ids = await self.cookie_payload_from_message(message, text)
                 except Exception as exc:
-                    await self.send_message(chat_id, f"Could not read cookie file: {exc}", message_id, reply_markup=cancel_markup())
+                    error_text = f"لم أقدر أقرأ ملف الكوكيز: {exc}" if lang == "ar" else f"Could not read cookie file: {exc}"
+                    await self.send_message(chat_id, error_text, message_id, reply_markup=cancel_markup(lang=lang))
                     return True
                 if payload and not self.extract_document_file_id(message):
                     chunks = list(session.get("cookie_chunks") or [])
@@ -1874,7 +1969,7 @@ class TelegramBotApp:
                     payload = "\n".join(chunks).strip()
 
             if not payload:
-                await self.send_message(chat_id, prompt_text("add_account"), message_id, reply_markup=cookie_input_markup())
+                await self.send_message(chat_id, prompt_text("add_account", lang=lang), message_id, reply_markup=cookie_input_markup(lang=lang))
                 return True
 
             try:
@@ -1884,16 +1979,20 @@ class TelegramBotApp:
                     self.set_dashboard_session(chat_id, user_id, session)
                     await self.send_message(
                         chat_id,
-                        "I got that cookie chunk. Keep pasting the remaining JSON/cookie text, or tap Done when complete.",
+                        "استلمت جزء من الكوكيز. كمّل لصق باقي JSON/الكوكيز، أو اضغط تم لما تخلص."
+                        if lang == "ar"
+                        else "I got that cookie chunk. Keep pasting the remaining JSON/cookie text, or tap Done when complete.",
                         message_id,
-                        reply_markup=cookie_input_markup(),
+                        reply_markup=cookie_input_markup(lang=lang),
                     )
                     return True
                 await self.send_message(
                     chat_id,
-                    "I could not parse the full cookie payload. Send a raw cookie string or upload the exported JSON file.",
+                    "لم أقدر أقرأ الكوكيز كاملة. ابعت كوكيز خام أو ارفع ملف JSON."
+                    if lang == "ar"
+                    else "I could not parse the full cookie payload. Send a raw cookie string or upload the exported JSON file.",
                     message_id,
-                    reply_markup=cancel_markup(),
+                    reply_markup=cancel_markup(lang=lang),
                 )
                 return True
 
@@ -1912,7 +2011,7 @@ class TelegramBotApp:
             account_choices = session.get("account_choices") if isinstance(session.get("account_choices"), dict) else {}
             account_id = str(account_choices.get(text.strip()) or parse_choice_id(text))
             if not account_id:
-                if not await self.prompt_for_account(chat_id, message_id, prompt_text(action, "account"), user_id):
+                if not await self.prompt_for_account(chat_id, message_id, prompt_text(action, "account", lang=lang), user_id):
                     self.clear_dashboard_session(chat_id, user_id)
                 return True
             if not await asyncio.to_thread(self.storage.account_exists, account_id, True, self.account_owner_scope(user_id)):
@@ -1953,16 +2052,16 @@ class TelegramBotApp:
             if not post_type:
                 await self.send_message(
                     chat_id,
-                    prompt_text("post", "post_type"),
+                    prompt_text("post", "post_type", lang=lang),
                     message_id,
-                    reply_markup=choices_markup(POST_TYPE_CHOICES, placeholder="Choose post type"),
+                    reply_markup=choices_markup(post_type_choices(lang), placeholder="اختار نوع المنشور" if lang == "ar" else "Choose post type", lang=lang),
                 )
                 return True
             session["post_type"] = post_type
             if action == "post_all_pages":
                 session["step"] = "caption_all" if post_type == "text" else f"media_{post_type}_all"
                 self.set_dashboard_session(chat_id, user_id, session)
-                await self.send_message(chat_id, prompt_text("post", session["step"]), message_id, reply_markup=cancel_markup())
+                await self.send_message(chat_id, prompt_text("post", session["step"], lang=lang), message_id, reply_markup=cancel_markup(lang=lang))
                 return True
             session["step"] = "page"
             self.set_dashboard_session(chat_id, user_id, session)
@@ -1983,7 +2082,9 @@ class TelegramBotApp:
             if not post_type:
                 await self.send_message(
                     chat_id,
-                    "Use the post-type buttons, or type text, image, or video.",
+                    "استخدم أزرار نوع المنشور، أو اكتب نص أو صورة أو فيديو."
+                    if lang == "ar"
+                    else "Use the post-type buttons, or type text, image, or video.",
                     message_id,
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
@@ -2000,14 +2101,14 @@ class TelegramBotApp:
                 self.set_dashboard_session(chat_id, user_id, session)
                 await self.send_message(
                     chat_id,
-                    video_mode_card(account_name=account_name, pages=pages, selected_indexes=selected),
+                    video_mode_card(account_name=account_name, pages=pages, selected_indexes=selected, lang=lang),
                     message_id,
-                    reply_markup=video_mode_inline_markup(),
+                    reply_markup=video_mode_inline_markup(lang=lang),
                 )
                 return True
             session["step"] = "caption" if post_type == "text" else f"media_{post_type}"
             self.set_dashboard_session(chat_id, user_id, session)
-            await self.send_message(chat_id, post_input_card(post_type), message_id, reply_markup=cancel_markup())
+            await self.send_message(chat_id, post_input_card(post_type, lang=lang), message_id, reply_markup=cancel_markup(lang=lang))
             return True
 
         if action == "post" and step == "page_then_type":
@@ -2020,9 +2121,9 @@ class TelegramBotApp:
             self.set_dashboard_session(chat_id, user_id, session)
             await self.send_message(
                 chat_id,
-                prompt_text("post", "post_type"),
+                prompt_text("post", "post_type", lang=lang),
                 message_id,
-                reply_markup=choices_markup(POST_TYPE_CHOICES, placeholder="Choose post type"),
+                reply_markup=choices_markup(post_type_choices(lang), placeholder="اختار نوع المنشور" if lang == "ar" else "Choose post type", lang=lang),
             )
             return True
 
@@ -2031,9 +2132,9 @@ class TelegramBotApp:
             if not post_type:
                 await self.send_message(
                     chat_id,
-                    prompt_text("post", "post_type"),
+                    prompt_text("post", "post_type", lang=lang),
                     message_id,
-                    reply_markup=choices_markup(POST_TYPE_CHOICES, placeholder="Choose post type"),
+                    reply_markup=choices_markup(post_type_choices(lang), placeholder="اختار نوع المنشور" if lang == "ar" else "Choose post type", lang=lang),
                 )
                 return True
             session["post_type"] = post_type
@@ -2045,14 +2146,14 @@ class TelegramBotApp:
                 self.set_dashboard_session(chat_id, user_id, session)
                 await self.send_message(
                     chat_id,
-                    video_mode_card(account_name="", pages=session["pages"], selected_indexes=[0]),
+                    video_mode_card(account_name="", pages=session["pages"], selected_indexes=[0], lang=lang),
                     message_id,
-                    reply_markup=video_mode_inline_markup(),
+                    reply_markup=video_mode_inline_markup(lang=lang),
                 )
                 return True
             session["step"] = "caption" if post_type == "text" else f"media_{post_type}"
             self.set_dashboard_session(chat_id, user_id, session)
-            await self.send_message(chat_id, prompt_text("post", session["step"]), message_id, reply_markup=cancel_markup())
+            await self.send_message(chat_id, prompt_text("post", session["step"], lang=lang), message_id, reply_markup=cancel_markup(lang=lang))
             return True
 
         if action == "post" and step == "page":
@@ -2069,20 +2170,25 @@ class TelegramBotApp:
                 self.set_dashboard_session(chat_id, user_id, session)
                 await self.send_message(
                     chat_id,
-                    video_mode_card(account_name="", pages=session["pages"], selected_indexes=[0]),
+                    video_mode_card(account_name="", pages=session["pages"], selected_indexes=[0], lang=lang),
                     message_id,
-                    reply_markup=video_mode_inline_markup(),
+                    reply_markup=video_mode_inline_markup(lang=lang),
                 )
                 return True
             session["step"] = "caption" if post_type == "text" else f"media_{post_type}"
             self.set_dashboard_session(chat_id, user_id, session)
-            await self.send_message(chat_id, prompt_text("post", session["step"]), message_id, reply_markup=cancel_markup())
+            await self.send_message(chat_id, prompt_text("post", session["step"], lang=lang), message_id, reply_markup=cancel_markup(lang=lang))
             return True
 
         if action == "post" and step == "caption":
             caption = text.strip()
             if not caption:
-                await self.send_message(chat_id, "Caption cannot be empty. Send the post text.", message_id, reply_markup=cancel_markup())
+                await self.send_message(
+                    chat_id,
+                    "الكابشن لا يمكن يكون فارغ. ابعت نص المنشور." if lang == "ar" else "Caption cannot be empty. Send the post text.",
+                    message_id,
+                    reply_markup=cancel_markup(lang=lang),
+                )
                 return True
             session["post_type"] = "text"
             session["caption"] = caption
@@ -2101,7 +2207,12 @@ class TelegramBotApp:
         if action == "post_all_pages" and step == "caption_all":
             caption = text.strip()
             if not caption:
-                await self.send_message(chat_id, "Caption cannot be empty. Send the post text.", message_id, reply_markup=cancel_markup())
+                await self.send_message(
+                    chat_id,
+                    "الكابشن لا يمكن يكون فارغ. ابعت نص المنشور." if lang == "ar" else "Caption cannot be empty. Send the post text.",
+                    message_id,
+                    reply_markup=cancel_markup(lang=lang),
+                )
                 return True
             pages = await asyncio.to_thread(
                 self.storage.list_pages,
@@ -2112,7 +2223,9 @@ class TelegramBotApp:
                 self.clear_dashboard_session(chat_id, user_id)
                 await self.send_message(
                     chat_id,
-                    "No stored pages for this account. Run Discover Pages first.",
+                    "لا توجد صفحات محفوظة لهذا الحساب. شغّل اكتشاف الصفحات أولاً."
+                    if lang == "ar"
+                    else "No stored pages for this account. Run Discover Pages first.",
                     message_id,
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
@@ -2133,7 +2246,7 @@ class TelegramBotApp:
             post_type = str(session.get("post_type") or "").strip()
             file_id = self.extract_media_file_id(message, post_type)
             if not file_id:
-                await self.send_message(chat_id, prompt_text("post", step), message_id, reply_markup=cancel_markup())
+                await self.send_message(chat_id, prompt_text("post", step, lang=lang), message_id, reply_markup=cancel_markup(lang=lang))
                 return True
             pages = await asyncio.to_thread(
                 self.storage.list_pages,
@@ -2144,7 +2257,9 @@ class TelegramBotApp:
                 self.clear_dashboard_session(chat_id, user_id)
                 await self.send_message(
                     chat_id,
-                    "No stored pages for this account. Run Discover Pages first.",
+                    "لا توجد صفحات محفوظة لهذا الحساب. شغّل اكتشاف الصفحات أولاً."
+                    if lang == "ar"
+                    else "No stored pages for this account. Run Discover Pages first.",
                     message_id,
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
@@ -2163,7 +2278,7 @@ class TelegramBotApp:
             return True
 
         if action == "post" and step == "media_video_url":
-            video_url = await self.validate_video_url_or_reply(chat_id, message_id, text.strip())
+            video_url = await self.validate_video_url_or_reply(chat_id, message_id, text.strip(), lang=lang)
             if not video_url:
                 return True
             session["post_type"] = "video"
@@ -2176,12 +2291,19 @@ class TelegramBotApp:
         if action == "post" and step == "multi_video_upload":
             file_id = self.extract_media_file_id(message, "video")
             if not file_id:
-                await self.send_message(chat_id, self.multi_video_prompt(session), message_id, reply_markup=cancel_markup())
+                await self.send_message(chat_id, self.multi_video_prompt(session), message_id, reply_markup=cancel_markup(lang=lang))
                 return True
             selected_pages = self.selected_pages_from_session(session)
             if not selected_pages:
                 self.clear_dashboard_session(chat_id, user_id)
-                await self.send_message(chat_id, "No pages selected. Start again from the dashboard.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+                await self.send_message(
+                    chat_id,
+                    "لا توجد صفحات محددة. ابدأ من لوحة التحكم مرة أخرى."
+                    if lang == "ar"
+                    else "No pages selected. Start again from the dashboard.",
+                    message_id,
+                    reply_markup=await self.dashboard_reply_markup(user_id),
+                )
                 return True
             media_path = await self.download_file(file_id, str(session.get("account_id") or ""))
             paths = list(session.get("multi_media_paths") or [])
@@ -2194,11 +2316,16 @@ class TelegramBotApp:
             session["media_path"] = ""
             if len(paths) < len(selected_pages):
                 self.set_dashboard_session(chat_id, user_id, session)
+                received_line = (
+                    f"✅ تم استلام الفيديو {len(paths)}/{len(selected_pages)}."
+                    if lang == "ar"
+                    else f"✅ Video {len(paths)}/{len(selected_pages)} received."
+                )
                 await self.send_message(
                     chat_id,
-                    "\n".join([f"✅ Video {len(paths)}/{len(selected_pages)} received.", "", self.multi_video_prompt(session)]),
+                    "\n".join([received_line, "", self.multi_video_prompt(session)]),
                     message_id,
-                    reply_markup=cancel_markup(),
+                    reply_markup=cancel_markup(lang=lang),
                 )
                 return True
             session["caption"] = ""
@@ -2207,13 +2334,20 @@ class TelegramBotApp:
             return True
 
         if action == "post" and step == "multi_video_url":
-            video_url = await self.validate_video_url_or_reply(chat_id, message_id, text.strip())
+            video_url = await self.validate_video_url_or_reply(chat_id, message_id, text.strip(), lang=lang)
             if not video_url:
                 return True
             selected_pages = self.selected_pages_from_session(session)
             if not selected_pages:
                 self.clear_dashboard_session(chat_id, user_id)
-                await self.send_message(chat_id, "No pages selected. Start again from the dashboard.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+                await self.send_message(
+                    chat_id,
+                    "لا توجد صفحات محددة. ابدأ من لوحة التحكم مرة أخرى."
+                    if lang == "ar"
+                    else "No pages selected. Start again from the dashboard.",
+                    message_id,
+                    reply_markup=await self.dashboard_reply_markup(user_id),
+                )
                 return True
             paths = list(session.get("multi_media_paths") or [])
             paths.append(video_url)
@@ -2222,11 +2356,16 @@ class TelegramBotApp:
             session["media_path"] = ""
             if len(paths) < len(selected_pages):
                 self.set_dashboard_session(chat_id, user_id, session)
+                saved_line = (
+                    f"✅ تم حفظ رابط الفيديو {len(paths)}/{len(selected_pages)}."
+                    if lang == "ar"
+                    else f"✅ Video URL {len(paths)}/{len(selected_pages)} saved."
+                )
                 await self.send_message(
                     chat_id,
-                    "\n".join([f"✅ Video URL {len(paths)}/{len(selected_pages)} saved.", "", self.multi_video_url_prompt(session)]),
+                    "\n".join([saved_line, "", self.multi_video_url_prompt(session)]),
                     message_id,
-                    reply_markup=cancel_markup(),
+                    reply_markup=cancel_markup(lang=lang),
                 )
                 return True
             session["caption"] = ""
@@ -2244,7 +2383,7 @@ class TelegramBotApp:
             post_type = str(session.get("post_type") or "").strip()
             file_id = self.extract_media_file_id(message, post_type)
             if not file_id:
-                await self.send_message(chat_id, prompt_text("post", step), message_id, reply_markup=cancel_markup())
+                await self.send_message(chat_id, prompt_text("post", step, lang=lang), message_id, reply_markup=cancel_markup(lang=lang))
                 return True
             media_path = await self.download_file(file_id, str(session.get("account_id") or ""))
             session["post_type"] = post_type
@@ -2255,7 +2394,12 @@ class TelegramBotApp:
             return True
 
         self.clear_dashboard_session(chat_id, user_id)
-        await self.show_dashboard(chat_id, message_id, prefix="The previous dashboard flow expired.", user_id=user_id)
+        await self.show_dashboard(
+            chat_id,
+            message_id,
+            prefix="انتهت صلاحية الخطوات السابقة." if lang == "ar" else "The previous dashboard flow expired.",
+            user_id=user_id,
+        )
         return True
 
     async def handle_callback_query(self, update: Dict[str, Any]) -> None:
@@ -2272,6 +2416,7 @@ class TelegramBotApp:
             await self.answer_callback_query(callback_query_id)
         if user_id and chat_id:
             self.start_background_task(self.touch_user_seen(user_id, chat_id), f"touch user {user_id}")
+        lang = await self.user_language(user_id)
 
         if data == "dash:back":
             self.clear_dashboard_session(chat_id, user_id)
@@ -2284,14 +2429,18 @@ class TelegramBotApp:
             if not changed:
                 await self.show_language_card(chat_id, message_id, user_id=user_id, prefix="Invalid language selection.")
                 return
-            label = "Arabic (Egyptian)" if selected_lang == "ar" else "English"
-            await self.show_dashboard(chat_id, message_id, prefix=f"Language updated: {label}", user_id=user_id)
+            label = "العربية" if selected_lang == "ar" else "English"
+            prefix = f"تم تغيير اللغة: {label}" if selected_lang == "ar" else f"Language updated: {label}"
+            await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
             return
 
         session = self.get_dashboard_session(chat_id, user_id)
         if not session:
-            await self.show_dashboard(chat_id, message_id, prefix="This card expired. Dashboard refreshed.", user_id=user_id)
+            prefix = "انتهت صلاحية الكارت. تم تحديث لوحة التحكم." if lang == "ar" else "This card expired. Dashboard refreshed."
+            await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
             return
+        lang = str(session.get("lang") or lang)
+        session["lang"] = lang
 
         if data == "acctdel:back":
             await self.command_accounts(chat_id, message_id, user_id)
@@ -2309,7 +2458,11 @@ class TelegramBotApp:
             await self.show_dashboard(
                 chat_id,
                 message_id,
-                prefix="Account deleted." if changed else "Account not found.",
+                prefix=(
+                    ("تم حذف الحساب." if changed else "الحساب غير موجود.")
+                    if lang == "ar"
+                    else ("Account deleted." if changed else "Account not found.")
+                ),
                 user_id=user_id,
             )
             return
@@ -2333,19 +2486,30 @@ class TelegramBotApp:
                 chat_id,
                 message_id,
                 "\n".join(
-                    [
-                        "🗑 Delete Account",
-                        "━━━━━━━━━━━━━━━━━━",
-                        f"Account: {display}",
-                        "",
-                        "This will deactivate the account, remove it from normal dashboard use, and clear it if it is currently active.",
-                        "Stored pages and jobs remain in the database for history.",
-                    ]
+                    (
+                        [
+                            "🗑 حذف الحساب",
+                            "━━━━━━━━━━━━━━━━━━",
+                            f"الحساب: {display}",
+                            "",
+                            "سيتم تعطيل الحساب وإخفاؤه من لوحة التحكم ومسحه من الحساب النشط لو كان محدد.",
+                            "الصفحات والمهام القديمة ستبقى في قاعدة البيانات للتاريخ.",
+                        ]
+                        if lang == "ar"
+                        else [
+                            "🗑 Delete Account",
+                            "━━━━━━━━━━━━━━━━━━",
+                            f"Account: {display}",
+                            "",
+                            "This will deactivate the account, remove it from normal dashboard use, and clear it if it is currently active.",
+                            "Stored pages and jobs remain in the database for history.",
+                        ]
+                    )
                 ),
                 reply_markup=inline_markup(
                     [
-                        [inline_button("🗑 Confirm Delete", "acctdel:confirm")],
-                        [inline_button("⬅️ Back to My Accounts", "acctdel:back")],
+                        [inline_button("🗑 تأكيد الحذف" if lang == "ar" else "🗑 Confirm Delete", "acctdel:confirm")],
+                        [inline_button("⬅️ رجوع لحساباتي" if lang == "ar" else "⬅️ Back to My Accounts", "acctdel:back")],
                     ]
                 ),
             )
@@ -2362,7 +2526,8 @@ class TelegramBotApp:
                 return
             if data == "pg:confirm":
                 if not selected:
-                    await self.edit_page_selection_card(chat_id, message_id, user_id, session, prefix="Select at least one page first.")
+                    prefix = "اختار صفحة واحدة على الأقل الأول." if lang == "ar" else "Select at least one page first."
+                    await self.edit_page_selection_card(chat_id, message_id, user_id, session, prefix=prefix)
                     return
                 if session.get("post_type"):
                     await self.show_post_input_card(chat_id, message_id, user_id, session)
@@ -2408,7 +2573,8 @@ class TelegramBotApp:
             mode = data.split(":", 1)[1]
             selected_pages = self.selected_pages_from_session(session)
             if not selected_pages:
-                await self.edit_page_selection_card(chat_id, message_id, user_id, session, prefix="Select at least one page first.")
+                prefix = "اختار صفحة واحدة على الأقل الأول." if lang == "ar" else "Select at least one page first."
+                await self.edit_page_selection_card(chat_id, message_id, user_id, session, prefix=prefix)
                 return
             session["post_type"] = "video"
             session["video_mode"] = mode
@@ -2418,7 +2584,7 @@ class TelegramBotApp:
             if mode == "single_upload":
                 session["step"] = "media_video"
                 self.set_dashboard_session(chat_id, user_id, session)
-                await self.edit_message(chat_id, message_id, post_input_card("video"), reply_markup={"inline_keyboard": []})
+                await self.edit_message(chat_id, message_id, post_input_card("video", lang=lang), reply_markup={"inline_keyboard": []})
                 return
             if mode == "single_url":
                 session["step"] = "media_video_url"
@@ -2427,14 +2593,25 @@ class TelegramBotApp:
                     chat_id,
                     message_id,
                     "\n".join(
-                        [
-                            "🔗 Single Video URL",
-                            "━━━━━━━━━━━━━━━━━━",
-                            "Paste a direct http(s) video file URL.",
-                            "The same video will be posted to all selected pages.",
-                            "",
-                            "After that, I will show a final review card.",
-                        ]
+                        (
+                            [
+                                "🔗 رابط فيديو واحد",
+                                "━━━━━━━━━━━━━━━━━━",
+                                "الصق رابط فيديو مباشر http(s).",
+                                "نفس الفيديو هيتنشر على كل الصفحات المحددة.",
+                                "",
+                                "بعد كده هاعرضلك كارت المراجعة النهائي.",
+                            ]
+                            if lang == "ar"
+                            else [
+                                "🔗 Single Video URL",
+                                "━━━━━━━━━━━━━━━━━━",
+                                "Paste a direct http(s) video file URL.",
+                                "The same video will be posted to all selected pages.",
+                                "",
+                                "After that, I will show a final review card.",
+                            ]
+                        )
                     ),
                     reply_markup={"inline_keyboard": []},
                 )
@@ -2470,7 +2647,11 @@ class TelegramBotApp:
             await self.edit_message(
                 chat_id,
                 message_id,
-                "Send the new caption/text. Send a single space to clear it.",
+                (
+                    "ابعت النص/الكابشن الجديد. ابعت مسافة واحدة لمسحه."
+                    if lang == "ar"
+                    else "Send the new caption/text. Send a single space to clear it."
+                ),
                 reply_markup={"inline_keyboard": []},
             )
             return
@@ -2482,7 +2663,12 @@ class TelegramBotApp:
             await self.edit_message(
                 chat_id,
                 message_id,
-                progress_card("Posting...", 0, 1, "Queueing posting job..."),
+                progress_card(
+                    "جاري النشر..." if lang == "ar" else "Posting...",
+                    0,
+                    1,
+                    "جاري إضافة مهمة النشر للصف..." if lang == "ar" else "Queueing posting job...",
+                ),
                 reply_markup={"inline_keyboard": []},
             )
             await self.queue_reviewed_post(chat_id, user_id, draft)
@@ -2553,22 +2739,36 @@ class TelegramBotApp:
                 return
             if user_id:
                 self.clear_dashboard_session(chat_id, user_id)
+            lang = "en"
+            with suppress(Exception):
+                lang = await self.user_language(user_id)
             try:
                 reply_markup = await self.dashboard_reply_markup(user_id)
             except Exception:
-                reply_markup = dashboard_markup(has_accounts=False)
+                reply_markup = dashboard_markup(has_accounts=False, lang=lang)
             with suppress(Exception):
                 await self.send_message(
                     chat_id,
                     "\n".join(
-                        [
-                            "Dashboard action failed.",
-                            "━━━━━━━━━━━━━━━━━━",
-                            f"Debug ID: {trace_id}",
-                            compact_error(exc),
-                            "",
-                            "The current flow was reset. Use /start or the dashboard buttons to continue.",
-                        ]
+                        (
+                            [
+                                "فشل إجراء لوحة التحكم.",
+                                "━━━━━━━━━━━━━━━━━━",
+                                f"Debug ID: {trace_id}",
+                                compact_error(exc),
+                                "",
+                                "تمت إعادة ضبط الخطوات الحالية. استخدم /start أو أزرار لوحة التحكم للمتابعة.",
+                            ]
+                            if lang == "ar"
+                            else [
+                                "Dashboard action failed.",
+                                "━━━━━━━━━━━━━━━━━━",
+                                f"Debug ID: {trace_id}",
+                                compact_error(exc),
+                                "",
+                                "The current flow was reset. Use /start or the dashboard buttons to continue.",
+                            ]
+                        )
                     ),
                     message_id,
                     reply_markup=reply_markup,
@@ -2612,7 +2812,11 @@ class TelegramBotApp:
             return
         await self.send_message(
             chat_id,
-            "Only /start is supported. Use the dashboard buttons for all actions.",
+            (
+                "الأمر الوحيد المدعوم هو /start. استخدم أزرار لوحة التحكم لكل الإجراءات."
+                if await self.user_language(user_id) == "ar"
+                else "Only /start is supported. Use the dashboard buttons for all actions."
+            ),
             message_id,
             reply_markup=await self.dashboard_reply_markup(user_id),
         )
@@ -2625,6 +2829,7 @@ class TelegramBotApp:
         args: List[str],
         message: Dict[str, Any],
     ) -> None:
+        lang = await self.user_language(user_id)
         account_hint = "auto"
         joined_args = " ".join(args).strip()
         if args and args[0] in {"auto", "-"}:
@@ -2640,15 +2845,20 @@ class TelegramBotApp:
             try:
                 cookie_payload, cookie_message_ids = await self.cookie_payload_from_message(message, "")
             except Exception as exc:
-                await self.send_message(chat_id, f"Could not read cookie file: {exc}", message_id, reply_markup=cancel_markup())
+                text = f"لم أقدر أقرأ ملف الكوكيز: {exc}" if lang == "ar" else f"Could not read cookie file: {exc}"
+                await self.send_message(chat_id, text, message_id, reply_markup=cancel_markup(lang=lang))
                 return
 
         if not cookie_payload:
             await self.send_message(
                 chat_id,
-                "Missing cookie payload. Use Add Facebook Account, reply to a cookie message, or upload a JSON file.",
+                (
+                    "بيانات الكوكيز ناقصة. استخدم ضيف حساب فيسبوك، أو اعمل رد على رسالة كوكيز، أو ارفع ملف JSON."
+                    if lang == "ar"
+                    else "Missing cookie payload. Use Add Facebook Account, reply to a cookie message, or upload a JSON file."
+                ),
                 message_id,
-                reply_markup=cancel_markup(),
+                reply_markup=cancel_markup(lang=lang),
             )
             return
         await self.save_account_cookie_payload(
@@ -2661,24 +2871,31 @@ class TelegramBotApp:
         )
 
     async def command_accounts(self, chat_id: int, message_id: int, user_id: int = 0) -> None:
+        lang = await self.user_language(user_id)
         accounts = await asyncio.to_thread(self.storage.list_accounts, self.account_owner_scope(user_id))
         if not accounts:
-            await self.send_message(chat_id, "No accounts stored.", message_id, reply_markup=dashboard_markup(has_accounts=False))
+            text = "لا توجد حسابات محفوظة." if lang == "ar" else "No accounts stored."
+            await self.send_message(chat_id, text, message_id, reply_markup=dashboard_markup(has_accounts=False, lang=lang))
             return
         active_account = ""
         if user_id:
             active_account = await self.active_account_id(user_id)
-        lines = ["👤 My Accounts", "━━━━━━━━━━━━━━━━━━"]
+        lines = ["👤 حساباتي" if lang == "ar" else "👤 My Accounts", "━━━━━━━━━━━━━━━━━━"]
         delete_choices: Dict[str, str] = {}
         delete_rows: List[List[Dict[str, str]]] = []
         for index, item in enumerate(accounts):
-            status = "active" if item.get("active") else "inactive"
+            status = (
+                ("نشط" if item.get("active") else "غير نشط")
+                if lang == "ar"
+                else ("active" if item.get("active") else "inactive")
+            )
             marker = "✅" if item["account_id"] == active_account else "-"
             lines.append(f"{marker} {account_display_name(item)} ({status})")
             choice_key = str(index)
             delete_choices[choice_key] = str(item.get("account_id") or "")
-            delete_rows.append([inline_button(f"🗑 Delete {account_display_name(item)}", f"acctdel:{choice_key}")])
-        delete_rows.append([inline_button("⬅️ Back", "dash:back")])
+            delete_label = f"🗑 حذف {account_display_name(item)}" if lang == "ar" else f"🗑 Delete {account_display_name(item)}"
+            delete_rows.append([inline_button(delete_label, f"acctdel:{choice_key}")])
+        delete_rows.append([inline_button("⬅️ رجوع" if lang == "ar" else "⬅️ Back", "dash:back")])
         self.set_dashboard_session(
             chat_id,
             user_id,
@@ -2686,26 +2903,30 @@ class TelegramBotApp:
                 "action": "manage_accounts",
                 "step": "delete_select",
                 "account_delete_choices": delete_choices,
+                "lang": lang,
             },
         )
         await self.edit_or_send_message(chat_id, message_id, "\n".join(lines), reply_markup=inline_markup(delete_rows))
 
     async def command_check_cookies(self, chat_id: int, message_id: int, user_id: int = 0) -> None:
+        lang = await self.user_language(user_id)
         owner_scope = self.account_owner_scope(user_id)
         accounts = await asyncio.to_thread(self.storage.list_accounts, owner_scope)
         if not accounts:
-            await self.send_message(chat_id, "No accounts stored.", message_id, reply_markup=dashboard_markup(has_accounts=False))
+            text = "لا توجد حسابات محفوظة." if lang == "ar" else "No accounts stored."
+            await self.send_message(chat_id, text, message_id, reply_markup=dashboard_markup(has_accounts=False, lang=lang))
             return
 
         total = len(accounts)
+        title = "فحص كل الكوكيز..." if lang == "ar" else "Checking all cookies..."
         progress = await self.send_message(
             chat_id,
-            progress_card("Checking all cookies...", 0, total, "Preparing cookie validation..."),
+            progress_card(title, 0, total, "جاري تجهيز فحص الكوكيز..." if lang == "ar" else "Preparing cookie validation..."),
             message_id,
         )
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
 
-        lines = ["🧪 Cookie Validation Report", "━━━━━━━━━━━━━━━━━━━━━━"]
+        lines = ["🧪 تقرير فحص الكوكيز" if lang == "ar" else "🧪 Cookie Validation Report", "━━━━━━━━━━━━━━━━━━━━━━"]
         valid_count = 0
         from playwright_engine import validate_facebook_session
 
@@ -2715,7 +2936,7 @@ class TelegramBotApp:
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Checking all cookies...", index - 1, total, f"Checking {display}..."),
+                progress_card(title, index - 1, total, f"جاري فحص {display}..." if lang == "ar" else f"Checking {display}..."),
             )
             try:
                 cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
@@ -2745,14 +2966,22 @@ class TelegramBotApp:
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Checking all cookies...", index, total, f"Finished {display}."),
+                progress_card(title, index, total, f"تم الانتهاء من {display}." if lang == "ar" else f"Finished {display}."),
             )
         lines.extend(
-            [
-                "━━━━━━━━━━━━━━━━━━━━━━",
-                f"Valid Facebook sessions: {valid_count}/{total}",
-                f"Stored accounts checked: {len(accounts)}",
-            ]
+            (
+                [
+                    "━━━━━━━━━━━━━━━━━━━━━━",
+                    f"جلسات فيسبوك الصالحة: {valid_count}/{total}",
+                    f"الحسابات المفحوصة: {len(accounts)}",
+                ]
+                if lang == "ar"
+                else [
+                    "━━━━━━━━━━━━━━━━━━━━━━",
+                    f"Valid Facebook sessions: {valid_count}/{total}",
+                    f"Stored accounts checked: {len(accounts)}",
+                ]
+            )
         )
         await self.edit_or_send_message(
             chat_id,
@@ -2760,10 +2989,12 @@ class TelegramBotApp:
             "\n".join(
                 [
                     progress_card(
-                        "Checking all cookies...",
+                        title,
                         total,
                         total,
-                        f"Validation complete: {valid_count}/{total} session(s) valid.",
+                        f"اكتمل الفحص: {valid_count}/{total} جلسة صالحة."
+                        if lang == "ar"
+                        else f"Validation complete: {valid_count}/{total} session(s) valid.",
                     ),
                     "",
                     *lines,
@@ -2774,15 +3005,18 @@ class TelegramBotApp:
         )
 
     async def command_check_account(self, chat_id: int, message_id: int, user_id: int, account_id: str) -> None:
+        lang = await self.user_language(user_id)
         owner_scope = self.account_owner_scope(user_id)
         account = await asyncio.to_thread(self.storage.get_account, account_id, owner_scope)
         if not account:
-            await self.send_message(chat_id, f"Account not found: {account_id}", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+            text = f"الحساب غير موجود: {account_id}" if lang == "ar" else f"Account not found: {account_id}"
+            await self.send_message(chat_id, text, message_id, reply_markup=await self.dashboard_reply_markup(user_id))
             return
         display = account_display_name(account, account_id)
+        title = "فحص كوكيز الحساب..." if lang == "ar" else "Checking account cookie..."
         progress = await self.send_message(
             chat_id,
-            progress_card("Checking account cookie...", 0, 1, f"Validating {display}..."),
+            progress_card(title, 0, 1, f"جاري التحقق من {display}..." if lang == "ar" else f"Validating {display}..."),
             message_id,
         )
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
@@ -2801,11 +3035,18 @@ class TelegramBotApp:
                 owner_scope,
             )
             status_line = f"{icon} {status_text}"
-            hint = (
-                "Continue to cached pages or refresh pages if Facebook page access changed."
-                if session_ok
-                else "Add/update this account again if Facebook reports the session as invalid."
-            )
+            if session_ok:
+                hint = (
+                    "كمل للصفحات المحفوظة أو حدّث الصفحات لو صلاحيات فيسبوك اتغيرت."
+                    if lang == "ar"
+                    else "Continue to cached pages or refresh pages if Facebook page access changed."
+                )
+            else:
+                hint = (
+                    "ضيف/حدّث الحساب مرة أخرى لو فيسبوك بيقول الجلسة غير صالحة."
+                    if lang == "ar"
+                    else "Add/update this account again if Facebook reports the session as invalid."
+                )
         except Exception as exc:
             error_text = str(exc)[:160]
             await asyncio.to_thread(
@@ -2815,12 +3056,16 @@ class TelegramBotApp:
                 error_text,
                 owner_scope,
             )
-            status_line = f"🔴 Cookie payload is not usable: {error_text}"
-            hint = "Add/update this account again."
+            status_line = (
+                f"🔴 بيانات الكوكيز غير قابلة للاستخدام: {error_text}"
+                if lang == "ar"
+                else f"🔴 Cookie payload is not usable: {error_text}"
+            )
+            hint = "ضيف/حدّث الحساب مرة أخرى." if lang == "ar" else "Add/update this account again."
         lines = [
-            "🧪 Cookie Check",
+            "🧪 فحص الكوكيز" if lang == "ar" else "🧪 Cookie Check",
             "━━━━━━━━━━━━━━━━━━",
-            f"Account: {display}",
+            f"الحساب: {display}" if lang == "ar" else f"Account: {display}",
             status_line,
             "",
             hint,
@@ -2828,18 +3073,20 @@ class TelegramBotApp:
         await self.edit_or_send_message(
             chat_id,
             progress_message_id,
-            "\n".join([progress_card("Checking account cookie...", 1, 1, "Validation complete."), "", *lines]),
+            "\n".join([progress_card(title, 1, 1, "اكتمل الفحص." if lang == "ar" else "Validation complete."), "", *lines]),
             reply_to_message_id=message_id,
-            reply_markup=account_post_action_markup(),
+            reply_markup=account_post_action_markup(lang=lang),
         )
 
     async def command_post_history(self, chat_id: int, message_id: int, user_id: int = 0) -> None:
+        lang = await self.user_language(user_id)
         summary = await self.dashboard_summary(user_id)
         recent_jobs = summary.get("recent_jobs") or []
         if not recent_jobs:
-            await self.send_message(chat_id, "No post jobs yet.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+            text = "لا توجد مهام نشر بعد." if lang == "ar" else "No post jobs yet."
+            await self.send_message(chat_id, text, message_id, reply_markup=await self.dashboard_reply_markup(user_id))
             return
-        lines = ["📊 Post History", "━━━━━━━━━━━━━━━━━━━━━━"]
+        lines = ["📊 سجل المنشورات" if lang == "ar" else "📊 Post History", "━━━━━━━━━━━━━━━━━━━━━━"]
         for job in recent_jobs:
             page = page_display_name(
                 {
@@ -2874,11 +3121,17 @@ class TelegramBotApp:
         *,
         refresh: bool = False,
     ) -> None:
+        lang = await self.user_language(user_id)
         if len(args) != 1:
-            await self.send_message(chat_id, "Choose an account from the dashboard first.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+            text = "اختار حساب من لوحة التحكم الأول." if lang == "ar" else "Choose an account from the dashboard first."
+            await self.send_message(chat_id, text, message_id, reply_markup=await self.dashboard_reply_markup(user_id))
             return
         account_id = args[0]
-        verb = "Refreshing cached pages" if refresh else "Discovering pages"
+        verb = (
+            ("تحديث الصفحات المحفوظة" if refresh else "اكتشاف الصفحات")
+            if lang == "ar"
+            else ("Refreshing cached pages" if refresh else "Discovering pages")
+        )
         trace_id = new_debug_id("pages")
         self.debug_event(
             "page_discovery_start",
@@ -2889,18 +3142,28 @@ class TelegramBotApp:
         )
         progress = await self.send_message(
             chat_id,
-            progress_card(f"{verb}...", 0, 3, f"Debug ID: {trace_id}\nPreparing Facebook session..."),
+            progress_card(
+                f"{verb}...",
+                0,
+                3,
+                f"Debug ID: {trace_id}\n{'جاري تجهيز جلسة فيسبوك...' if lang == 'ar' else 'Preparing Facebook session...'}",
+            ),
             message_id,
-            reply_markup=cancel_markup(),
+            reply_markup=cancel_markup(lang=lang),
         )
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
         try:
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card(f"{verb}...", 1, 3, f"Debug ID: {trace_id}\nOpening pages manager..."),
+                progress_card(
+                    f"{verb}...",
+                    1,
+                    3,
+                    f"Debug ID: {trace_id}\n{'جاري فتح مدير الصفحات...' if lang == 'ar' else 'Opening pages manager...'}",
+                ),
                 reply_to_message_id=message_id,
-                reply_markup=cancel_markup(),
+                reply_markup=cancel_markup(lang=lang),
             )
             discovery_timeout = _env_int("BOT_PAGE_DISCOVERY_TIMEOUT_SECONDS", 150, minimum=30)
             heartbeat_seconds = _env_int("BOT_PROGRESS_HEARTBEAT_SECONDS", 8, minimum=2)
@@ -2929,50 +3192,90 @@ class TelegramBotApp:
                 except asyncio.TimeoutError:
                     tick += 1
                     elapsed = int(time.monotonic() - started)
-                    detail = (
-                        f"Debug ID: {trace_id}\nDiscovering managed pages... {elapsed}s elapsed. "
-                        "Still waiting for Facebook/browser response."
-                    )
+                    if lang == "ar":
+                        detail = (
+                            f"Debug ID: {trace_id}\nجاري اكتشاف الصفحات المُدارة... مر {elapsed} ثانية. "
+                            "ما زلت منتظر رد فيسبوك/المتصفح."
+                        )
+                    else:
+                        detail = (
+                            f"Debug ID: {trace_id}\nDiscovering managed pages... {elapsed}s elapsed. "
+                            "Still waiting for Facebook/browser response."
+                        )
                     if tick % 3 == 0:
-                        detail += " If this repeats, check Render logs for Playwright launch or Facebook login errors."
+                        detail += (
+                            " لو ده اتكرر، راجع Render logs لأخطاء تشغيل Playwright أو تسجيل دخول فيسبوك."
+                            if lang == "ar"
+                            else " If this repeats, check Render logs for Playwright launch or Facebook login errors."
+                        )
                     progress_message_id = await self.edit_or_send_message(
                         chat_id,
                         progress_message_id,
                         progress_card(f"{verb}...", 2, 3, detail),
                         reply_to_message_id=message_id,
-                        reply_markup=cancel_markup(),
+                        reply_markup=cancel_markup(lang=lang),
                     )
             if pages:
                 progress_message_id = await self.edit_or_send_message(
                     chat_id,
                     progress_message_id,
-                    progress_card(f"{verb}...", 2, 3, f"Debug ID: {trace_id}\nSaving {len(pages)} discovered page(s) to cache..."),
+                    progress_card(
+                        f"{verb}...",
+                        2,
+                        3,
+                        f"Debug ID: {trace_id}\n"
+                        + (
+                            f"جاري حفظ {len(pages)} صفحة في الكاش..."
+                            if lang == "ar"
+                            else f"Saving {len(pages)} discovered page(s) to cache..."
+                        ),
+                    ),
                     reply_to_message_id=message_id,
-                    reply_markup=cancel_markup(),
+                    reply_markup=cancel_markup(lang=lang),
                 )
                 await asyncio.to_thread(self.storage.upsert_pages, account_id, pages)
             if not pages:
                 progress_message_id = await self.edit_or_send_message(
                     chat_id,
                     progress_message_id,
-                    progress_card(f"{verb}...", 3, 3, f"Debug ID: {trace_id}\nNo managed pages discovered."),
+                    progress_card(
+                        f"{verb}...",
+                        3,
+                        3,
+                        f"Debug ID: {trace_id}\n{'لم يتم العثور على صفحات مُدارة.' if lang == 'ar' else 'No managed pages discovered.'}",
+                    ),
                     reply_to_message_id=message_id,
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
                 self.debug_event("page_discovery_empty", trace_id, account_id=account_id, elapsed_seconds=round(time.monotonic() - started, 3))
                 await self.send_message(
                     chat_id,
-                    "Dashboard keyboard restored.",
+                    "تم استرجاع لوحة التحكم." if lang == "ar" else "Dashboard keyboard restored.",
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
                 return
-            lines = [f"{'Refreshed' if refresh else 'Discovered'} and cached {len(pages)} page(s):"]
+            lines = [
+                f"{'تم تحديث' if refresh else 'تم اكتشاف'} وحفظ {len(pages)} صفحة:"
+                if lang == "ar"
+                else f"{'Refreshed' if refresh else 'Discovered'} and cached {len(pages)} page(s):"
+            ]
             for index, page in enumerate(pages):
                 lines.append(f"- {page_display_name(page, index)}")
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                "\n".join([progress_card(f"{verb}...", 3, 3, f"Debug ID: {trace_id}\nPages saved to cache."), "", *lines]),
+                "\n".join(
+                    [
+                        progress_card(
+                            f"{verb}...",
+                            3,
+                            3,
+                            f"Debug ID: {trace_id}\n{'تم حفظ الصفحات في الكاش.' if lang == 'ar' else 'Pages saved to cache.'}",
+                        ),
+                        "",
+                        *lines,
+                    ]
+                ),
                 reply_to_message_id=message_id,
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
@@ -2985,7 +3288,7 @@ class TelegramBotApp:
             )
             await self.send_message(
                 chat_id,
-                "Dashboard keyboard restored.",
+                "تم استرجاع لوحة التحكم." if lang == "ar" else "Dashboard keyboard restored.",
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
         except Exception as exc:
@@ -2996,12 +3299,21 @@ class TelegramBotApp:
                 progress_message_id,
                 "\n".join(
                     [
-                        progress_card(f"{verb}...", 3, 3, "Page discovery failed."),
+                        progress_card(
+                            f"{verb}...",
+                            3,
+                            3,
+                            "فشل اكتشاف الصفحات." if lang == "ar" else "Page discovery failed.",
+                        ),
                         "",
                         f"Debug ID: {trace_id}",
                         compact_error(exc),
                         "",
-                        "Use /start to refresh the dashboard, or try Stored Pages if pages were already cached.",
+                        (
+                            "استخدم /start لتحديث لوحة التحكم، أو جرّب الصفحات المحفوظة لو كانت موجودة مسبقاً."
+                            if lang == "ar"
+                            else "Use /start to refresh the dashboard, or try Stored Pages if pages were already cached."
+                        ),
                     ]
                 ),
                 reply_to_message_id=message_id,
@@ -3009,7 +3321,7 @@ class TelegramBotApp:
             )
             await self.send_message(
                 chat_id,
-                "Dashboard keyboard restored.",
+                "تم استرجاع لوحة التحكم." if lang == "ar" else "Dashboard keyboard restored.",
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
 
@@ -3040,8 +3352,10 @@ class TelegramBotApp:
                 await browser.close()
 
     async def command_list_pages(self, chat_id: int, message_id: int, args: List[str], user_id: int = 0) -> None:
+        lang = await self.user_language(user_id)
         if len(args) != 1:
-            await self.send_message(chat_id, "Choose Stored Pages from the dashboard.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+            text = "اختار الصفحات المحفوظة من لوحة التحكم." if lang == "ar" else "Choose Stored Pages from the dashboard."
+            await self.send_message(chat_id, text, message_id, reply_markup=await self.dashboard_reply_markup(user_id))
             return
         pages = await asyncio.to_thread(self.storage.list_pages, args[0], self.account_owner_scope(user_id))
         account = await asyncio.to_thread(self.storage.get_account, args[0], self.account_owner_scope(user_id))
@@ -3049,12 +3363,16 @@ class TelegramBotApp:
         if not pages:
             await self.send_message(
                 chat_id,
-                f"No pages stored for {account_name}. Tap Refresh Pages first.",
+                (
+                    f"لا توجد صفحات محفوظة لـ {account_name}. اضغط حدّث الصفحات أولاً."
+                    if lang == "ar"
+                    else f"No pages stored for {account_name}. Tap Refresh Pages first."
+                ),
                 message_id,
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
             return
-        lines = [f"Stored pages for {account_name}:"]
+        lines = [f"الصفحات المحفوظة لـ {account_name}:" if lang == "ar" else f"Stored pages for {account_name}:"]
         for index, page in enumerate(pages):
             lines.append(f"- {page_display_name(page, index)}")
         await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=await self.dashboard_reply_markup(user_id))
