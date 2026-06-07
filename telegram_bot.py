@@ -2677,17 +2677,24 @@ class TelegramBotApp:
                 return True
             media_path = await self.download_file(file_id, str(session.get("account_id") or ""))
             session["post_type"] = post_type
-            session["caption"] = text.strip()
             session["media_path"] = media_path
-            session["step"] = "caption_after_media"
-            self.set_dashboard_session(chat_id, user_id, session)
             
-            prompt = (
-                "ابعت الكابشن أو النص للمنشور ده دلوقتي، أو اضغط تخطي علشان تسيبه فارغ."
-                if lang == "ar"
-                else "Send the caption/text for this post now, or tap Skip to leave it empty."
-            )
-            await self.send_message(chat_id, prompt, message_id, reply_markup=skip_cancel_markup(lang=lang))
+            attached_caption = str(message.get("caption") or "").strip()
+            if attached_caption:
+                session["caption"] = attached_caption
+                session["step"] = "review"
+                self.set_dashboard_session(chat_id, user_id, session)
+                await self.show_post_review(chat_id, message_id, user_id, session)
+            else:
+                session["caption"] = ""
+                session["step"] = "caption_after_media"
+                self.set_dashboard_session(chat_id, user_id, session)
+                prompt = (
+                    "ابعت الكابشن أو النص للمنشور ده دلوقتي، أو اضغط تخطي علشان تسيبه فارغ."
+                    if lang == "ar"
+                    else "Send the caption/text for this post now, or tap Skip to leave it empty."
+                )
+                await self.send_message(chat_id, prompt, message_id, reply_markup=skip_cancel_markup(lang=lang))
             return True
 
         self.clear_dashboard_session(chat_id, user_id)
