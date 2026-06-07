@@ -47,6 +47,10 @@ def test_admin_dashboard_keyboard_has_language_button():
     assert "🌐 Language" in labels
     assert "🗑 Delete Users" in labels
     assert "📣 Broadcast" in labels
+    assert "⚙️ System Config" not in labels
+    assert "🧰 Debug Snapshot" not in labels
+    assert "🔐 Runtime Locks" not in labels
+    assert "🔑 Accounts" not in labels
     assert dashboard_action("🌐 Language") == "language"
     assert dashboard_action("🗑 Delete Users") == "admin_delete_users"
     assert dashboard_action("📣 Broadcast") == "admin_broadcast"
@@ -59,6 +63,10 @@ def test_arabic_admin_dashboard_keyboard_is_translated():
     assert "👥 المستخدمين" in labels
     assert "🗑 حذف مستخدمين" in labels
     assert "📣 إرسال تنبيه" in labels
+    assert "⚙️ إعدادات النظام" not in labels
+    assert "🧰 لقطة تصحيح" not in labels
+    assert "🔐 أقفال التشغيل" not in labels
+    assert "🔑 الحسابات" not in labels
     assert dashboard_action("🗑 حذف مستخدمين") == "admin_delete_users"
     assert dashboard_action("📣 إرسال تنبيه") == "admin_broadcast"
 

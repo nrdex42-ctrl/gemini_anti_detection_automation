@@ -93,19 +93,23 @@ def test_page_selection_dashboard_post_button_switches_post_type_instead_of_warn
             },
             lang="ar",
         )
-        prompted = []
+        refreshed = []
 
-        async def prompt_for_page(chat_id, message_id, account_id, user_id=0):
-            prompted.append(
+        async def refresh_open_page_selection_card(chat_id, user_id, fallback_message_id, session, *, prefix=""):
+            refreshed.append(
                 {
                     "chat_id": chat_id,
-                    "message_id": message_id,
-                    "account_id": account_id,
                     "user_id": user_id,
+                    "fallback_message_id": fallback_message_id,
                     "session": dict(app.get_dashboard_session(chat_id, user_id)),
+                    "prefix": prefix,
                 }
             )
 
+        async def prompt_for_page(*args, **kwargs):
+            raise AssertionError("active page selection should not send a new page-selection card")
+
+        app.refresh_open_page_selection_card = refresh_open_page_selection_card
         app.prompt_for_page = prompt_for_page
 
         handled = await app.handle_dashboard_session(
@@ -118,8 +122,8 @@ def test_page_selection_dashboard_post_button_switches_post_type_instead_of_warn
 
         assert handled is True
         assert sent == []
-        assert prompted
-        assert prompted[0]["account_id"] == "acct_1"
+        assert refreshed
+        assert "صورة" in refreshed[0]["prefix"]
         session = app.get_dashboard_session(123, 99)
         assert session["post_type"] == "image"
         assert session["step"] == "page_select"
@@ -142,11 +146,15 @@ def test_page_selection_post_all_button_restarts_all_pages_flow():
             },
             lang="ar",
         )
-        prompted = []
+        refreshed = []
 
-        async def prompt_for_page(chat_id, message_id, account_id, user_id=0):
-            prompted.append(dict(app.get_dashboard_session(chat_id, user_id)))
+        async def refresh_open_page_selection_card(chat_id, user_id, fallback_message_id, session, *, prefix=""):
+            refreshed.append({"session": dict(app.get_dashboard_session(chat_id, user_id)), "prefix": prefix})
 
+        async def prompt_for_page(*args, **kwargs):
+            raise AssertionError("active page selection should not send a new page-selection card")
+
+        app.refresh_open_page_selection_card = refresh_open_page_selection_card
         app.prompt_for_page = prompt_for_page
 
         handled = await app.handle_dashboard_session(
@@ -159,9 +167,10 @@ def test_page_selection_post_all_button_restarts_all_pages_flow():
 
         assert handled is True
         assert sent == []
-        assert prompted
+        assert refreshed
         session = app.get_dashboard_session(123, 99)
         assert session["select_all_pages"] is True
+        assert session["selected_pages"] == [0, 1]
         assert "post_type" not in session
         assert session["step"] == "page_select"
 

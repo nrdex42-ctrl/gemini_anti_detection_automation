@@ -78,7 +78,8 @@ def test_admin_users_card_includes_profile_name_and_pm_time():
         await app.show_admin_users(123, 456, 99)
 
         text = sent[0]["text"]
-        assert "Mohammed Shabana (@m_shabana)" in text
+        assert "Mohammed Shabana" in text
+        assert "@m_shabana" not in text
         assert "id=373303307" in text
         assert "last=05:15 PM" in text
         assert "UTC+3" not in text

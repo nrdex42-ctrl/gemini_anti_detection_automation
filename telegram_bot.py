@@ -1304,14 +1304,9 @@ class TelegramBotApp:
     def _telegram_profile_name(self, row: Dict[str, Any]) -> str:
         first_name = str(row.get("first_name") or "").strip()
         last_name = str(row.get("last_name") or "").strip()
-        username = str(row.get("username") or "").strip().lstrip("@")
         full_name = " ".join(part for part in [first_name, last_name] if part).strip()
-        if full_name and username:
-            return f"{full_name} (@{username})"
         if full_name:
             return full_name
-        if username:
-            return f"@{username}"
         return "unknown profile"
 
     def _admin_user_label(self, row: Dict[str, Any]) -> str:
@@ -1883,16 +1878,23 @@ class TelegramBotApp:
             session["step"] = "page_select"
             session["pages"] = pages
             session["selected_pages"] = selected_pages
+            session["account_name"] = account_name
             self.set_dashboard_session(chat_id, user_id, session)
         if pages:
-            await self.send_message(
+            sent = await self.send_message(
                 chat_id,
                 page_selection_card(account_name=account_name, pages=pages, selected_indexes=selected_pages, lang=lang),
                 message_id,
                 reply_markup=page_selection_markup(pages, selected_pages, lang=lang),
             )
+            selection_message_id = int((sent.get("result") or {}).get("message_id") or 0)
+            if selection_message_id:
+                session = self.get_dashboard_session(chat_id, user_id)
+                if session:
+                    session["page_selection_message_id"] = selection_message_id
+                    self.set_dashboard_session(chat_id, user_id, session)
             return
-        await self.send_message(
+        sent = await self.send_message(
             chat_id,
             page_selection_card(
                 account_name=account_name,
@@ -1904,6 +1906,12 @@ class TelegramBotApp:
             message_id,
             reply_markup=page_selection_markup([], [], lang=lang),
         )
+        selection_message_id = int((sent.get("result") or {}).get("message_id") or 0)
+        if selection_message_id:
+            session = self.get_dashboard_session(chat_id, user_id)
+            if session:
+                session["page_selection_message_id"] = selection_message_id
+                self.set_dashboard_session(chat_id, user_id, session)
 
     def selected_pages_from_session(self, session: Dict[str, Any]) -> List[Dict[str, Any]]:
         pages = session.get("pages") if isinstance(session.get("pages"), list) else []
@@ -2034,6 +2042,32 @@ class TelegramBotApp:
             message_id,
             page_selection_card(account_name=account_name, pages=pages, selected_indexes=selected, prefix=prefix, lang=lang),
             reply_markup=page_selection_markup(pages, selected, lang=lang),
+        )
+
+    async def refresh_open_page_selection_card(
+        self,
+        chat_id: int,
+        user_id: int,
+        fallback_message_id: int,
+        session: Dict[str, Any],
+        *,
+        prefix: str = "",
+    ) -> None:
+        selection_message_id = int(session.get("page_selection_message_id") or 0)
+        if selection_message_id:
+            await self.edit_page_selection_card(chat_id, selection_message_id, user_id, session, prefix=prefix)
+            return
+        lang = str(session.get("lang") or await self.user_language(user_id))
+        await self.send_message(
+            chat_id,
+            prefix
+            or (
+                "استخدم كارت اختيار الصفحات المفتوح، ثم اضغط تأكيد."
+                if lang == "ar"
+                else "Use the open page selection card, then tap Confirm."
+            ),
+            fallback_message_id,
+            reply_markup=await self.dashboard_reply_markup(user_id),
         )
 
     async def show_post_type_card(
@@ -2761,22 +2795,50 @@ class TelegramBotApp:
             if page_action in POST_ACTION_TYPES:
                 session["action"] = "post"
                 session["account_id"] = account_id
-                session["post_type"] = POST_ACTION_TYPES[page_action]
+                post_type = POST_ACTION_TYPES[page_action]
+                session["post_type"] = post_type
                 session["step"] = "page_select"
                 session["lang"] = lang
                 session.pop("select_all_pages", None)
                 self.set_dashboard_session(chat_id, user_id, session)
-                await self.prompt_for_page(chat_id, message_id, account_id, user_id)
+                post_type_label = (
+                    {"text": "نصي", "image": "صورة", "video": "فيديو"}.get(post_type, post_type)
+                    if lang == "ar"
+                    else post_type.title()
+                )
+                await self.refresh_open_page_selection_card(
+                    chat_id,
+                    user_id,
+                    message_id,
+                    session,
+                    prefix=(
+                        f"تم تغيير نوع المنشور إلى {post_type_label}. استخدم نفس كارت الصفحات ثم اضغط تأكيد."
+                        if lang == "ar"
+                        else f"Post type changed to {post_type_label}. Use the same page card, then tap Confirm."
+                    ),
+                )
                 return True
             if page_action == "post_all_pages":
+                pages = session.get("pages") if isinstance(session.get("pages"), list) else []
                 session["action"] = "post"
                 session["account_id"] = account_id
                 session["step"] = "page_select"
                 session["select_all_pages"] = True
+                session["selected_pages"] = list(range(len(pages)))
                 session["lang"] = lang
                 session.pop("post_type", None)
                 self.set_dashboard_session(chat_id, user_id, session)
-                await self.prompt_for_page(chat_id, message_id, account_id, user_id)
+                await self.refresh_open_page_selection_card(
+                    chat_id,
+                    user_id,
+                    message_id,
+                    session,
+                    prefix=(
+                        "تم تحديد كل الصفحات. اضغط تأكيد ثم اختار نوع المنشور."
+                        if lang == "ar"
+                        else "All pages selected. Tap Confirm, then choose the post type."
+                    ),
+                )
                 return True
             await self.send_message(
                 chat_id,
