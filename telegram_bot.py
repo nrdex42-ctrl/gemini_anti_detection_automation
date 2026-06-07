@@ -77,6 +77,17 @@ def progress_card(title: str, done: int, total: int, status: str) -> str:
     return f"{title}\n{progress_bar(done, total)} {done}/{total} ({percent}%)\n{status}"
 
 
+def format_elapsed_seconds(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    if total_seconds < 60:
+        return f"{total_seconds}s"
+    minutes, remaining_seconds = divmod(total_seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {remaining_seconds:02d}s"
+    hours, remaining_minutes = divmod(minutes, 60)
+    return f"{hours}h {remaining_minutes:02d}m"
+
+
 def compact_text(value: Any, limit: int = 220) -> str:
     text = " ".join(str(value or "").split())
     if len(text) <= limit:
@@ -100,12 +111,15 @@ def posting_result_card(
     *,
     title: str = "",
     debug_id: str = "",
+    elapsed_seconds: Optional[float] = None,
     max_length: int = 3800,
 ) -> str:
     total = max(1, len(results))
     success_count = sum(1 for item in results if bool(item.get("success")))
     header = title or f"Posting complete: {success_count}/{len(results)} succeeded"
     lines = [header, f"{progress_bar(success_count, total)} {success_count}/{len(results)} succeeded"]
+    if elapsed_seconds is not None:
+        lines.append(f"Total time: {format_elapsed_seconds(elapsed_seconds)}")
     if debug_id:
         lines.append(f"Debug ID: {debug_id}")
     lines.append("")
@@ -4368,6 +4382,7 @@ class TelegramBotApp:
         jobs: List[Dict[str, str]],
         progress_message_id: int = 0,
     ) -> None:
+        started = time.monotonic()
         batch_id = uuid.uuid4().hex[:12]
         lock_owner = f"telegram:{os.getpid()}:batch:{batch_id}"
         trace_id = new_debug_id("batch")
@@ -4622,13 +4637,26 @@ class TelegramBotApp:
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                posting_result_card(result_items, debug_id=trace_id),
+                posting_result_card(result_items, debug_id=trace_id, elapsed_seconds=time.monotonic() - started),
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
-            self.debug_event("batch_post_complete", trace_id, batch_id=batch_id, success_count=success_count, total=len(jobs))
+            self.debug_event(
+                "batch_post_complete",
+                trace_id,
+                batch_id=batch_id,
+                success_count=success_count,
+                total=len(jobs),
+                elapsed_seconds=round(time.monotonic() - started, 3),
+            )
         except Exception as exc:
             logger.exception("Batch post job failed")
-            self.debug_event("batch_post_failed", trace_id, batch_id=batch_id, error=compact_error(exc))
+            self.debug_event(
+                "batch_post_failed",
+                trace_id,
+                batch_id=batch_id,
+                error=compact_error(exc),
+                elapsed_seconds=round(time.monotonic() - started, 3),
+            )
             with suppress(Exception):
                 await asyncio.to_thread(
                     self.storage.mark_jobs_completed,
@@ -4658,6 +4686,7 @@ class TelegramBotApp:
                         failed_results,
                         title=f"Posting complete: 0/{len(jobs)} succeeded",
                         debug_id=trace_id,
+                        elapsed_seconds=time.monotonic() - started,
                     ),
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
