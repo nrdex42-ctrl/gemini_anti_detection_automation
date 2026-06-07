@@ -26,6 +26,17 @@ def test_unconfirmed_publish_is_not_recoverable():
     assert not engine._post_result_is_safe_to_recover(detail)
 
 
+def test_security_text_regex_ignores_generic_arabic_feed_terms():
+    text = "منشور عادي عن قيود الحياة وتسجيل الدخول في النقاش"
+
+    assert engine._FACEBOOK_SECURITY_TEXT_RE.search(text) is None
+
+
+def test_security_text_regex_keeps_account_specific_arabic_security_terms():
+    assert engine._FACEBOOK_SECURITY_TEXT_RE.search("تم تقييد حسابك بسبب نشاط غير معتاد")
+    assert engine._FACEBOOK_SECURITY_TEXT_RE.search("يرجى تأكيد هويتك")
+
+
 def test_switch_dialog_selection_is_confirmed_before_waiting(monkeypatch):
     async def run():
         calls = []

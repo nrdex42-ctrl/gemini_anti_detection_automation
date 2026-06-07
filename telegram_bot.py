@@ -2243,7 +2243,11 @@ class TelegramBotApp:
         session["step"] = "review"
         session["lang"] = lang
         self.set_dashboard_session(chat_id, user_id, session)
-        await self.edit_or_send_message(chat_id, message_id, text, reply_markup=post_confirm_inline_markup(lang=lang))
+        markup = post_confirm_inline_markup(lang=lang)
+        if edit:
+            await self.edit_or_send_message(chat_id, message_id, text, reply_markup=markup)
+        else:
+            await self.send_message(chat_id, text, message_id, reply_markup=markup)
 
     async def queue_reviewed_post(self, chat_id: int, user_id: int, session: Dict[str, Any]) -> None:
         account_id = str(session.get("account_id") or "")

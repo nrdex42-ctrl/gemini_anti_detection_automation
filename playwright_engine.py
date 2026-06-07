@@ -2103,10 +2103,10 @@ _FACEBOOK_SECURITY_TEXT_RE = re.compile(
     r'may have been hacked|log in with another device|we can.?t match the device|'
     r'why can.?t i use this device|confirm your identity|security checkpoint|'
     r'unusual activity|temporarily blocked|account restricted|trusted device|'
-    r'login required|required to log in|please log in|not logged in|logged out|'
+    r'login required|required to log in|not logged in|logged out|'
     r'session expired|session invalid|cookies? expired|invalid cookies?|'
     r'تم قفل|إلغاء قفل حسابك|قد يكون مخترق|نقطة تحقق|تأكيد هويتك|'
-    r'نشاط غير معتاد|قيود|تسجيل الدخول|انتهت الجلسة',
+    r'نشاط غير معتاد|تم تقييد حسابك|تقييد حسابك|تسجيل الدخول مطلوب|انتهت الجلسة',
     re.I,
 )
 _FACEBOOK_POSTING_IN_PROGRESS_RE = re.compile(

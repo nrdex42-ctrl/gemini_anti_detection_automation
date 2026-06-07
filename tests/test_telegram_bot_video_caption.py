@@ -309,3 +309,39 @@ def test_multi_video_download_error_keeps_upload_session_active():
         assert session["multi_media_paths"] == []
 
     asyncio.run(run())
+
+
+def test_done_button_review_card_sends_new_message_instead_of_editing_user_message():
+    async def run():
+        app, sent = build_session_app(
+            {
+                "action": "post",
+                "step": "video_caption",
+                "lang": "en",
+                "account_id": "acct_1",
+                "pages": [{"page_name": "Huawei"}, {"page_name": "Oppo"}],
+                "selected_pages": [0, 1],
+                "post_type": "video",
+                "caption": "Shared caption",
+                "multi_media_paths": ["/tmp/one.mp4", "/tmp/two.mp4"],
+            }
+        )
+        app.storage = types.SimpleNamespace(get_account=lambda account_id, owner_id=None: {"name": "Omar Mohamed"})
+        app.account_owner_scope = lambda user_id: str(user_id)
+
+        async def edit_or_send_message(*args, **kwargs):
+            raise AssertionError("review card should not edit the user's Done/caption message")
+
+        app.edit_or_send_message = edit_or_send_message
+
+        await app.show_post_review(123, 456, 99, app.get_dashboard_session(123, 99))
+
+        assert len(sent) == 1
+        assert sent[0]["reply_to_message_id"] == 456
+        assert "Review Post" in sent[0]["text"]
+        keyboard = sent[0]["reply_markup"]["inline_keyboard"]
+        callback_data = [button["callback_data"] for row in keyboard for button in row]
+        assert "post:confirm" in callback_data
+        assert app.get_dashboard_session(123, 99)["step"] == "review"
+
+    asyncio.run(run())
