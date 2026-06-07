@@ -49,7 +49,7 @@ def test_edit_message_ignores_telegram_message_not_modified():
     assert calls[0][0] == "editMessageText"
 
 
-def build_session_app(session):
+def build_session_app(session, *, lang="en"):
     app = TelegramBotApp.__new__(TelegramBotApp)
     app.dashboard_sessions = {"123:99": {**session, "updated_at": time.time()}}
     app.update_locks = {}
@@ -71,12 +71,134 @@ def build_session_app(session):
         return {"ok": True, "result": {"message_id": 777}}
 
     async def user_language(user_id=0):
-        return "en"
+        return lang
 
     app.start_background_task = start_background_task
     app.send_message = send_message
     app.user_language = user_language
     return app, sent
+
+
+def test_page_selection_dashboard_post_button_switches_post_type_instead_of_warning():
+    async def run():
+        app, sent = build_session_app(
+            {
+                "action": "post",
+                "step": "page_select",
+                "lang": "ar",
+                "account_id": "acct_1",
+                "pages": [{"page_name": "Insan"}, {"page_name": "Oppo"}],
+                "selected_pages": [],
+                "post_type": "video",
+            },
+            lang="ar",
+        )
+        prompted = []
+
+        async def prompt_for_page(chat_id, message_id, account_id, user_id=0):
+            prompted.append(
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "account_id": account_id,
+                    "user_id": user_id,
+                    "session": dict(app.get_dashboard_session(chat_id, user_id)),
+                }
+            )
+
+        app.prompt_for_page = prompt_for_page
+
+        handled = await app.handle_dashboard_session(
+            123,
+            99,
+            456,
+            "📸 منشور صورة",
+            {"text": "📸 منشور صورة"},
+        )
+
+        assert handled is True
+        assert sent == []
+        assert prompted
+        assert prompted[0]["account_id"] == "acct_1"
+        session = app.get_dashboard_session(123, 99)
+        assert session["post_type"] == "image"
+        assert session["step"] == "page_select"
+        assert "select_all_pages" not in session
+
+    asyncio.run(run())
+
+
+def test_page_selection_post_all_button_restarts_all_pages_flow():
+    async def run():
+        app, sent = build_session_app(
+            {
+                "action": "post",
+                "step": "page_select",
+                "lang": "ar",
+                "account_id": "acct_1",
+                "pages": [{"page_name": "Insan"}, {"page_name": "Oppo"}],
+                "selected_pages": [],
+                "post_type": "video",
+            },
+            lang="ar",
+        )
+        prompted = []
+
+        async def prompt_for_page(chat_id, message_id, account_id, user_id=0):
+            prompted.append(dict(app.get_dashboard_session(chat_id, user_id)))
+
+        app.prompt_for_page = prompt_for_page
+
+        handled = await app.handle_dashboard_session(
+            123,
+            99,
+            456,
+            "📋 انشر لكل الصفحات",
+            {"text": "📋 انشر لكل الصفحات"},
+        )
+
+        assert handled is True
+        assert sent == []
+        assert prompted
+        session = app.get_dashboard_session(123, 99)
+        assert session["select_all_pages"] is True
+        assert "post_type" not in session
+        assert session["step"] == "page_select"
+
+    asyncio.run(run())
+
+
+def test_page_selection_fallback_instruction_uses_session_language():
+    async def run():
+        app, sent = build_session_app(
+            {
+                "action": "post",
+                "step": "page_select",
+                "lang": "ar",
+                "account_id": "acct_1",
+            },
+            lang="ar",
+        )
+
+        async def dashboard_reply_markup(user_id):
+            return {"keyboard": [["لوحة التحكم"]]}
+
+        app.dashboard_reply_markup = dashboard_reply_markup
+
+        handled = await app.handle_dashboard_session(
+            123,
+            99,
+            456,
+            "نص غير متعلق بالصفحات",
+            {"text": "نص غير متعلق بالصفحات"},
+        )
+
+        assert handled is True
+        assert len(sent) == 1
+        assert "استخدم أزرار الصفحات" in sent[0]["text"]
+        assert "Use the page buttons" not in sent[0]["text"]
+
+    asyncio.run(run())
 
 
 def test_active_multi_video_upload_consumes_stale_dashboard_button_text():

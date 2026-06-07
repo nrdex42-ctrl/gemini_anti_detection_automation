@@ -2416,9 +2416,35 @@ class TelegramBotApp:
             return True
 
         if action == "post" and step == "page_select":
+            page_action = dashboard_action(text)
+            account_id = str(session.get("account_id") or "")
+            if page_action in POST_ACTION_TYPES:
+                session["action"] = "post"
+                session["account_id"] = account_id
+                session["post_type"] = POST_ACTION_TYPES[page_action]
+                session["step"] = "page_select"
+                session["lang"] = lang
+                session.pop("select_all_pages", None)
+                self.set_dashboard_session(chat_id, user_id, session)
+                await self.prompt_for_page(chat_id, message_id, account_id, user_id)
+                return True
+            if page_action == "post_all_pages":
+                session["action"] = "post"
+                session["account_id"] = account_id
+                session["step"] = "page_select"
+                session["select_all_pages"] = True
+                session["lang"] = lang
+                session.pop("post_type", None)
+                self.set_dashboard_session(chat_id, user_id, session)
+                await self.prompt_for_page(chat_id, message_id, account_id, user_id)
+                return True
             await self.send_message(
                 chat_id,
-                "Use the page buttons on the selection card, then tap Confirm.",
+                (
+                    "استخدم أزرار الصفحات في كارت الاختيار، وبعدها اضغط تأكيد."
+                    if lang == "ar"
+                    else "Use the page buttons on the selection card, then tap Confirm."
+                ),
                 message_id,
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
