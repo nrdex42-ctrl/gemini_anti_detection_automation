@@ -6915,21 +6915,20 @@ async def _open_desktop_composer(page: Page, target_url: str, page_name: str = '
                 logger.warning(f'Facebook target page is logged out or blocked for target={route}')
                 _post_step(page_label, 'Desktop route blocked', f'route={route_idx} reason=logged_out')
                 return False
-            if route == routes[0]:
-                switched = await _switch_to_page_profile(page, page_name)
-                _post_step(page_label, 'Actor switch result', f'route={route_idx} switched={switched}')
-                if switched:
-                    logger.info(f'Desktop composer: page profile switched, reloading page')
-                    await _wait_for_profile_switch_to_settle(page, timeout_ms=6000)
-                    await page.goto(route, wait_until='domcontentloaded', timeout=30000)
-                    fatal_detail = await _facebook_navigation_fatal_block_detail(page)
-                    if fatal_detail:
-                        _post_step(page_label, 'Desktop route fatal block', f'route={route_idx} reason={fatal_detail[:120]}')
-                        raise RuntimeError(fatal_detail)
-                    await _wait_for_facebook_ui_ready(page, timeout=3500)
-                    await _dismiss_common_facebook_popups(page)
-                    await _wait_for_profile_switch_to_settle(page, timeout_ms=3000)
-                    await _wait_for_facebook_ui_ready(page, timeout=2000)
+            switched = await _switch_to_page_profile(page, page_name)
+            _post_step(page_label, 'Actor switch result', f'route={route_idx} switched={switched}')
+            if switched:
+                logger.info(f'Desktop composer: page profile switched, reloading page')
+                await _wait_for_profile_switch_to_settle(page, timeout_ms=6000)
+                await page.goto(route, wait_until='domcontentloaded', timeout=30000)
+                fatal_detail = await _facebook_navigation_fatal_block_detail(page)
+                if fatal_detail:
+                    _post_step(page_label, 'Desktop route fatal block', f'route={route_idx} reason={fatal_detail[:120]}')
+                    raise RuntimeError(fatal_detail)
+                await _wait_for_facebook_ui_ready(page, timeout=3500)
+                await _dismiss_common_facebook_popups(page)
+                await _wait_for_profile_switch_to_settle(page, timeout_ms=3000)
+                await _wait_for_facebook_ui_ready(page, timeout=2000)
 
             # Click on-screen "Switch Now" if it appears
             clicked_onscreen = await _click_onscreen_switch_button(page, page_name)
