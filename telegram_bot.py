@@ -65,6 +65,7 @@ logger = logging.getLogger("telegram_bot")
 POST_TYPES = {"text", "image", "video"}
 UPLOAD_DIR = Path(os.getenv("TELEGRAM_UPLOAD_DIR", "artifacts/telegram_uploads"))
 POSTING_STATUS_SYNC_TEXT = "Page status sync: each page result is matched with its progress bar."
+ADMIN_USER_PAGE_SIZE = 7
 
 
 def progress_bar(done: int, total: int, width: int = 10) -> str:
@@ -1234,25 +1235,40 @@ class TelegramBotApp:
         )
         await self.edit_or_send_message(chat_id, message_id, "\n".join(lines), reply_markup=language_selection_markup(lang=lang))
 
-    def admin_overview_text(self, summary: Dict[str, Any], prefix: str = "") -> str:
+    def admin_overview_text(self, summary: Dict[str, Any], prefix: str = "", lang: str = "en") -> str:
         status_counts = summary.get("job_status_counts") or {}
         active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
         lines: List[str] = []
         if prefix:
             lines.extend([prefix, ""])
-        lines.extend(
-            [
-                "🔒 Admin Dashboard",
-                "━━━━━━━━━━━━━━━━━━",
-                f"Users: {summary.get('user_count', 0)}",
-                f"Accounts: {summary.get('total_accounts', 0)} total, {summary.get('active_accounts', 0)} active, {summary.get('inactive_accounts', 0)} inactive",
-                f"Stored pages: {summary.get('page_count', 0)}",
-                f"Jobs: {active_jobs} active, {int(status_counts.get('success', 0))} success, {int(status_counts.get('failed', 0))} failed",
-                f"Active locks: {len(summary.get('active_locks') or [])}",
-                "",
-                "Use the admin keyboard below.",
-            ]
-        )
+        if lang == "ar":
+            lines.extend(
+                [
+                    "🔒 لوحة الأدمن",
+                    "━━━━━━━━━━━━━━━━━━",
+                    f"المستخدمين: {summary.get('user_count', 0)}",
+                    f"الحسابات: {summary.get('total_accounts', 0)} إجمالي، {summary.get('active_accounts', 0)} نشطة، {summary.get('inactive_accounts', 0)} غير نشطة",
+                    f"الصفحات المحفوظة: {summary.get('page_count', 0)}",
+                    f"المهام: {active_jobs} نشطة، {int(status_counts.get('success', 0))} ناجحة، {int(status_counts.get('failed', 0))} فاشلة",
+                    f"الأقفال النشطة: {len(summary.get('active_locks') or [])}",
+                    "",
+                    "استخدم أزرار الأدمن بالأسفل.",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "🔒 Admin Dashboard",
+                    "━━━━━━━━━━━━━━━━━━",
+                    f"Users: {summary.get('user_count', 0)}",
+                    f"Accounts: {summary.get('total_accounts', 0)} total, {summary.get('active_accounts', 0)} active, {summary.get('inactive_accounts', 0)} inactive",
+                    f"Stored pages: {summary.get('page_count', 0)}",
+                    f"Jobs: {active_jobs} active, {int(status_counts.get('success', 0))} success, {int(status_counts.get('failed', 0))} failed",
+                    f"Active locks: {len(summary.get('active_locks') or [])}",
+                    "",
+                    "Use the admin keyboard below.",
+                ]
+            )
         return "\n".join(lines)
 
     def _format_dt(self, value: Any) -> str:
@@ -1298,78 +1314,371 @@ class TelegramBotApp:
             return f"@{username}"
         return "unknown profile"
 
+    def _admin_user_label(self, row: Dict[str, Any]) -> str:
+        name = compact_text(self._telegram_profile_name(row), 32)
+        user_id = str(row.get("telegram_user_id") or "")
+        if name == "unknown profile":
+            return f"id={user_id}"
+        return f"{name} | id={user_id}"
+
+    def _admin_user_page_bounds(self, page: int, total: int, page_size: int = ADMIN_USER_PAGE_SIZE) -> Tuple[int, int]:
+        page_count = max(1, (max(0, total) + page_size - 1) // page_size)
+        normalized_page = min(max(0, int(page or 0)), page_count - 1)
+        return normalized_page, page_count
+
+    def admin_user_list_card(self, data: Dict[str, Any], page: int, lang: str = "en") -> str:
+        rows = data.get("rows") or []
+        total = int(data.get("total") or 0)
+        page, page_count = self._admin_user_page_bounds(page, total)
+        lines = [
+            "👥 المستخدمين" if lang == "ar" else "👥 Users",
+            "━━━━━━━━━━━━━━━━━━",
+            (f"الإجمالي: {total} | الصفحة: {page + 1}/{page_count}" if lang == "ar" else f"Total: {total} | Page: {page + 1}/{page_count}"),
+            "",
+        ]
+        if not rows:
+            lines.append("لا يوجد مستخدمين مسجلين بعد." if lang == "ar" else "No users recorded yet.")
+        else:
+            for row in rows:
+                lines.append(
+                    (
+                        f"- {self._admin_user_label(row)} | حسابات={row.get('account_count', 0)} | صفحات={row.get('page_count', 0)} | آخر={self._format_time(row.get('last_seen'))}"
+                        if lang == "ar"
+                        else f"- {self._admin_user_label(row)} | accounts={row.get('account_count', 0)} | pages={row.get('page_count', 0)} | last={self._format_time(row.get('last_seen'))}"
+                    )
+                )
+        lines.extend(["", "اضغط على مستخدم لعرض التفاصيل." if lang == "ar" else "Tap a user to view details."])
+        return "\n".join(lines)
+
+    def admin_user_list_markup(self, rows: List[Dict[str, Any]], page: int, total: int, lang: str = "en") -> Dict[str, Any]:
+        page, page_count = self._admin_user_page_bounds(page, total)
+        keyboard: List[List[Dict[str, str]]] = []
+        for row in rows:
+            user_id = int(row.get("telegram_user_id") or 0)
+            if not user_id:
+                continue
+            keyboard.append([inline_button(self._admin_user_label(row)[:60], f"adm:user:{user_id}")])
+        nav: List[Dict[str, str]] = []
+        if page > 0:
+            nav.append(inline_button("⬅️ السابق" if lang == "ar" else "⬅️ Prev", f"adm:users:{page - 1}"))
+        if page < page_count - 1:
+            nav.append(inline_button("التالي ➡️" if lang == "ar" else "Next ➡️", f"adm:users:{page + 1}"))
+        if nav:
+            keyboard.append(nav)
+        keyboard.append([inline_button("🔒 لوحة الأدمن" if lang == "ar" else "🔒 Admin Dashboard", "adm:dash")])
+        return inline_markup(keyboard)
+
+    def admin_user_detail_card(self, detail: Dict[str, Any], lang: str = "en") -> str:
+        user_label = self._telegram_profile_name(detail)
+        status_counts = detail.get("job_status_counts") or {}
+        active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
+        lines = [
+            "👤 تفاصيل المستخدم" if lang == "ar" else "👤 User Details",
+            "━━━━━━━━━━━━━━━━━━",
+            f"{'الاسم' if lang == 'ar' else 'Name'}: {user_label}",
+            f"{'ID' if lang == 'ar' else 'ID'}: {detail.get('telegram_user_id')}",
+            f"{'اللغة' if lang == 'ar' else 'Language'}: {detail.get('lang') or 'unknown'}",
+            f"{'أول استخدام' if lang == 'ar' else 'First used'}: {self._format_dt(detail.get('first_seen'))}",
+            f"{'آخر ظهور' if lang == 'ar' else 'Last seen'}: {self._format_dt(detail.get('last_seen'))}",
+            "",
+            (
+                f"الحسابات: {detail.get('account_count', 0)} | الصفحات: {detail.get('page_count', 0)} | المهام: {detail.get('job_count', 0)}"
+                if lang == "ar"
+                else f"Accounts: {detail.get('account_count', 0)} | Pages: {detail.get('page_count', 0)} | Jobs: {detail.get('job_count', 0)}"
+            ),
+            (
+                f"حالة المهام: {active_jobs} نشطة، {int(status_counts.get('success', 0))} ناجحة، {int(status_counts.get('failed', 0))} فاشلة"
+                if lang == "ar"
+                else f"Job status: {active_jobs} active, {int(status_counts.get('success', 0))} success, {int(status_counts.get('failed', 0))} failed"
+            ),
+        ]
+        last_job = detail.get("last_job") or {}
+        lines.extend(["", "آخر منشور:" if lang == "ar" else "Last posting status:"])
+        if last_job:
+            page = compact_text(last_job.get("page_name") or last_job.get("page_id_or_url") or "unknown", 42)
+            when = self._format_dt(last_job.get("completed_at") or last_job.get("created_at"))
+            lines.append(
+                (
+                    f"- {last_job.get('status')} {last_job.get('post_type')} -> {page} | {when}"
+                    if lang == "ar"
+                    else f"- {last_job.get('status')} {last_job.get('post_type')} -> {page} | {when}"
+                )
+            )
+            if last_job.get("error"):
+                lines.append(f"- {'خطأ' if lang == 'ar' else 'Error'}: {compact_error(Exception(str(last_job.get('error'))), 160)}")
+        else:
+            lines.append("- لا توجد منشورات بعد." if lang == "ar" else "- no posting jobs yet")
+
+        accounts = detail.get("accounts") if isinstance(detail.get("accounts"), list) else []
+        pages_by_account = detail.get("pages_by_account") if isinstance(detail.get("pages_by_account"), dict) else {}
+        lines.extend(["", "الحسابات والصفحات:" if lang == "ar" else "Facebook accounts and pages:"])
+        if not accounts:
+            lines.append("- لا توجد حسابات فيسبوك." if lang == "ar" else "- no Facebook accounts")
+        for account in accounts[:10]:
+            account_id = str(account.get("account_id") or "")
+            display = account_display_name(account, account_id, include_id=True)
+            status = "نشط" if account.get("active") and lang == "ar" else ("active" if account.get("active") else ("غير نشط" if lang == "ar" else "inactive"))
+            pages = pages_by_account.get(account_id) or []
+            lines.append(f"- {display} ({status}) | {'صفحات' if lang == 'ar' else 'pages'}={len(pages)}")
+            for page in pages[:8]:
+                lines.append(f"  • {compact_text(page_display_name(page, 0), 54)}")
+            if len(pages) > 8:
+                lines.append(f"  • +{len(pages) - 8} {'صفحات إضافية' if lang == 'ar' else 'more page(s)'}")
+        if len(accounts) > 10:
+            lines.append(f"... +{len(accounts) - 10} {'حسابات إضافية' if lang == 'ar' else 'more account(s)'}")
+        return "\n".join(lines)
+
+    def admin_user_detail_markup(self, user_id: int, page: int, lang: str = "en") -> Dict[str, Any]:
+        return inline_markup(
+            [
+                [inline_button("⬅️ المستخدمين" if lang == "ar" else "⬅️ Users", f"adm:users:{max(0, page)}")],
+                [inline_button("🗑 تحديد للحذف" if lang == "ar" else "🗑 Select for delete", f"adm:del:toggle:{int(user_id)}")],
+                [inline_button("📣 إرسال تنبيه" if lang == "ar" else "📣 Broadcast to user", f"adm:bc:toggle:{int(user_id)}")],
+            ]
+        )
+
+    def admin_user_picker_card(
+        self,
+        data: Dict[str, Any],
+        page: int,
+        selected_user_ids: List[int],
+        *,
+        mode: str,
+        lang: str = "en",
+    ) -> str:
+        rows = data.get("rows") or []
+        total = int(data.get("total") or 0)
+        page, page_count = self._admin_user_page_bounds(page, total)
+        selected = {int(item) for item in selected_user_ids}
+        delete_mode = mode == "delete"
+        title = "🗑 حذف مستخدمين" if lang == "ar" and delete_mode else ("📣 اختيار مستلمين" if lang == "ar" else ("🗑 Delete Users" if delete_mode else "📣 Select Recipients"))
+        lines = [
+            title,
+            "━━━━━━━━━━━━━━━━━━",
+            f"{'المحدد' if lang == 'ar' else 'Selected'}: {len(selected)} | {'الصفحة' if lang == 'ar' else 'Page'}: {page + 1}/{page_count}",
+            "",
+        ]
+        if not rows:
+            lines.append("لا يوجد مستخدمين." if lang == "ar" else "No users available.")
+        for row in rows:
+            marker = "✅" if int(row.get("telegram_user_id") or 0) in selected else "⬜"
+            lines.append(f"{marker} {self._admin_user_label(row)}")
+        if delete_mode:
+            lines.extend(["", "اختار مستخدم أو أكثر ثم اضغط تأكيد الحذف." if lang == "ar" else "Select one or more users, then confirm deletion."])
+        else:
+            lines.extend(["", "اختار مستلمين ثم اضغط كتابة الرسالة." if lang == "ar" else "Select recipients, then tap Compose Message."])
+        return "\n".join(lines)
+
+    def admin_user_picker_markup(
+        self,
+        rows: List[Dict[str, Any]],
+        page: int,
+        total: int,
+        selected_user_ids: List[int],
+        *,
+        mode: str,
+        lang: str = "en",
+    ) -> Dict[str, Any]:
+        page, page_count = self._admin_user_page_bounds(page, total)
+        selected = {int(item) for item in selected_user_ids}
+        prefix = "adm:del" if mode == "delete" else "adm:bc"
+        keyboard: List[List[Dict[str, str]]] = []
+        for row in rows:
+            user_id = int(row.get("telegram_user_id") or 0)
+            if not user_id:
+                continue
+            marker = "✅" if user_id in selected else "⬜"
+            keyboard.append([inline_button(f"{marker} {self._admin_user_label(row)[:56]}", f"{prefix}:toggle:{user_id}")])
+        nav: List[Dict[str, str]] = []
+        if page > 0:
+            nav.append(inline_button("⬅️ السابق" if lang == "ar" else "⬅️ Prev", f"{prefix}:page:{page - 1}"))
+        if page < page_count - 1:
+            nav.append(inline_button("التالي ➡️" if lang == "ar" else "Next ➡️", f"{prefix}:page:{page + 1}"))
+        if nav:
+            keyboard.append(nav)
+        if mode == "delete":
+            keyboard.append([inline_button("🗑 تأكيد الحذف" if lang == "ar" else "🗑 Confirm Delete", "adm:del:confirm")])
+        else:
+            keyboard.append([inline_button("✍️ كتابة الرسالة" if lang == "ar" else "✍️ Compose Message", "adm:bc:compose")])
+            keyboard.append([inline_button("📣 كل المستخدمين" if lang == "ar" else "📣 All Users", "adm:bc:all")])
+        keyboard.append([inline_button("🔒 لوحة الأدمن" if lang == "ar" else "🔒 Admin Dashboard", "adm:dash")])
+        return inline_markup(keyboard)
+
+    def admin_broadcast_menu_card(self, lang: str = "en") -> str:
+        return "\n".join(
+            [
+                "📣 إرسال تنبيه" if lang == "ar" else "📣 Broadcast",
+                "━━━━━━━━━━━━━━━━━━",
+                "اختار إرسال التنبيه لكل المستخدمين أو لمستخدمين محددين." if lang == "ar" else "Choose whether to notify all users or selected users.",
+            ]
+        )
+
+    def admin_broadcast_menu_markup(self, lang: str = "en") -> Dict[str, Any]:
+        return inline_markup(
+            [
+                [inline_button("📣 كل المستخدمين" if lang == "ar" else "📣 All Users", "adm:bc:all")],
+                [inline_button("👥 مستخدمين محددين" if lang == "ar" else "👥 Selected Users", "adm:bc:page:0")],
+                [inline_button("🔒 لوحة الأدمن" if lang == "ar" else "🔒 Admin Dashboard", "adm:dash")],
+            ]
+        )
+
     async def show_admin_dashboard(self, chat_id: int, message_id: int, user_id: int, prefix: str = "") -> None:
         if not self.is_admin_user(user_id):
             await self.send_message(chat_id, "Admin dashboard is restricted.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
             return
+        lang = await self.user_language(user_id)
         summary = await asyncio.to_thread(self.storage.admin_summary)
-        await self.send_message(chat_id, self.admin_overview_text(summary, prefix), message_id, reply_markup=admin_dashboard_markup())
+        self.set_dashboard_session(chat_id, user_id, {"action": "admin_dashboard", "step": "menu", "lang": lang})
+        await self.send_message(chat_id, self.admin_overview_text(summary, prefix, lang=lang), message_id, reply_markup=admin_dashboard_markup(lang=lang))
 
-    async def show_admin_users(self, chat_id: int, message_id: int, user_id: int) -> None:
-        rows = await asyncio.to_thread(self.storage.admin_users)
-        lines = ["👥 Users", "━━━━━━━━━━━━━━━━━━"]
-        if not rows:
-            lines.append("No users recorded yet.")
-        for row in rows:
-            lines.append(
-                f"- {self._telegram_profile_name(row)} | id={row.get('telegram_user_id')} | "
-                f"active={row.get('active_account_id') or 'none'} | "
-                f"accounts={row.get('account_count', 0)} | jobs={row.get('job_count', 0)} | "
-                f"last={self._format_time(row.get('last_seen'))}"
-            )
-        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup())
+    async def show_admin_users(self, chat_id: int, message_id: int, user_id: int, page: int = 0, *, edit: bool = False) -> None:
+        lang = await self.user_language(user_id)
+        page = max(0, int(page or 0))
+        data = await asyncio.to_thread(self.storage.admin_user_page, ADMIN_USER_PAGE_SIZE, page * ADMIN_USER_PAGE_SIZE)
+        rows = data.get("rows") or []
+        total = int(data.get("total") or 0)
+        page, _ = self._admin_user_page_bounds(page, total)
+        self.set_dashboard_session(chat_id, user_id, {"action": "admin_dashboard", "step": "users", "page": page, "lang": lang})
+        text = self.admin_user_list_card(data, page, lang=lang)
+        markup = self.admin_user_list_markup(rows, page, total, lang=lang)
+        if edit:
+            await self.edit_message(chat_id, message_id, text, reply_markup=markup)
+        else:
+            await self.send_message(chat_id, text, message_id, reply_markup=markup)
+
+    async def show_admin_user_detail(self, chat_id: int, message_id: int, user_id: int, target_user_id: int, page: int = 0) -> None:
+        lang = await self.user_language(user_id)
+        detail = await asyncio.to_thread(self.storage.admin_user_detail, int(target_user_id))
+        self.set_dashboard_session(
+            chat_id,
+            user_id,
+            {"action": "admin_dashboard", "step": "user_detail", "page": max(0, int(page or 0)), "target_user_id": int(target_user_id), "lang": lang},
+        )
+        await self.edit_or_send_message(
+            chat_id,
+            message_id,
+            self.admin_user_detail_card(detail, lang=lang),
+            reply_markup=self.admin_user_detail_markup(int(target_user_id), max(0, int(page or 0)), lang=lang),
+        )
+
+    async def show_admin_delete_users(self, chat_id: int, message_id: int, user_id: int, page: int = 0, *, edit: bool = False) -> None:
+        lang = await self.user_language(user_id)
+        session = self.get_dashboard_session(chat_id, user_id)
+        selected = session.get("selected_user_ids") if isinstance(session.get("selected_user_ids"), list) else []
+        page = max(0, int(page or 0))
+        data = await asyncio.to_thread(self.storage.admin_user_page, ADMIN_USER_PAGE_SIZE, page * ADMIN_USER_PAGE_SIZE)
+        rows = data.get("rows") or []
+        total = int(data.get("total") or 0)
+        page, _ = self._admin_user_page_bounds(page, total)
+        self.set_dashboard_session(
+            chat_id,
+            user_id,
+            {"action": "admin_delete_users", "step": "select", "page": page, "selected_user_ids": [int(item) for item in selected], "lang": lang},
+        )
+        text = self.admin_user_picker_card(data, page, [int(item) for item in selected], mode="delete", lang=lang)
+        markup = self.admin_user_picker_markup(rows, page, total, [int(item) for item in selected], mode="delete", lang=lang)
+        if edit:
+            await self.edit_message(chat_id, message_id, text, reply_markup=markup)
+        else:
+            await self.send_message(chat_id, text, message_id, reply_markup=markup)
+
+    async def show_admin_broadcast_menu(self, chat_id: int, message_id: int, user_id: int, *, edit: bool = False) -> None:
+        lang = await self.user_language(user_id)
+        self.set_dashboard_session(chat_id, user_id, {"action": "admin_broadcast", "step": "audience", "selected_user_ids": [], "lang": lang})
+        if edit:
+            await self.edit_message(chat_id, message_id, self.admin_broadcast_menu_card(lang=lang), reply_markup=self.admin_broadcast_menu_markup(lang=lang))
+        else:
+            await self.send_message(chat_id, self.admin_broadcast_menu_card(lang=lang), message_id, reply_markup=self.admin_broadcast_menu_markup(lang=lang))
+
+    async def show_admin_broadcast_users(self, chat_id: int, message_id: int, user_id: int, page: int = 0, *, edit: bool = True) -> None:
+        lang = await self.user_language(user_id)
+        session = self.get_dashboard_session(chat_id, user_id)
+        selected = session.get("selected_user_ids") if isinstance(session.get("selected_user_ids"), list) else []
+        page = max(0, int(page or 0))
+        data = await asyncio.to_thread(self.storage.admin_user_page, ADMIN_USER_PAGE_SIZE, page * ADMIN_USER_PAGE_SIZE)
+        rows = data.get("rows") or []
+        total = int(data.get("total") or 0)
+        page, _ = self._admin_user_page_bounds(page, total)
+        self.set_dashboard_session(
+            chat_id,
+            user_id,
+            {"action": "admin_broadcast", "step": "select", "page": page, "selected_user_ids": [int(item) for item in selected], "lang": lang},
+        )
+        text = self.admin_user_picker_card(data, page, [int(item) for item in selected], mode="broadcast", lang=lang)
+        markup = self.admin_user_picker_markup(rows, page, total, [int(item) for item in selected], mode="broadcast", lang=lang)
+        if edit:
+            await self.edit_message(chat_id, message_id, text, reply_markup=markup)
+        else:
+            await self.send_message(chat_id, text, message_id, reply_markup=markup)
 
     async def show_admin_accounts(self, chat_id: int, message_id: int, user_id: int) -> None:
+        lang = await self.user_language(user_id)
         rows = await asyncio.to_thread(self.storage.admin_accounts)
-        lines = ["🔑 Accounts", "━━━━━━━━━━━━━━━━━━"]
+        self.set_dashboard_session(chat_id, user_id, {"action": "admin_dashboard", "step": "accounts", "lang": lang})
+        lines = ["🔑 الحسابات" if lang == "ar" else "🔑 Accounts", "━━━━━━━━━━━━━━━━━━"]
         if not rows:
-            lines.append("No accounts stored yet.")
+            lines.append("لا توجد حسابات محفوظة بعد." if lang == "ar" else "No accounts stored yet.")
         for row in rows:
-            status = "active" if row.get("active") else "inactive"
+            status = "نشط" if row.get("active") and lang == "ar" else ("active" if row.get("active") else ("غير نشط" if lang == "ar" else "inactive"))
             lines.append(
-                f"- {account_display_name(row, str(row.get('account_id') or ''), include_id=True)} ({status}) | pages={row.get('page_count', 0)} | "
-                f"jobs={row.get('job_count', 0)} | owner={row.get('created_by') or 'unknown'}"
+                (
+                    f"- {account_display_name(row, str(row.get('account_id') or ''), include_id=True)} ({status}) | صفحات={row.get('page_count', 0)} | "
+                    f"مهام={row.get('job_count', 0)} | المالك={row.get('created_by') or 'غير معروف'}"
+                    if lang == "ar"
+                    else f"- {account_display_name(row, str(row.get('account_id') or ''), include_id=True)} ({status}) | pages={row.get('page_count', 0)} | "
+                    f"jobs={row.get('job_count', 0)} | owner={row.get('created_by') or 'unknown'}"
+                )
             )
-        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup())
+        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup(lang=lang))
 
     async def show_admin_post_stats(self, chat_id: int, message_id: int, user_id: int) -> None:
+        lang = await self.user_language(user_id)
         summary = await asyncio.to_thread(self.storage.admin_summary)
+        self.set_dashboard_session(chat_id, user_id, {"action": "admin_dashboard", "step": "post_stats", "lang": lang})
         status_counts = summary.get("job_status_counts") or {}
         post_type_counts = summary.get("post_type_counts") or {}
-        lines = ["📈 Post Stats", "━━━━━━━━━━━━━━━━━━", "Status:"]
+        lines = ["📈 إحصائيات المنشورات" if lang == "ar" else "📈 Post Stats", "━━━━━━━━━━━━━━━━━━", "الحالة:" if lang == "ar" else "Status:"]
         if status_counts:
             for status, count in sorted(status_counts.items()):
                 lines.append(f"- {status}: {count}")
         else:
-            lines.append("- no jobs yet")
+            lines.append("- لا توجد مهام بعد" if lang == "ar" else "- no jobs yet")
         lines.append("")
-        lines.append("Types:")
+        lines.append("الأنواع:" if lang == "ar" else "Types:")
         if post_type_counts:
             for post_type, count in sorted(post_type_counts.items()):
                 lines.append(f"- {post_type}: {count}")
         else:
-            lines.append("- no jobs yet")
+            lines.append("- لا توجد مهام بعد" if lang == "ar" else "- no jobs yet")
         recent_jobs = summary.get("recent_jobs") or []
         if recent_jobs:
-            lines.extend(["", "Recent jobs:"])
+            lines.extend(["", "آخر المهام:" if lang == "ar" else "Recent jobs:"])
             for job in recent_jobs[:8]:
                 lines.append(f"- {job.get('status')} | {job.get('account_id')} | {job.get('post_type')} | {str(job.get('page_id_or_url') or '')[:32]}")
-        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup())
+        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup(lang=lang))
 
     async def show_admin_runtime_locks(self, chat_id: int, message_id: int, user_id: int) -> None:
+        lang = await self.user_language(user_id)
         summary = await asyncio.to_thread(self.storage.admin_summary)
+        self.set_dashboard_session(chat_id, user_id, {"action": "admin_dashboard", "step": "runtime_locks", "lang": lang})
         locks = summary.get("active_locks") or []
-        lines = ["🔐 Runtime Locks", "━━━━━━━━━━━━━━━━━━"]
+        lines = ["🔐 أقفال التشغيل" if lang == "ar" else "🔐 Runtime Locks", "━━━━━━━━━━━━━━━━━━"]
         if not locks:
-            lines.append("No active account locks.")
+            lines.append("لا توجد أقفال حسابات نشطة." if lang == "ar" else "No active account locks.")
         for lock in locks:
             lines.append(
-                f"- {lock.get('account_id')} | until={self._format_dt(lock.get('locked_until'))} | "
-                f"by={str(lock.get('locked_by') or '')[:48]}"
+                (
+                    f"- {lock.get('account_id')} | حتى={self._format_dt(lock.get('locked_until'))} | بواسطة={str(lock.get('locked_by') or '')[:48]}"
+                    if lang == "ar"
+                    else f"- {lock.get('account_id')} | until={self._format_dt(lock.get('locked_until'))} | "
+                    f"by={str(lock.get('locked_by') or '')[:48]}"
+                )
             )
-        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup())
+        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup(lang=lang))
 
     async def show_admin_config(self, chat_id: int, message_id: int, user_id: int) -> None:
+        lang = await self.user_language(user_id)
+        self.set_dashboard_session(chat_id, user_id, {"action": "admin_dashboard", "step": "config", "lang": lang})
         keys = [
             "AUTO_INIT_DB",
             "AUTO_SET_TELEGRAM_WEBHOOK",
@@ -1381,17 +1690,19 @@ class TelegramBotApp:
             "BOT_DASHBOARD_SESSION_TTL_SECONDS",
             "TELEGRAM_UPLOAD_DIR",
         ]
-        lines = ["⚙️ System Config", "━━━━━━━━━━━━━━━━━━"]
+        lines = ["⚙️ إعدادات النظام" if lang == "ar" else "⚙️ System Config", "━━━━━━━━━━━━━━━━━━"]
         for key in keys:
             value = os.getenv(key, "")
             lines.append(f"- {key}={value or '<default>'}")
         lines.append(f"- admins_configured={bool(self.admin_ids)}")
-        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup())
+        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup(lang=lang))
 
     async def show_admin_debug_snapshot(self, chat_id: int, message_id: int, user_id: int) -> None:
         if not self.is_admin_user(user_id):
             await self.send_message(chat_id, "Admin dashboard is restricted.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
             return
+        lang = await self.user_language(user_id)
+        self.set_dashboard_session(chat_id, user_id, {"action": "admin_dashboard", "step": "debug_snapshot", "lang": lang})
         trace_id = new_debug_id("snapshot")
         started = time.monotonic()
         self.debug_event("admin_debug_snapshot_start", trace_id, user_id=user_id, chat_id=chat_id)
@@ -1508,7 +1819,7 @@ class TelegramBotApp:
                 failed_recent=len(failed_jobs),
                 diagnostics=diagnostic_count,
             )
-            await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup())
+            await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup(lang=lang))
         except Exception as exc:
             self.debug_event("admin_debug_snapshot_failed", trace_id, error=compact_error(exc))
             logger.exception("Admin debug snapshot failed trace_id=%s", trace_id)
@@ -1516,7 +1827,7 @@ class TelegramBotApp:
                 chat_id,
                 "\n".join(["Debug snapshot failed.", f"Debug ID: {trace_id}", compact_error(exc)]),
                 message_id,
-                reply_markup=admin_dashboard_markup(),
+                reply_markup=admin_dashboard_markup(lang=lang),
             )
 
     async def prompt_for_account(self, chat_id: int, message_id: int, prompt: str, user_id: int = 0) -> bool:
@@ -1968,7 +2279,11 @@ class TelegramBotApp:
             await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
             return
         if action == "language":
-            self.clear_dashboard_session(chat_id, user_id)
+            session = self.get_dashboard_session(chat_id, user_id)
+            if self.is_admin_user(user_id) and str(session.get("action") or "").startswith("admin"):
+                self.set_dashboard_session(chat_id, user_id, {"action": "admin_language", "step": "select", "lang": lang})
+            else:
+                self.clear_dashboard_session(chat_id, user_id)
             await self.show_language_card(chat_id, message_id, user_id=user_id)
             return
         if action == "user_dashboard":
@@ -1979,6 +2294,8 @@ class TelegramBotApp:
             "admin_dashboard",
             "admin_system_stats",
             "admin_users",
+            "admin_delete_users",
+            "admin_broadcast",
             "admin_accounts",
             "admin_post_stats",
             "admin_runtime_locks",
@@ -1993,6 +2310,10 @@ class TelegramBotApp:
                 await self.show_admin_dashboard(chat_id, message_id, user_id)
             elif action == "admin_users":
                 await self.show_admin_users(chat_id, message_id, user_id)
+            elif action == "admin_delete_users":
+                await self.show_admin_delete_users(chat_id, message_id, user_id)
+            elif action == "admin_broadcast":
+                await self.show_admin_broadcast_menu(chat_id, message_id, user_id)
             elif action == "admin_accounts":
                 await self.show_admin_accounts(chat_id, message_id, user_id)
             elif action == "admin_post_stats":
@@ -2267,6 +2588,25 @@ class TelegramBotApp:
         step = str(session.get("step") or "")
         lang = str(session.get("lang") or await self.user_language(user_id))
         session["lang"] = lang
+
+        if action == "admin_broadcast":
+            if not self.is_admin_user(user_id):
+                self.clear_dashboard_session(chat_id, user_id)
+                await self.send_message(chat_id, "Admin dashboard is restricted.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+                return True
+            if step == "message_input":
+                body = str(text or "").strip()
+                if not body:
+                    await self.send_message(
+                        chat_id,
+                        "ابعت نص التنبيه، أو اضغط إلغاء." if lang == "ar" else "Send the broadcast text, or tap Cancel.",
+                        message_id,
+                        reply_markup=admin_dashboard_markup(lang=lang),
+                    )
+                    return True
+                await self.send_admin_broadcast(chat_id, user_id, message_id, session, body)
+                return True
+            return False
 
         if action == "add_account":
             cookie_message_ids: List[int] = []
@@ -2866,6 +3206,270 @@ class TelegramBotApp:
         )
         return True
 
+    async def handle_admin_callback(
+        self,
+        chat_id: int,
+        user_id: int,
+        message_id: int,
+        data: str,
+        session: Dict[str, Any],
+    ) -> None:
+        lang = await self.user_language(user_id)
+        session = dict(session or {})
+        selected = [int(item) for item in session.get("selected_user_ids", []) if int(item or 0)]
+        page = max(0, int(session.get("page") or 0))
+
+        if data == "adm:dash":
+            await self.show_admin_dashboard(chat_id, message_id, user_id)
+            return
+
+        if data.startswith("adm:users:"):
+            try:
+                page = int(data.rsplit(":", 1)[-1])
+            except ValueError:
+                page = 0
+            await self.show_admin_users(chat_id, message_id, user_id, page=page, edit=True)
+            return
+
+        if data.startswith("adm:user:"):
+            try:
+                target_user_id = int(data.rsplit(":", 1)[-1])
+            except ValueError:
+                await self.show_admin_users(chat_id, message_id, user_id, page=page, edit=True)
+                return
+            await self.show_admin_user_detail(chat_id, message_id, user_id, target_user_id, page=page)
+            return
+
+        if data.startswith("adm:del:page:"):
+            try:
+                page = int(data.rsplit(":", 1)[-1])
+            except ValueError:
+                page = 0
+            await self.show_admin_delete_users(chat_id, message_id, user_id, page=page, edit=True)
+            return
+
+        if data.startswith("adm:del:toggle:"):
+            try:
+                target_user_id = int(data.rsplit(":", 1)[-1])
+            except ValueError:
+                target_user_id = 0
+            if target_user_id:
+                selected_set = set(selected)
+                if target_user_id in selected_set:
+                    selected_set.remove(target_user_id)
+                else:
+                    selected_set.add(target_user_id)
+                session["selected_user_ids"] = sorted(selected_set)
+                session["action"] = "admin_delete_users"
+                session["step"] = "select"
+                session["page"] = page
+                session["lang"] = lang
+                self.set_dashboard_session(chat_id, user_id, session)
+            await self.show_admin_delete_users(chat_id, message_id, user_id, page=page, edit=True)
+            return
+
+        if data == "adm:del:confirm":
+            if not selected:
+                await self.edit_or_send_message(
+                    chat_id,
+                    message_id,
+                    "اختار مستخدم واحد على الأقل قبل الحذف." if lang == "ar" else "Select at least one user before deleting.",
+                    reply_markup=inline_markup([[inline_button("⬅️ رجوع" if lang == "ar" else "⬅️ Back", f"adm:del:page:{page}")]]),
+                )
+                return
+            lines = [
+                "🗑 تأكيد حذف المستخدمين" if lang == "ar" else "🗑 Confirm User Deletion",
+                "━━━━━━━━━━━━━━━━━━",
+                (
+                    f"سيتم حذف {len(selected)} مستخدم/مستخدمين مع حسابات فيسبوك والمهام المرتبطة بهم."
+                    if lang == "ar"
+                    else f"This will delete {len(selected)} user(s), their Facebook accounts, and related jobs."
+                ),
+                "",
+                "هذا الإجراء لا يمكن التراجع عنه من البوت." if lang == "ar" else "This cannot be undone from the bot.",
+            ]
+            await self.edit_or_send_message(
+                chat_id,
+                message_id,
+                "\n".join(lines),
+                reply_markup=inline_markup(
+                    [
+                        [inline_button("🗑 حذف الآن" if lang == "ar" else "🗑 Delete Now", "adm:del:execute")],
+                        [inline_button("⬅️ رجوع" if lang == "ar" else "⬅️ Back", f"adm:del:page:{page}")],
+                    ]
+                ),
+            )
+            return
+
+        if data == "adm:del:execute":
+            if not selected:
+                await self.show_admin_delete_users(chat_id, message_id, user_id, page=page, edit=True)
+                return
+            result = await asyncio.to_thread(self.storage.admin_delete_users, selected)
+            self.clear_dashboard_session(chat_id, user_id)
+            prefix = (
+                f"تم حذف {result.get('users', 0)} مستخدم، {result.get('accounts', 0)} حساب، {result.get('jobs', 0)} مهمة."
+                if lang == "ar"
+                else f"Deleted {result.get('users', 0)} user(s), {result.get('accounts', 0)} account(s), {result.get('jobs', 0)} job(s)."
+            )
+            await self.show_admin_dashboard(chat_id, message_id, user_id, prefix=prefix)
+            return
+
+        if data == "adm:bc:all":
+            session = {"action": "admin_broadcast", "step": "message_input", "audience": "all", "selected_user_ids": [], "lang": lang}
+            self.set_dashboard_session(chat_id, user_id, session)
+            await self.edit_or_send_message(
+                chat_id,
+                message_id,
+                "\n".join(
+                    [
+                        "📣 إرسال تنبيه لكل المستخدمين" if lang == "ar" else "📣 Broadcast to All Users",
+                        "━━━━━━━━━━━━━━━━━━",
+                        "ابعت نص التنبيه الآن. سيتم إرساله لكل المستخدمين المعروفين." if lang == "ar" else "Send the notification text now. It will be delivered to every known user.",
+                    ]
+                ),
+                reply_markup=inline_markup([[inline_button("❌ إلغاء" if lang == "ar" else "❌ Cancel", "adm:dash")]]),
+            )
+            return
+
+        if data.startswith("adm:bc:page:"):
+            try:
+                page = int(data.rsplit(":", 1)[-1])
+            except ValueError:
+                page = 0
+            await self.show_admin_broadcast_users(chat_id, message_id, user_id, page=page, edit=True)
+            return
+
+        if data.startswith("adm:bc:toggle:"):
+            try:
+                target_user_id = int(data.rsplit(":", 1)[-1])
+            except ValueError:
+                target_user_id = 0
+            if target_user_id:
+                selected_set = set(selected)
+                if target_user_id in selected_set:
+                    selected_set.remove(target_user_id)
+                else:
+                    selected_set.add(target_user_id)
+                session["selected_user_ids"] = sorted(selected_set)
+                session["action"] = "admin_broadcast"
+                session["step"] = "select"
+                session["page"] = page
+                session["lang"] = lang
+                self.set_dashboard_session(chat_id, user_id, session)
+            await self.show_admin_broadcast_users(chat_id, message_id, user_id, page=page, edit=True)
+            return
+
+        if data == "adm:bc:compose":
+            if not selected:
+                await self.edit_or_send_message(
+                    chat_id,
+                    message_id,
+                    "اختار مستخدم واحد على الأقل قبل كتابة الرسالة." if lang == "ar" else "Select at least one user before composing the message.",
+                    reply_markup=inline_markup([[inline_button("⬅️ رجوع" if lang == "ar" else "⬅️ Back", f"adm:bc:page:{page}")]]),
+                )
+                return
+            session["action"] = "admin_broadcast"
+            session["step"] = "message_input"
+            session["audience"] = "selected"
+            session["selected_user_ids"] = selected
+            session["lang"] = lang
+            self.set_dashboard_session(chat_id, user_id, session)
+            await self.edit_or_send_message(
+                chat_id,
+                message_id,
+                "\n".join(
+                    [
+                        "📣 إرسال تنبيه لمستخدمين محددين" if lang == "ar" else "📣 Broadcast to Selected Users",
+                        "━━━━━━━━━━━━━━━━━━",
+                        f"{'المستلمين' if lang == 'ar' else 'Recipients'}: {len(selected)}",
+                        "",
+                        "ابعت نص التنبيه الآن." if lang == "ar" else "Send the notification text now.",
+                    ]
+                ),
+                reply_markup=inline_markup([[inline_button("❌ إلغاء" if lang == "ar" else "❌ Cancel", "adm:dash")]]),
+            )
+            return
+
+        await self.show_admin_dashboard(chat_id, message_id, user_id)
+
+    async def send_admin_broadcast(
+        self,
+        chat_id: int,
+        user_id: int,
+        message_id: int,
+        session: Dict[str, Any],
+        body: str,
+    ) -> None:
+        lang = str(session.get("lang") or await self.user_language(user_id))
+        audience = str(session.get("audience") or "selected")
+        selected = [int(item) for item in session.get("selected_user_ids", []) if int(item or 0)]
+        targets = await asyncio.to_thread(
+            self.storage.admin_broadcast_targets,
+            None if audience == "all" else selected,
+        )
+        if not targets:
+            await self.send_message(
+                chat_id,
+                "لا يوجد مستلمين متاحين لهذا التنبيه." if lang == "ar" else "No recipients are available for this broadcast.",
+                message_id,
+                reply_markup=admin_dashboard_markup(lang=lang),
+            )
+            return
+
+        progress = await self.send_message(
+            chat_id,
+            progress_card(
+                "إرسال التنبيه..." if lang == "ar" else "Broadcasting...",
+                0,
+                len(targets),
+                "جاري الإرسال للمستخدمين..." if lang == "ar" else "Sending notifications to users...",
+            ),
+            message_id,
+        )
+        progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
+        concurrency = _env_int("BOT_ADMIN_BROADCAST_CONCURRENCY", 8, minimum=1)
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def send_to_target(target: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+            chat_target = int(target.get("chat_id") or target.get("telegram_user_id") or 0)
+            if not chat_target:
+                return False, target
+            async with semaphore:
+                try:
+                    result = await self.send_message(chat_target, body)
+                    return bool(result.get("ok")), target
+                except Exception:
+                    logger.exception("Admin broadcast failed for target=%s", target.get("telegram_user_id"))
+                    return False, target
+
+        results = await asyncio.gather(*(send_to_target(target) for target in targets))
+        sent_count = sum(1 for ok, _ in results if ok)
+        failed_count = len(results) - sent_count
+        lines = [
+            "📣 اكتمل إرسال التنبيه" if lang == "ar" else "📣 Broadcast Complete",
+            "━━━━━━━━━━━━━━━━━━",
+            (
+                f"تم الإرسال: {sent_count}/{len(results)} | فشل: {failed_count}"
+                if lang == "ar"
+                else f"Delivered: {sent_count}/{len(results)} | failed: {failed_count}"
+            ),
+        ]
+        failed = [target for ok, target in results if not ok]
+        if failed:
+            lines.extend(["", "فشل الإرسال إلى:" if lang == "ar" else "Failed recipients:"])
+            for target in failed[:8]:
+                lines.append(f"- {self._admin_user_label(target)}")
+            if len(failed) > 8:
+                lines.append(f"... +{len(failed) - 8}")
+        self.clear_dashboard_session(chat_id, user_id)
+        await self.edit_or_send_message(
+            chat_id,
+            progress_message_id,
+            "\n".join(lines),
+            reply_markup=admin_dashboard_markup(lang=lang),
+        )
+
     async def handle_callback_query(self, update: Dict[str, Any]) -> None:
         query = update.get("callback_query") or {}
         callback_query_id = str(query.get("id") or "")
@@ -2888,6 +3492,8 @@ class TelegramBotApp:
             return
 
         if data in {"lang:ar", "lang:en", "set_lang:ar", "set_lang:en"}:
+            language_session = self.get_dashboard_session(chat_id, user_id)
+            return_to_admin = self.is_admin_user(user_id) and str(language_session.get("action") or "") == "admin_language"
             selected_lang = data.rsplit(":", 1)[-1]
             changed = await asyncio.to_thread(self.storage.set_user_language, user_id, selected_lang)
             if not changed:
@@ -2895,10 +3501,19 @@ class TelegramBotApp:
                 return
             label = "العربية" if selected_lang == "ar" else "English"
             prefix = f"تم تغيير اللغة: {label}" if selected_lang == "ar" else f"Language updated: {label}"
-            await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
+            if return_to_admin:
+                await self.show_admin_dashboard(chat_id, message_id, user_id, prefix=prefix)
+            else:
+                await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
             return
 
         session = self.get_dashboard_session(chat_id, user_id)
+        if data.startswith("adm:"):
+            if not self.is_admin_user(user_id):
+                await self.send_message(chat_id, "Admin dashboard is restricted.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+                return
+            await self.handle_admin_callback(chat_id, user_id, message_id, data, session)
+            return
         if not session:
             prefix = "انتهت صلاحية الكارت. تم تحديث لوحة التحكم." if lang == "ar" else "This card expired. Dashboard refreshed."
             await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
@@ -3312,7 +3927,22 @@ class TelegramBotApp:
             await self.show_dashboard(chat_id, message_id, user_id=user_id)
             return
         session = self.get_dashboard_session(chat_id, user_id)
-        explicit_escape_actions = {"dashboard", "cancel", "language", "user_dashboard", "admin_dashboard"}
+        explicit_escape_actions = {
+            "dashboard",
+            "cancel",
+            "language",
+            "user_dashboard",
+            "admin_dashboard",
+            "admin_system_stats",
+            "admin_users",
+            "admin_delete_users",
+            "admin_broadcast",
+            "admin_accounts",
+            "admin_post_stats",
+            "admin_runtime_locks",
+            "admin_system_config",
+            "admin_debug_snapshot",
+        }
         if session and action not in explicit_escape_actions:
             if await self.handle_dashboard_session(chat_id, user_id, message_id, text, message):
                 return

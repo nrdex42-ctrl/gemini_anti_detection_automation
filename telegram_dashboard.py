@@ -34,6 +34,8 @@ BUTTON_ADMIN = "🔒 Admin Dashboard"
 BUTTON_USER_DASHBOARD = "🔁 User Dashboard"
 BUTTON_SYSTEM_STATS = "📊 System Stats"
 BUTTON_USERS = "👥 Users"
+BUTTON_DELETE_USERS = "🗑 Delete Users"
+BUTTON_BROADCAST = "📣 Broadcast"
 BUTTON_ADMIN_ACCOUNTS = "🔑 Accounts"
 BUTTON_POST_STATS = "📈 Post Stats"
 BUTTON_RUNTIME_LOCKS = "🔐 Runtime Locks"
@@ -66,6 +68,8 @@ AR_BUTTON_ADMIN = "🔒 لوحة الأدمن"
 AR_BUTTON_USER_DASHBOARD = "🔁 لوحة المستخدم"
 AR_BUTTON_SYSTEM_STATS = "📊 إحصائيات النظام"
 AR_BUTTON_USERS = "👥 المستخدمين"
+AR_BUTTON_DELETE_USERS = "🗑 حذف مستخدمين"
+AR_BUTTON_BROADCAST = "📣 إرسال تنبيه"
 AR_BUTTON_ADMIN_ACCOUNTS = "🔑 الحسابات"
 AR_BUTTON_POST_STATS = "📈 إحصائيات المنشورات"
 AR_BUTTON_RUNTIME_LOCKS = "🔐 أقفال التشغيل"
@@ -99,6 +103,8 @@ _BUTTONS_EN = {
     "user_dashboard": BUTTON_USER_DASHBOARD,
     "system_stats": BUTTON_SYSTEM_STATS,
     "users": BUTTON_USERS,
+    "delete_users": BUTTON_DELETE_USERS,
+    "broadcast": BUTTON_BROADCAST,
     "admin_accounts": BUTTON_ADMIN_ACCOUNTS,
     "post_stats": BUTTON_POST_STATS,
     "runtime_locks": BUTTON_RUNTIME_LOCKS,
@@ -133,6 +139,8 @@ _BUTTONS_AR = {
     "user_dashboard": AR_BUTTON_USER_DASHBOARD,
     "system_stats": AR_BUTTON_SYSTEM_STATS,
     "users": AR_BUTTON_USERS,
+    "delete_users": AR_BUTTON_DELETE_USERS,
+    "broadcast": AR_BUTTON_BROADCAST,
     "admin_accounts": AR_BUTTON_ADMIN_ACCOUNTS,
     "post_stats": AR_BUTTON_POST_STATS,
     "runtime_locks": AR_BUTTON_RUNTIME_LOCKS,
@@ -198,6 +206,8 @@ DASHBOARD_ACTIONS = {
     BUTTON_USER_DASHBOARD: "user_dashboard",
     BUTTON_SYSTEM_STATS: "admin_system_stats",
     BUTTON_USERS: "admin_users",
+    BUTTON_DELETE_USERS: "admin_delete_users",
+    BUTTON_BROADCAST: "admin_broadcast",
     BUTTON_ADMIN_ACCOUNTS: "admin_accounts",
     BUTTON_POST_STATS: "admin_post_stats",
     BUTTON_RUNTIME_LOCKS: "admin_runtime_locks",
@@ -254,6 +264,8 @@ DASHBOARD_ACTIONS.update(
         AR_BUTTON_USER_DASHBOARD: "user_dashboard",
         AR_BUTTON_SYSTEM_STATS: "admin_system_stats",
         AR_BUTTON_USERS: "admin_users",
+        AR_BUTTON_DELETE_USERS: "admin_delete_users",
+        AR_BUTTON_BROADCAST: "admin_broadcast",
         AR_BUTTON_ADMIN_ACCOUNTS: "admin_accounts",
         AR_BUTTON_POST_STATS: "admin_post_stats",
         AR_BUTTON_RUNTIME_LOCKS: "admin_runtime_locks",
@@ -377,11 +389,12 @@ def dashboard_markup(
 def admin_dashboard_markup(lang: str = "en") -> Dict[str, Any]:
     return reply_keyboard(
         [
+            [button_text("users", lang), button_text("delete_users", lang)],
+            [button_text("broadcast", lang), button_text("language", lang)],
             [button_text("system_stats", lang), button_text("post_stats", lang)],
-            [button_text("users", lang), button_text("admin_accounts", lang)],
+            [button_text("admin_accounts", lang)],
             [button_text("runtime_locks", lang), button_text("system_config", lang)],
             [button_text("debug_snapshot", lang)],
-            [button_text("language", lang)],
             [button_text("user_dashboard", lang)],
         ],
         placeholder=tr(lang, "Choose an admin action...", "اختر إجراء للأدمن..."),

@@ -720,6 +720,259 @@ class BotStorage:
                 )
                 return list(cur.fetchall())
 
+    def admin_user_page(self, limit: int = 7, offset: int = 0) -> Dict[str, Any]:
+        limit = max(1, min(int(limit or 7), 25))
+        offset = max(0, int(offset or 0))
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    with known_users as (
+                        select telegram_user_id from telegram_user_state
+                        union
+                        select created_by as telegram_user_id from fb_accounts where created_by is not null
+                        union
+                        select telegram_user_id from fb_post_jobs where telegram_user_id is not null
+                    )
+                    select count(*)::int as count
+                    from known_users
+                    where telegram_user_id is not null
+                    """
+                )
+                total = int((cur.fetchone() or {}).get("count") or 0)
+                cur.execute(
+                    """
+                    with known_users as (
+                        select telegram_user_id from telegram_user_state
+                        union
+                        select created_by as telegram_user_id from fb_accounts where created_by is not null
+                        union
+                        select telegram_user_id from fb_post_jobs where telegram_user_id is not null
+                    ),
+                    user_counts as (
+                        select
+                            u.telegram_user_id,
+                            count(distinct a.account_id)::int as account_count,
+                            count(distinct p.page_id)::int as page_count,
+                            count(distinct j.id)::int as job_count,
+                            min(least(
+                                coalesce(s.created_at, 'infinity'::timestamptz),
+                                coalesce(a.created_at, 'infinity'::timestamptz),
+                                coalesce(j.created_at, 'infinity'::timestamptz)
+                            )) as first_seen,
+                            max(greatest(
+                                coalesce(s.last_seen_at, 'epoch'::timestamptz),
+                                coalesce(s.updated_at, 'epoch'::timestamptz),
+                                coalesce(a.updated_at, 'epoch'::timestamptz),
+                                coalesce(j.created_at, 'epoch'::timestamptz)
+                            )) as last_seen
+                        from known_users u
+                        left join telegram_user_state s on s.telegram_user_id = u.telegram_user_id
+                        left join fb_accounts a on a.created_by = u.telegram_user_id
+                        left join fb_pages p on p.account_id = a.account_id
+                        left join fb_post_jobs j on j.telegram_user_id = u.telegram_user_id
+                        where u.telegram_user_id is not null
+                        group by u.telegram_user_id
+                    )
+                    select
+                        u.telegram_user_id,
+                        s.active_account_id,
+                        s.last_chat_id,
+                        s.first_name,
+                        s.last_name,
+                        s.username,
+                        coalesce(c.account_count, 0)::int as account_count,
+                        coalesce(c.page_count, 0)::int as page_count,
+                        coalesce(c.job_count, 0)::int as job_count,
+                        nullif(c.first_seen, 'infinity'::timestamptz) as first_seen,
+                        c.last_seen
+                    from known_users u
+                    left join telegram_user_state s on s.telegram_user_id = u.telegram_user_id
+                    left join user_counts c on c.telegram_user_id = u.telegram_user_id
+                    where u.telegram_user_id is not null
+                    order by c.last_seen desc nulls last, u.telegram_user_id desc
+                    limit %s offset %s
+                    """,
+                    (limit, offset),
+                )
+                rows = list(cur.fetchall())
+        return {"total": total, "rows": rows, "limit": limit, "offset": offset}
+
+    def admin_user_detail(self, telegram_user_id: int) -> Dict[str, Any]:
+        target_id = int(telegram_user_id)
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    with target as (select %s::bigint as telegram_user_id),
+                    first_seen_values as (
+                        select s.created_at as value
+                        from telegram_user_state s join target t on t.telegram_user_id = s.telegram_user_id
+                        union all
+                        select min(a.created_at) as value
+                        from fb_accounts a join target t on t.telegram_user_id = a.created_by
+                        union all
+                        select min(j.created_at) as value
+                        from fb_post_jobs j join target t on t.telegram_user_id = j.telegram_user_id
+                    ),
+                    last_seen_values as (
+                        select greatest(coalesce(s.last_seen_at, 'epoch'::timestamptz), coalesce(s.updated_at, 'epoch'::timestamptz)) as value
+                        from telegram_user_state s join target t on t.telegram_user_id = s.telegram_user_id
+                        union all
+                        select max(a.updated_at) as value
+                        from fb_accounts a join target t on t.telegram_user_id = a.created_by
+                        union all
+                        select max(j.created_at) as value
+                        from fb_post_jobs j join target t on t.telegram_user_id = j.telegram_user_id
+                    )
+                    select
+                        t.telegram_user_id,
+                        s.active_account_id,
+                        s.last_chat_id,
+                        s.first_name,
+                        s.last_name,
+                        s.username,
+                        s.lang,
+                        (select min(value) from first_seen_values where value is not null) as first_seen,
+                        (select max(value) from last_seen_values where value is not null) as last_seen,
+                        (select count(*)::int from fb_accounts a where a.created_by = t.telegram_user_id) as account_count,
+                        (
+                            select count(*)::int
+                            from fb_pages p
+                            join fb_accounts a on a.account_id = p.account_id
+                            where a.created_by = t.telegram_user_id
+                        ) as page_count,
+                        (select count(*)::int from fb_post_jobs j where j.telegram_user_id = t.telegram_user_id) as job_count
+                    from target t
+                    left join telegram_user_state s on s.telegram_user_id = t.telegram_user_id
+                    """,
+                    (target_id,),
+                )
+                user_row = dict(cur.fetchone() or {"telegram_user_id": target_id})
+
+                cur.execute(
+                    """
+                    select
+                        a.account_id,
+                        a.label,
+                        a.active,
+                        a.created_at,
+                        a.updated_at,
+                        a.cookie_status,
+                        count(p.page_id)::int as page_count
+                    from fb_accounts a
+                    left join fb_pages p on p.account_id = a.account_id
+                    where a.created_by=%s
+                    group by a.account_id, a.label, a.active, a.created_at, a.updated_at, a.cookie_status
+                    order by a.updated_at desc
+                    """,
+                    (target_id,),
+                )
+                accounts = list(cur.fetchall())
+
+                cur.execute(
+                    """
+                    select p.account_id, p.page_id, p.page_name, p.page_url, p.updated_at
+                    from fb_pages p
+                    join fb_accounts a on a.account_id = p.account_id
+                    where a.created_by=%s
+                    order by a.updated_at desc, p.page_name, p.page_id
+                    """,
+                    (target_id,),
+                )
+                pages_by_account: Dict[str, List[Dict[str, Any]]] = {}
+                for page in cur.fetchall():
+                    pages_by_account.setdefault(str(page.get("account_id") or ""), []).append(dict(page))
+
+                cur.execute(
+                    """
+                    select status, count(*)::int as count
+                    from fb_post_jobs
+                    where telegram_user_id=%s
+                    group by status
+                    """,
+                    (target_id,),
+                )
+                job_status_counts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
+
+                cur.execute(
+                    """
+                    select id::text, account_id, page_id_or_url, page_name, post_type, status, error, created_at, completed_at
+                    from fb_post_jobs
+                    where telegram_user_id=%s
+                    order by created_at desc
+                    limit 1
+                    """,
+                    (target_id,),
+                )
+                last_job = dict(cur.fetchone() or {})
+
+        user_row["accounts"] = [dict(row) for row in accounts]
+        user_row["pages_by_account"] = pages_by_account
+        user_row["job_status_counts"] = job_status_counts
+        user_row["last_job"] = last_job
+        return user_row
+
+    def admin_delete_users(self, telegram_user_ids: List[int]) -> Dict[str, int]:
+        user_ids = sorted({int(item) for item in telegram_user_ids if int(item or 0)})
+        if not user_ids:
+            return {"users": 0, "accounts": 0, "jobs": 0}
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("delete from fb_post_jobs where telegram_user_id = any(%s::bigint[])", (user_ids,))
+                jobs_deleted = int(cur.rowcount or 0)
+                cur.execute("delete from fb_accounts where created_by = any(%s::bigint[])", (user_ids,))
+                accounts_deleted = int(cur.rowcount or 0)
+                cur.execute("delete from telegram_user_state where telegram_user_id = any(%s::bigint[])", (user_ids,))
+                users_deleted = int(cur.rowcount or 0)
+            conn.commit()
+        return {"users": users_deleted, "accounts": accounts_deleted, "jobs": jobs_deleted}
+
+    def admin_broadcast_targets(self, telegram_user_ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+        user_ids = sorted({int(item) for item in (telegram_user_ids or []) if int(item or 0)})
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                where_clause = ""
+                params: List[Any] = []
+                if user_ids:
+                    where_clause = "where u.telegram_user_id = any(%s::bigint[])"
+                    params.append(user_ids)
+                cur.execute(
+                    f"""
+                    with known_users as (
+                        select telegram_user_id from telegram_user_state
+                        union
+                        select created_by as telegram_user_id from fb_accounts where created_by is not null
+                        union
+                        select telegram_user_id from fb_post_jobs where telegram_user_id is not null
+                    ),
+                    latest_jobs as (
+                        select telegram_user_id, max(telegram_chat_id) as job_chat_id, max(created_at) as last_job_at
+                        from fb_post_jobs
+                        where telegram_user_id is not null
+                        group by telegram_user_id
+                    )
+                    select
+                        u.telegram_user_id,
+                        coalesce(s.last_chat_id, l.job_chat_id, u.telegram_user_id) as chat_id,
+                        s.first_name,
+                        s.last_name,
+                        s.username,
+                        greatest(
+                            coalesce(s.last_seen_at, 'epoch'::timestamptz),
+                            coalesce(s.updated_at, 'epoch'::timestamptz),
+                            coalesce(l.last_job_at, 'epoch'::timestamptz)
+                        ) as last_seen
+                    from known_users u
+                    left join telegram_user_state s on s.telegram_user_id = u.telegram_user_id
+                    left join latest_jobs l on l.telegram_user_id = u.telegram_user_id
+                    {where_clause}
+                    order by last_seen desc nulls last, u.telegram_user_id desc
+                    """,
+                    params,
+                )
+                return list(cur.fetchall())
+
     def admin_accounts(self, limit: int = 30) -> List[Dict[str, Any]]:
         with self.connect() as conn:
             with conn.cursor() as cur:

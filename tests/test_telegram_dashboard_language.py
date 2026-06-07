@@ -45,7 +45,22 @@ def test_admin_dashboard_keyboard_has_language_button():
     labels = _reply_labels(admin_dashboard_markup())
 
     assert "🌐 Language" in labels
+    assert "🗑 Delete Users" in labels
+    assert "📣 Broadcast" in labels
     assert dashboard_action("🌐 Language") == "language"
+    assert dashboard_action("🗑 Delete Users") == "admin_delete_users"
+    assert dashboard_action("📣 Broadcast") == "admin_broadcast"
+
+
+def test_arabic_admin_dashboard_keyboard_is_translated():
+    labels = _reply_labels(admin_dashboard_markup("ar"))
+
+    assert "🌐 اللغة" in labels
+    assert "👥 المستخدمين" in labels
+    assert "🗑 حذف مستخدمين" in labels
+    assert "📣 إرسال تنبيه" in labels
+    assert dashboard_action("🗑 حذف مستخدمين") == "admin_delete_users"
+    assert dashboard_action("📣 إرسال تنبيه") == "admin_broadcast"
 
 
 def test_arabic_dashboard_account_status_icons_are_left_aligned():
