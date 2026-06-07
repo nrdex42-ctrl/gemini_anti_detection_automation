@@ -31,7 +31,9 @@ _PUBLISH_SENT_UNCONFIRMED_MARKER = 'publish_sent_unconfirmed'
 _SECURITY_ERROR_RE = re.compile(
     r'locked|checkpoint|account restricted|temporarily blocked|confirm your identity|'
     r'unusual activity|trusted device|suspended|unlock|hacked|recover/initiate|'
-    r'login_identify|قفل|تحقق|تأكيد|مخترق',
+    r'login_identify|cookies? expired|invalid cookies?|session expired|session invalid|'
+    r'login required|log in|required to log|not logged in|logged out|auth(?:entication)? failure|'
+    r'قفل|تحقق|تأكيد|مخترق|تسجيل الدخول|انتهت الجلسة',
     re.I,
 )
 

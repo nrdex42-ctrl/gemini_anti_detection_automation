@@ -2093,7 +2093,9 @@ def _is_publish_sent_unconfirmed(result: str) -> bool:
 _FACEBOOK_SECURITY_FAILURE_RE = re.compile(
     r'locked|checkpoint|account restricted|temporarily blocked|confirm your identity|'
     r'unusual activity|trusted device|suspended|unlock|hacked|recover/initiate|'
-    r'login_identify|قفل|تحقق|تأكيد|مخترق',
+    r'login_identify|cookies? expired|invalid cookies?|session expired|session invalid|'
+    r'login required|log in|required to log|not logged in|logged out|auth(?:entication)? failure|'
+    r'قفل|تحقق|تأكيد|مخترق|تسجيل الدخول|انتهت الجلسة',
     re.I,
 )
 _FACEBOOK_SECURITY_TEXT_RE = re.compile(
@@ -2101,8 +2103,10 @@ _FACEBOOK_SECURITY_TEXT_RE = re.compile(
     r'may have been hacked|log in with another device|we can.?t match the device|'
     r'why can.?t i use this device|confirm your identity|security checkpoint|'
     r'unusual activity|temporarily blocked|account restricted|trusted device|'
+    r'login required|required to log in|please log in|not logged in|logged out|'
+    r'session expired|session invalid|cookies? expired|invalid cookies?|'
     r'تم قفل|إلغاء قفل حسابك|قد يكون مخترق|نقطة تحقق|تأكيد هويتك|'
-    r'نشاط غير معتاد|قيود',
+    r'نشاط غير معتاد|قيود|تسجيل الدخول|انتهت الجلسة',
     re.I,
 )
 _FACEBOOK_POSTING_IN_PROGRESS_RE = re.compile(

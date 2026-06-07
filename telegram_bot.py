@@ -216,6 +216,28 @@ def cookie_validation_summary(session_ok: bool, detail: str, max_length: int = 1
     return "🔴", compact_detail[:max_length] or "Facebook session is not valid"
 
 
+FACEBOOK_SESSION_LOSS_RE = re.compile(
+    r"locked|checkpoint|account restricted|temporarily blocked|confirm your identity|"
+    r"unusual activity|trusted device|suspended|unlock|hacked|recover/initiate|"
+    r"login_identify|cookies? expired|invalid cookies?|session expired|session invalid|"
+    r"login required|log in|required to log|not logged in|logged out|auth(?:entication)? failure|"
+    r"قفل|تحقق|تأكيد|مخترق|تسجيل الدخول|انتهت الجلسة",
+    re.I,
+)
+
+
+def is_facebook_session_loss_detail(detail: Any) -> bool:
+    return bool(FACEBOOK_SESSION_LOSS_RE.search(str(detail or "")))
+
+
+def account_cookie_quarantine_detail(detail: Any, limit: int = 700) -> str:
+    compact = compact_text(detail, limit)
+    return (
+        "Posting stopped because Facebook reported this session as logged out, expired, "
+        f"checkpointed, or restricted. Re-login manually and add fresh cookies. Detail: {compact}"
+    )
+
+
 LTR_MARK = "\u200e"
 FIRST_STRONG_ISOLATE = "\u2068"
 POP_DIRECTIONAL_ISOLATE = "\u2069"
@@ -4626,6 +4648,21 @@ class TelegramBotApp:
 
     async def ensure_account_cookie_readable(self, account_id: str, user_id: int, lang: str = "en") -> None:
         owner_scope = self.account_owner_scope(user_id)
+        account = None
+        if hasattr(self.storage, "get_account"):
+            account = await asyncio.to_thread(self.storage.get_account, account_id, owner_scope)
+        if account:
+            status = str(account.get("cookie_status") or "").strip().lower()
+            detail = str(account.get("cookie_status_detail") or "").strip()
+            if status == "invalid" and is_facebook_session_loss_detail(detail):
+                message = (
+                    "جلسة فيسبوك لهذا الحساب تم إيقافها بعد ظهور تسجيل خروج/Checkpoint. "
+                    "سجّل دخول يدويًا وصدّر كوكيز جديدة ثم حدّث الحساب داخل البوت."
+                    if lang == "ar"
+                    else "This Facebook session was quarantined after a logout/checkpoint signal. "
+                    "Log in manually, export fresh cookies, then update the account in the bot."
+                )
+                raise RuntimeError(message)
         try:
             cookie_string = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
             if not str(cookie_string or "").strip():
@@ -4642,6 +4679,35 @@ class TelegramBotApp:
                 )
                 raise RuntimeError(self.encryption_key_recovery_text(lang)) from exc
             raise RuntimeError(detail) from exc
+
+    async def maybe_quarantine_account_cookie(
+        self,
+        account_id: str,
+        user_id: int,
+        detail: Any,
+        *,
+        trace_id: str = "",
+        context: str = "posting",
+    ) -> bool:
+        if not account_id or not is_facebook_session_loss_detail(detail):
+            return False
+        quarantine_detail = account_cookie_quarantine_detail(detail)
+        await asyncio.to_thread(
+            self.storage.update_account_cookie_validation,
+            account_id,
+            "invalid",
+            quarantine_detail,
+            self.account_owner_scope(user_id),
+        )
+        self.debug_event(
+            "account_cookie_quarantined",
+            trace_id,
+            account_id=account_id,
+            user_id=user_id,
+            context=context,
+            detail=compact_text(detail, 400),
+        )
+        return True
 
     async def queue_failure_card(self, exc: BaseException, user_id: int, *, label: str = "post job") -> str:
         lang = await self.user_language(user_id)
@@ -5163,6 +5229,14 @@ class TelegramBotApp:
             success = bool(result.get("success"))
             error = "" if success else str(result.get("result") or result.get("status") or result.get("error") or "posting failed")
             await asyncio.to_thread(self.storage.mark_job_completed, job_id, success, result, error)
+            if not success:
+                await self.maybe_quarantine_account_cookie(
+                    account_id,
+                    user_id,
+                    error,
+                    trace_id=trace_id,
+                    context="single_post_result",
+                )
             self.debug_event("post_job_complete", trace_id, job_id=job_id, success=success, error=error[:300])
             if success:
                 progress_message_id = await self.edit_or_send_message(
@@ -5181,6 +5255,13 @@ class TelegramBotApp:
         except Exception as exc:
             logger.exception("Post job failed")
             self.debug_event("post_job_failed", trace_id, job_id=job_id, error=compact_error(exc))
+            await self.maybe_quarantine_account_cookie(
+                account_id,
+                user_id,
+                compact_error(exc),
+                trace_id=trace_id,
+                context="single_post_exception",
+            )
             await asyncio.to_thread(self.storage.mark_job_completed, job_id, False, {"exception": str(exc)}, str(exc))
             if progress_message_id:
                 await self.edit_or_send_message(
@@ -5428,6 +5509,7 @@ class TelegramBotApp:
                 ),
             )
             success_count = 0
+            session_failure_detail = ""
             completions: List[Dict[str, Any]] = []
             result_items: List[Dict[str, Any]] = []
             for index, job in enumerate(jobs):
@@ -5436,6 +5518,8 @@ class TelegramBotApp:
                 if success:
                     success_count += 1
                 error = "" if success else str(result.get("result") or result.get("status") or result.get("error") or "posting failed")
+                if error and not session_failure_detail and is_facebook_session_loss_detail(error):
+                    session_failure_detail = error
                 page = str(job.get("page_name") or job.get("page_id_or_url") or result.get("page") or "Unknown page")
                 page_statuses[str(job["job_id"])] = {
                     "status": "success" if success else "failed",
@@ -5466,6 +5550,14 @@ class TelegramBotApp:
                     error=error[:300],
                 )
             await asyncio.to_thread(self.storage.mark_jobs_completed, completions)
+            if session_failure_detail:
+                await self.maybe_quarantine_account_cookie(
+                    account_id,
+                    user_id,
+                    session_failure_detail,
+                    trace_id=trace_id,
+                    context="batch_post_result",
+                )
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
@@ -5488,6 +5580,13 @@ class TelegramBotApp:
                 batch_id=batch_id,
                 error=compact_error(exc),
                 elapsed_seconds=round(time.monotonic() - started, 3),
+            )
+            await self.maybe_quarantine_account_cookie(
+                account_id,
+                user_id,
+                compact_error(exc),
+                trace_id=trace_id,
+                context="batch_post_exception",
             )
             with suppress(Exception):
                 await asyncio.to_thread(
