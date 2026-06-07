@@ -7670,7 +7670,10 @@ async def _focus_text_target(page: Page, target: Any) -> None:
             }
         }"""
     )
-    await target.click(timeout=2500, force=True)
+    try:
+        await target.click(timeout=2500, force=True)
+    except Exception as exc:
+        logger.debug(f'Text target click focus skipped after DOM focus: {exc}')
 
 
 async def _clear_text_target(page: Page, target: Any) -> None:
@@ -7758,6 +7761,185 @@ async def _insert_text_target_exact(page: Page, target: Any, caption: str) -> bo
     return False
 
 
+def _caption_editor_mark_script(parameters: str, root_expression: str) -> str:
+    return f"""
+    {parameters} => {{
+        const scanRoot = {root_expression};
+        if (!scanRoot) {{
+            return {{marked: false, reason: 'root_missing'}};
+        }}
+
+        const doc = scanRoot.ownerDocument || document;
+        const win = doc.defaultView || window;
+        const markerAttr = 'data-bot-caption-editor';
+        const selector = [
+            'textarea',
+            '[contenteditable="true"]',
+            '[role="textbox"]',
+            '[aria-placeholder]',
+            '[placeholder]',
+            '[aria-label*="What"]',
+            '[aria-label*="Write"]',
+            '[aria-label*="اكتب"]',
+            '[aria-label*="تفكر"]'
+        ].join(',');
+        const rejectRe = /comment|reply|search|messenger|message|write a comment|leave a comment|post comment|comment as|بحث|تعليق|رد|رسالة/i;
+        const composerHintRe = /what'?s on your mind|write something|say something|create post|add to your post|caption|بم تفكر|اكتب شيئ|إنشاء منشور|اضافة إلى منشورك|إضافة إلى منشورك/i;
+
+        const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+        const attrs = el => [
+            el.getAttribute('aria-label'),
+            el.getAttribute('aria-placeholder'),
+            el.getAttribute('placeholder'),
+            el.getAttribute('name'),
+            el.getAttribute('title'),
+            el.getAttribute('role')
+        ].map(normalize).filter(Boolean).join(' ');
+
+        const rootContains = el => (
+            el === scanRoot ||
+            (typeof scanRoot.contains === 'function' && scanRoot.contains(el))
+        );
+        const toEditor = el => {{
+            if (!el) return null;
+            if (
+                el.matches('textarea') ||
+                el.isContentEditable ||
+                el.getAttribute('contenteditable') === 'true' ||
+                el.getAttribute('role') === 'textbox'
+            ) {{
+                return el;
+            }}
+            return el.querySelector('[contenteditable="true"], textarea, [role="textbox"]');
+        }};
+        const visibleArea = el => {{
+            if (!el || typeof el.getBoundingClientRect !== 'function') return 0;
+            const style = win.getComputedStyle(el);
+            if (!style || style.display === 'none' || style.visibility === 'hidden') return 0;
+            const rects = Array.from(el.getClientRects ? el.getClientRects() : []);
+            const rect = rects.find(item => item.width > 0 && item.height > 0) || el.getBoundingClientRect();
+            if (!rect || rect.width <= 0 || rect.height <= 0) return 0;
+            return rect.width * rect.height;
+        }};
+
+        const raw = Array.from(scanRoot.querySelectorAll(selector));
+        if (doc.activeElement && rootContains(doc.activeElement)) {{
+            raw.unshift(doc.activeElement);
+        }}
+
+        const seen = new Set();
+        const candidates = [];
+        for (const rawEl of raw) {{
+            const el = toEditor(rawEl);
+            if (!el || seen.has(el) || !rootContains(el)) continue;
+            seen.add(el);
+            if (
+                !(el.matches('textarea') || el.isContentEditable || el.getAttribute('contenteditable') === 'true' || el.getAttribute('role') === 'textbox') ||
+                el.disabled ||
+                el.readOnly ||
+                el.getAttribute('aria-disabled') === 'true' ||
+                el.closest('[aria-disabled="true"], [disabled]')
+            ) {{
+                continue;
+            }}
+
+            const label = `${{attrs(rawEl)}} ${{attrs(el)}}`;
+            const contextText = normalize((el.closest('[role="dialog"], form') || scanRoot).innerText || '');
+            if (rejectRe.test(`${{label}} ${{contextText}}`) && !composerHintRe.test(`${{label}} ${{contextText}}`)) {{
+                continue;
+            }}
+
+            const area = Math.max(visibleArea(el), rawEl === el ? 0 : visibleArea(rawEl));
+            if (area <= 0) continue;
+
+            let score = Math.min(45, Math.round(area / 2500));
+            if (el === doc.activeElement) score += 70;
+            if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') score += 90;
+            if (el.matches('textarea')) score += 70;
+            if (el.getAttribute('role') === 'textbox') score += 65;
+            if (composerHintRe.test(label)) score += 95;
+            if (composerHintRe.test(contextText)) score += 35;
+            if (el.closest('[role="dialog"]')) score += 20;
+            candidates.push({{el, score, area, label: normalize(label).slice(0, 140)}});
+        }}
+
+        candidates.sort((left, right) => right.score - left.score);
+        for (const old of Array.from(doc.querySelectorAll(`[${{markerAttr}}]`))) {{
+            old.removeAttribute(markerAttr);
+        }}
+        if (!candidates.length) {{
+            return {{marked: false, reason: 'no_editor_candidates', rawCount: raw.length}};
+        }}
+
+        const best = candidates[0];
+        best.el.setAttribute(markerAttr, marker);
+        if (typeof best.el.focus === 'function') {{
+            best.el.focus();
+        }}
+        best.el.scrollIntoView({{block: 'center', inline: 'nearest'}});
+        return {{
+            marked: true,
+            candidateCount: candidates.length,
+            rawCount: raw.length,
+            score: best.score,
+            area: Math.round(best.area),
+            tag: best.el.tagName.toLowerCase(),
+            role: best.el.getAttribute('role') || '',
+            contentEditable: Boolean(best.el.isContentEditable || best.el.getAttribute('contenteditable') === 'true'),
+            label: best.label
+        }};
+    }}
+    """
+
+
+async def _insert_caption_from_dom_scan(page: Page, dialog: Any, caption: str) -> bool:
+    for scope_name, scope, script in (
+        ('composer', dialog, _caption_editor_mark_script('(rootElement, marker)', 'rootElement')),
+        ('page', page, _caption_editor_mark_script('marker', 'document.body || document.documentElement')),
+    ):
+        marker = 'caption-editor-' + hashlib.sha1(
+            f'{scope_name}:{time.time()}:{id(page)}'.encode('utf-8', errors='ignore')
+        ).hexdigest()[:16]
+        try:
+            result = await scope.evaluate(script, marker)
+        except Exception as exc:
+            logger.debug(f'Caption DOM scan failed in {scope_name}: {exc}')
+            continue
+
+        if not isinstance(result, dict) or not result.get('marked'):
+            logger.debug(f'Caption DOM scan found no editor in {scope_name}: {result}')
+            continue
+
+        target = page.locator(f"[data-bot-caption-editor='{marker}']").first
+        try:
+            logger.info(
+                'Caption editor selected by DOM scan in %s: tag=%s role=%s editable=%s candidates=%s score=%s',
+                scope_name,
+                result.get('tag', ''),
+                result.get('role', ''),
+                result.get('contentEditable', False),
+                result.get('candidateCount', 0),
+                result.get('score', 0),
+            )
+            if await _insert_text_target_exact(page, target, caption):
+                return True
+            logger.warning('Caption DOM scan editor in %s did not verify exactly after insertion.', scope_name)
+        finally:
+            try:
+                await page.evaluate(
+                    """marker => {
+                        for (const el of Array.from(document.querySelectorAll(`[data-bot-caption-editor="${marker}"]`))) {
+                            el.removeAttribute('data-bot-caption-editor');
+                        }
+                    }""",
+                    marker,
+                )
+            except Exception:
+                pass
+
+    return False
+
+
 async def _fill_composer_caption(page: Page, caption: str) -> None:
     if not caption:
         return
@@ -7768,6 +7950,10 @@ async def _fill_composer_caption(page: Page, caption: str) -> None:
     # Try multiple times to find and focus the textbox
     for attempt in range(4):
         dialog = await _find_composer_context(page)
+
+        if await _insert_caption_from_dom_scan(page, dialog, caption):
+            logger.info("✅ Caption successfully written and verified exactly via DOM scan!")
+            return
 
         candidates = [
             # Fast path: exact role='textbox' from live DOM observation
@@ -7784,7 +7970,7 @@ async def _fill_composer_caption(page: Page, caption: str) -> None:
         for candidate in candidates:
             try:
                 target = candidate() if callable(candidate) else dialog.locator(candidate).first
-                if await target.is_visible(timeout=1500):
+                if await _wait_for_element_state(target, 'visible', timeout_ms=1800):
                     logger.info(f"Target textbox found on attempt {attempt+1}. Clicking to focus...")
                     if await _insert_text_target_exact(page, target, caption):
                         logger.info("✅ Caption successfully written and verified exactly in textbox!")
@@ -7805,7 +7991,7 @@ async def _fill_composer_caption(page: Page, caption: str) -> None:
             visible_editors = []
         for editor_index, target in enumerate(visible_editors):
             try:
-                if await target.is_visible(timeout=900):
+                if await _wait_for_element_state(target, 'visible', timeout_ms=1000):
                     logger.info(
                         "Trying visible composer editor %d/%d on caption attempt %d...",
                         editor_index + 1,
