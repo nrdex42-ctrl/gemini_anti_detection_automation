@@ -6789,25 +6789,162 @@ async def _switch_to_page_profile(page: Page, page_name: str = '') -> bool:
             if page_name
             else "span:has-text('Premium Service'), div[role='button']:has-text('Premium Service')"
         ).count(),
-        timeout_ms=1500,
+        timeout_ms=1000,
         check_interval_ms=150,
     )
 
     clicked = ''
+    # Try direct matches first
     for selector in (
         f"span:has-text('{page_name}')" if page_name else "span:has-text('Premium Service')",
         f"div[role='button']:has-text('{page_name}')" if page_name else "div[role='button']:has-text('Premium Service')",
     ):
         try:
             target = page.locator(selector).last
-            if await target.is_visible(timeout=1500):
+            if await target.is_visible(timeout=1000):
                 await target.click(timeout=1500)
                 clicked = page_name or 'Premium Service'
                 logger.info(f"Clicked profile switcher element via selector: '{selector}'")
                 break
         except Exception as e:
-            logger.debug(f"Selector '{selector}' failed to switch actor: {e}")
             continue
+
+    see_all_selectors = [
+        "text='See all profiles'",
+        "text='عرض كل الملفات الشخصية'",
+        "text='See All Profiles'",
+        "text='مشاهدة كل الملفات الشخصية'",
+        "div[role='button']:has-text('See all profiles')",
+        "div[role='button']:has-text('See All Profiles')",
+        "div[role='button']:has-text('عرض كل الملفات الشخصية')",
+        "span:has-text('See all profiles')",
+        "span:has-text('عرض كل الملفات الشخصية')",
+    ]
+
+    if not clicked:
+        # If not found directly, look for 'See all profiles' button in the menu
+        logger.info(f"Profile '{page_name}' not directly visible in menu. Looking for 'See all profiles'...")
+        see_all_clicked = False
+        for sa_sel in see_all_selectors:
+            try:
+                sa_btn = page.locator(sa_sel).first
+                if await sa_btn.is_visible(timeout=500):
+                    logger.info(f"Clicking 'See all profiles' button: '{sa_sel}'")
+                    await sa_btn.click(timeout=1500)
+                    see_all_clicked = True
+                    # Wait for the profiles list modal/dialog to appear
+                    await asyncio.sleep(1.0)
+                    break
+            except Exception:
+                continue
+
+        # Now search for the target page name again (either in the dropdown or the modal)
+        for selector in (
+            f"span:has-text('{page_name}')" if page_name else "span:has-text('Premium Service')",
+            f"div[role='button']:has-text('{page_name}')" if page_name else "div[role='button']:has-text('Premium Service')",
+            f"div[role='link']:has-text('{page_name}')" if page_name else "div[role='link']:has-text('Premium Service')",
+            f"text='{page_name}'" if page_name else "text='Premium Service'",
+        ):
+            try:
+                target = page.locator(selector).last
+                if await target.is_visible(timeout=1500):
+                    await target.click(timeout=1500)
+                    clicked = page_name or 'Premium Service'
+                    logger.info(f"Clicked profile switcher element after expanding/See all profiles: '{selector}'")
+                    break
+            except Exception as e:
+                continue
+
+    if not clicked:
+        # Failsafe: switch back to main user profile first (in case we are locked in another page profile and See All didn't work)
+        logger.info("Failsafe: Attempting to switch back to main user profile first...")
+        main_switch_patterns = [
+            re.compile(r'^(Switch to|تبديل إلى|التبديل إلى|بدّل إلى|بدل إلى)', re.I)
+        ]
+        main_clicked = False
+        try:
+            # Re-click account menu
+            for sel in menu_selectors:
+                try:
+                    target = page.locator(sel).first
+                    if await target.is_visible(timeout=500):
+                        await target.click(timeout=1500)
+                        break
+                except Exception:
+                    continue
+            await asyncio.sleep(0.5)
+
+            elements = await page.locator("div[role='button'], div[role='link'], div[role='menuitem'], a, button").all()
+            for el in elements:
+                try:
+                    if not await el.is_visible(timeout=200):
+                        continue
+                    text = await el.evaluate("el => el.innerText || el.getAttribute('aria-label') || el.textContent || ''")
+                    text = text.strip()
+                    if main_switch_patterns[0].match(text):
+                        logger.info(f"Failsafe: Clicked switch-back to main profile: '{text}'")
+                        await el.click(timeout=2000)
+                        main_clicked = True
+                        await _wait_for_profile_switch_to_settle(page, timeout_ms=8000)
+                        break
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.debug(f"Failsafe switch to main profile failed: {e}")
+
+        if main_clicked:
+            # Re-verify and retry target page profile switch
+            logger.info("Successfully switched back to main profile. Retrying switch to target page...")
+            for sel in menu_selectors:
+                try:
+                    target = page.locator(sel).first
+                    if await target.is_visible(timeout=500):
+                        await target.click(timeout=1500)
+                        break
+                except Exception:
+                    continue
+            await asyncio.sleep(0.5)
+
+            # Try direct click first
+            for selector in (
+                f"span:has-text('{page_name}')" if page_name else "span:has-text('Premium Service')",
+                f"div[role='button']:has-text('{page_name}')" if page_name else "div[role='button']:has-text('Premium Service')",
+            ):
+                try:
+                    target = page.locator(selector).last
+                    if await target.is_visible(timeout=1500):
+                        await target.click(timeout=1500)
+                        clicked = page_name or 'Premium Service'
+                        break
+                except Exception:
+                    continue
+
+            if not clicked:
+                # Try See all profiles
+                for sa_sel in see_all_selectors:
+                    try:
+                        sa_btn = page.locator(sa_sel).first
+                        if await sa_btn.is_visible(timeout=500):
+                            await sa_btn.click(timeout=1500)
+                            await asyncio.sleep(1.0)
+                            break
+                    except Exception:
+                        continue
+
+                for selector in (
+                    f"span:has-text('{page_name}')" if page_name else "span:has-text('Premium Service')",
+                    f"div[role='button']:has-text('{page_name}')" if page_name else "div[role='button']:has-text('Premium Service')",
+                    f"div[role='link']:has-text('{page_name}')" if page_name else "div[role='link']:has-text('Premium Service')",
+                    f"text='{page_name}'" if page_name else "text='Premium Service'",
+                ):
+                    try:
+                        target = page.locator(selector).last
+                        if await target.is_visible(timeout=1500):
+                            await target.click(timeout=1500)
+                            clicked = page_name or 'Premium Service'
+                            break
+                    except Exception:
+                        continue
 
     if not clicked:
         logger.info("Using text match fallback for page profile switch...")
