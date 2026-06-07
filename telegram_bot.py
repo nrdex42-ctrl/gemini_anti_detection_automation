@@ -556,8 +556,6 @@ class TelegramBotApp:
         return bool(self.admin_ids and int(user_id or 0) in self.admin_ids)
 
     def account_owner_scope(self, user_id: int) -> Optional[int]:
-        if self.is_admin_user(user_id):
-            return None
         return int(user_id or 0)
 
     def debug_event(self, event: str, trace_id: str = "", **fields: Any) -> None:

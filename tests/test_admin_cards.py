@@ -14,6 +14,46 @@ if "aiohttp" not in sys.modules:
 from telegram_bot import TelegramBotApp
 
 
+def test_admin_user_dashboard_uses_only_admin_owned_accounts():
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.admin_ids = {99}
+
+        class Storage:
+            def __init__(self):
+                self.list_scopes = []
+                self.summary_scopes = []
+                self.active_scopes = []
+
+            def list_accounts(self, owner_scope=None):
+                self.list_scopes.append(owner_scope)
+                return [{"account_id": "admin_acct", "label": "Admin Account", "active": True}]
+
+            def dashboard_summary(self, owner_scope=None):
+                self.summary_scopes.append(owner_scope)
+                return {"job_status_counts": {}, "page_count": 1}
+
+            def get_active_account(self, user_id, owner_scope=None):
+                self.active_scopes.append((user_id, owner_scope))
+                return "admin_acct"
+
+        storage = Storage()
+        app.storage = storage
+
+        accounts, summary, active = await app.dashboard_state(99)
+
+        assert app.is_admin_user(99)
+        assert app.account_owner_scope(99) == 99
+        assert accounts[0]["account_id"] == "admin_acct"
+        assert summary["page_count"] == 1
+        assert active == "admin_acct"
+        assert storage.list_scopes == [99]
+        assert storage.summary_scopes == [99]
+        assert storage.active_scopes == [(99, 99)]
+
+    asyncio.run(run())
+
+
 class AdminStorage:
     def __init__(self):
         self.touched = []
