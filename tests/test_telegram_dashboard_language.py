@@ -23,11 +23,14 @@ def test_arabic_dashboard_keyboard_actions_and_prompts():
     markup = dashboard_markup(has_accounts=True, active_account="123", lang="ar")
     labels = _reply_labels(markup)
 
+    assert markup["keyboard"][0] == ["➕ إضافة حساب", "🔁 تغيير الحساب", "👤 حساباتي"]
+    assert markup["keyboard"][1] == ["⚡ النشر في الصفحات", "🧪 فحص الكوكيز", "📊 سجل المنشورات"]
+    assert markup["keyboard"][2] == ["🌐 اللغة"]
     assert "⚡ النشر في الصفحات" in labels
     assert "🌐 اللغة" in labels
     assert "📝 منشور نصي" not in labels
     assert "📸 منشور صورة" not in labels
-    assert "🎬 منشور فيديو" not in labels
+    assert "🎬 منشور ريلز" not in labels
     assert "📋 انشر لكل الصفحات" not in labels
     assert "📄 الصفحات المحفوظة" not in labels
     assert "🔄 تحديث الصفحات" not in labels
@@ -36,8 +39,9 @@ def test_arabic_dashboard_keyboard_actions_and_prompts():
     assert dashboard_action("📝 منشور نصي") == "quick_text"
     assert dashboard_action("📄 الصفحات المحفوظة") == "list_pages"
 
-    assert post_type_choices("ar") == ("نص", "صورة", "فيديو")
+    assert post_type_choices("ar") == ("نص", "صورة", "ريلز")
     assert parse_post_type_choice("صورة") == "image"
+    assert parse_post_type_choice("ريلز") == "video"
     assert parse_post_type_choice("فيديو") == "video"
     assert parse_post_type_choice("نص") == "text"
 
@@ -63,6 +67,14 @@ def test_admin_dashboard_keyboard_has_language_button():
     assert dashboard_action("🌐 Language") == "language"
     assert dashboard_action("🗑 Delete Users") == "admin_delete_users"
     assert dashboard_action("📣 Broadcast") == "admin_broadcast"
+
+
+def test_user_dashboard_admin_row_includes_language_and_admin_dashboard():
+    markup = dashboard_markup(has_accounts=True, active_account="123", is_admin=True, lang="en")
+
+    assert markup["keyboard"][0] == ["➕ Add Account", "🔁 Switch Account", "👤 My Accounts"]
+    assert markup["keyboard"][1] == ["⚡ Post to Pages", "🧪 Check Cookies", "📊 Post History"]
+    assert markup["keyboard"][2] == ["🌐 Language", "🔒 Admin Dashboard"]
 
 
 def test_arabic_admin_dashboard_keyboard_is_translated():

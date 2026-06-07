@@ -1,5 +1,6 @@
 import sys
 import types
+import asyncio
 
 
 if "aiohttp" not in sys.modules:
@@ -12,6 +13,7 @@ from telegram_bot import (
     LTR_MARK,
     POP_DIRECTIONAL_ISOLATE,
     POSTING_STATUS_SYNC_TEXT,
+    TelegramBotApp,
     format_elapsed_seconds,
     posting_live_status_card,
     posting_result_card,
@@ -76,3 +78,38 @@ def test_status_detail_line_keeps_status_icon_left_aligned_for_mixed_languages()
     assert "اسماء ضياء" in arabic_line
     assert "Facebook session is valid" in arabic_line
     assert arabic_line.count(POP_DIRECTIONAL_ISOLATE) == 2
+
+
+def test_posting_complete_card_restores_dashboard_reply_keyboard():
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.dashboard_sessions = {"123:99": {"action": "post"}}
+        deleted = []
+        sent = []
+
+        async def delete_message(chat_id, message_id):
+            deleted.append((chat_id, message_id))
+
+        async def dashboard_reply_markup(user_id):
+            return {"keyboard": [["➕ Add Account", "🔁 Switch Account", "👤 My Accounts"]]}
+
+        async def send_message(chat_id, text, reply_to_message_id=0, *, reply_markup=None, parse_mode=""):
+            sent.append({"text": text, "reply_markup": reply_markup})
+            return {"ok": True, "result": {"message_id": 888}}
+
+        app.delete_message = delete_message
+        app.dashboard_reply_markup = dashboard_reply_markup
+        app.send_message = send_message
+
+        message_id = await app.send_posting_complete_card(123, 99, "Posting complete", progress_message_id=777)
+
+        assert message_id == 888
+        assert deleted == [(123, 777)]
+        assert "123:99" not in app.dashboard_sessions
+        assert sent[0]["reply_markup"]["keyboard"][0] == ["➕ Add Account", "🔁 Switch Account", "👤 My Accounts"]
+        labels = [button for row in sent[0]["reply_markup"]["keyboard"] for button in row]
+        assert "✅ Done" not in labels
+        assert "❌ Cancel" not in labels
+        assert "⬅️ Back to Dashboard" not in labels
+
+    asyncio.run(run())

@@ -835,6 +835,25 @@ class TelegramBotApp:
         )
         return int((sent.get("result") or {}).get("message_id") or 0)
 
+    async def send_posting_complete_card(
+        self,
+        chat_id: int,
+        user_id: int,
+        text: str,
+        *,
+        progress_message_id: int = 0,
+    ) -> int:
+        self.clear_dashboard_session(chat_id, user_id)
+        if progress_message_id:
+            with suppress(Exception):
+                await self.delete_message(chat_id, progress_message_id)
+        sent = await self.send_message(
+            chat_id,
+            text,
+            reply_markup=await self.dashboard_reply_markup(user_id),
+        )
+        return int((sent.get("result") or {}).get("message_id") or 0)
+
     def refresh_pages_inline_markup(self, lang: str = "en") -> Dict[str, Any]:
         dashboard_label = "🏠 لوحة التحكم" if lang == "ar" else "🏠 Dashboard"
         return inline_markup([[inline_button(dashboard_label, "dash:back")]])
@@ -1990,12 +2009,12 @@ class TelegramBotApp:
         page_name = page_display_name(selected_pages[next_index], next_index) if selected_pages else "Page"
         return "\n".join(
             [
-                "📚 رفع فيديوهات متعددة" if lang == "ar" else "📚 Multi Video Upload",
+                "📚 رفع ريلز متعددة" if lang == "ar" else "📚 Multi Video Upload",
                 "━━━━━━━━━━━━━━━━━━",
                 f"تم الاستلام: {received}/{len(selected_pages)}" if lang == "ar" else f"Received: {received}/{len(selected_pages)}",
                 f"الصفحة التالية: {page_name}" if lang == "ar" else f"Next page: {page_name}",
                 "",
-                f"ابعت فيديو {received + 1} من {len(selected_pages)} دلوقتي." if lang == "ar" else f"Send video {received + 1} of {len(selected_pages)} now.",
+                f"ابعت ريلز {received + 1} من {len(selected_pages)} دلوقتي." if lang == "ar" else f"Send video {received + 1} of {len(selected_pages)} now.",
             ]
         )
 
@@ -2007,12 +2026,12 @@ class TelegramBotApp:
         page_name = page_display_name(selected_pages[next_index], next_index) if selected_pages else "Page"
         return "\n".join(
             [
-                "🔗 روابط فيديو متعددة" if lang == "ar" else "🔗 Multi Video URLs",
+                "🔗 روابط ريلز متعددة" if lang == "ar" else "🔗 Multi Video URLs",
                 "━━━━━━━━━━━━━━━━━━",
                 f"تم الاستلام: {received}/{len(selected_pages)}" if lang == "ar" else f"Received: {received}/{len(selected_pages)}",
                 f"الصفحة التالية: {page_name}" if lang == "ar" else f"Next page: {page_name}",
                 "",
-                f"الصق رابط الفيديو المباشر {received + 1} من {len(selected_pages)} دلوقتي." if lang == "ar" else f"Paste direct video URL {received + 1} of {len(selected_pages)} now.",
+                f"الصق رابط الريلز المباشر {received + 1} من {len(selected_pages)} دلوقتي." if lang == "ar" else f"Paste direct video URL {received + 1} of {len(selected_pages)} now.",
             ]
         )
 
@@ -2022,11 +2041,11 @@ class TelegramBotApp:
         draft = str(session.get("caption_draft") or "")
         if lang == "ar":
             lines = [
-                "📝 كابشن الفيديوهات",
+                "📝 كابشن الريلز",
                 "━━━━━━━━━━━━━━━━━━",
-                f"الفيديوهات المستلمة: {len(session.get('multi_media_paths') or [])}/{len(selected_pages)}",
+                f"الريلز المستلمة: {len(session.get('multi_media_paths') or [])}/{len(selected_pages)}",
                 "",
-                "ابعت كابشن واحد مشترك لكل الفيديوهات.",
+                "ابعت كابشن واحد مشترك لكل الريلز.",
                 "ابعت مسافة واحدة لو عايز تنشر بدون كابشن.",
                 "بعد ما تكتب الكابشن اضغط ✅ تم لعرض كارت المراجعة.",
             ]
@@ -2051,7 +2070,7 @@ class TelegramBotApp:
         if not ok:
             await self.send_message(chat_id, value, message_id, reply_markup=cancel_markup(lang=lang))
             return ""
-        title = "فحص رابط الفيديو..." if lang == "ar" else "Checking video URL..."
+        title = "فحص رابط الريلز..." if lang == "ar" else "Checking video URL..."
         progress = await self.send_message(
             chat_id,
             progress_card(title, 0, 1, "جاري التحقق من الرابط المباشر..." if lang == "ar" else "Validating direct URL..."),
@@ -2064,7 +2083,7 @@ class TelegramBotApp:
             await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card(title, 1, 1, error or ("رابط الفيديو غير متاح." if lang == "ar" else "Video URL is not reachable.")),
+                progress_card(title, 1, 1, error or ("رابط الريلز غير متاح." if lang == "ar" else "Video URL is not reachable.")),
                 reply_to_message_id=message_id,
                 reply_markup=cancel_markup(lang=lang),
             )
@@ -2519,7 +2538,7 @@ class TelegramBotApp:
                 user_id,
                 {"action": "post", "post_type": post_type, "step": "account", "lang": lang},
             )
-            post_type_label = {"text": "نصي", "image": "صورة", "video": "فيديو"}.get(post_type, post_type) if lang == "ar" else post_type.title()
+            post_type_label = {"text": "نصي", "image": "صورة", "video": "ريلز"}.get(post_type, post_type) if lang == "ar" else post_type.title()
             if not await self.prompt_for_account(chat_id, message_id, f"{post_type_label} post: {prompt_text('post', 'account', lang=lang)}", user_id):
                 self.clear_dashboard_session(chat_id, user_id)
             return
@@ -3023,7 +3042,7 @@ class TelegramBotApp:
                 session.pop("select_all_pages", None)
                 self.set_dashboard_session(chat_id, user_id, session)
                 post_type_label = (
-                    {"text": "نصي", "image": "صورة", "video": "فيديو"}.get(post_type, post_type)
+                    {"text": "نصي", "image": "صورة", "video": "ريلز"}.get(post_type, post_type)
                     if lang == "ar"
                     else post_type.title()
                 )
@@ -3078,7 +3097,7 @@ class TelegramBotApp:
             if not post_type:
                 await self.send_message(
                     chat_id,
-                    "استخدم أزرار نوع المنشور، أو اكتب نص أو صورة أو فيديو."
+                    "استخدم أزرار نوع المنشور، أو اكتب نص أو صورة أو ريلز."
                     if lang == "ar"
                     else "Use the post-type buttons, or type text, image, or video.",
                     message_id,
@@ -3318,7 +3337,7 @@ class TelegramBotApp:
                 self.set_dashboard_session(chat_id, user_id, session)
                 detail = compact_error(exc, 500)
                 warning = (
-                    f"⚠️ لم أقدر أحمل الفيديو ده من تيليجرام.\n{detail}\n\nابعت نفس الفيديو مرة تانية."
+                    f"⚠️ لم أقدر أحمل الريلز ده من تيليجرام.\n{detail}\n\nابعت نفس الريلز مرة تانية."
                     if lang == "ar"
                     else f"⚠️ I could not download that video from Telegram.\n{detail}\n\nSend the same video again."
                 )
@@ -3338,7 +3357,7 @@ class TelegramBotApp:
             if len(paths) < len(selected_pages):
                 self.set_dashboard_session(chat_id, user_id, session)
                 received_line = (
-                    f"✅ تم استلام الفيديو {len(paths)}/{len(selected_pages)}."
+                    f"✅ تم استلام الريلز {len(paths)}/{len(selected_pages)}."
                     if lang == "ar"
                     else f"✅ Video {len(paths)}/{len(selected_pages)} received."
                 )
@@ -3354,7 +3373,7 @@ class TelegramBotApp:
             session["caption_draft"] = ""
             self.set_dashboard_session(chat_id, user_id, session)
             all_received = (
-                f"✅ تم استلام كل الفيديوهات ({len(paths)})."
+                f"✅ تم استلام كل الريلز ({len(paths)})."
                 if lang == "ar"
                 else f"✅ All {len(paths)} videos received."
             )
@@ -3393,7 +3412,7 @@ class TelegramBotApp:
             if len(paths) < len(selected_pages):
                 self.set_dashboard_session(chat_id, user_id, session)
                 saved_line = (
-                    f"✅ تم حفظ رابط الفيديو {len(paths)}/{len(selected_pages)}."
+                    f"✅ تم حفظ رابط الريلز {len(paths)}/{len(selected_pages)}."
                     if lang == "ar"
                     else f"✅ Video URL {len(paths)}/{len(selected_pages)} saved."
                 )
@@ -3410,7 +3429,7 @@ class TelegramBotApp:
             session.pop("multi_captions", None)
             self.set_dashboard_session(chat_id, user_id, session)
             all_received = (
-                f"✅ تم حفظ كل روابط الفيديو ({len(paths)})."
+                f"✅ تم حفظ كل روابط الريلز ({len(paths)})."
                 if lang == "ar"
                 else f"✅ All {len(paths)} video URLs saved."
             )
@@ -4011,10 +4030,10 @@ class TelegramBotApp:
                     "\n".join(
                         (
                             [
-                                "🔗 رابط فيديو واحد",
+                                "🔗 رابط ريلز واحد",
                                 "━━━━━━━━━━━━━━━━━━",
-                                "الصق رابط فيديو مباشر http(s).",
-                                "نفس الفيديو هيتنشر على كل الصفحات المحددة.",
+                                "الصق رابط ريلز مباشر http(s).",
+                                "نفس الريلز هيتنشر على كل الصفحات المحددة.",
                                 "",
                                 "بعد كده هاعرضلك كارت المراجعة النهائي.",
                             ]
@@ -5323,6 +5342,7 @@ class TelegramBotApp:
     ) -> None:
         lock_owner = f"telegram:{os.getpid()}:{job_id}:{uuid.uuid4().hex[:12]}"
         trace_id = new_debug_id("post")
+        started = time.monotonic()
         lock_acquired = False
         cookie_session_attempted = False
         heartbeat_task: Optional[asyncio.Task[None]] = None
@@ -5437,20 +5457,22 @@ class TelegramBotApp:
                     context="single_post_result",
                 )
             self.debug_event("post_job_complete", trace_id, job_id=job_id, success=success, error=error[:300])
-            if success:
-                progress_message_id = await self.edit_or_send_message(
-                    chat_id,
-                    progress_message_id,
-                    progress_card("Posting...", total_units, total_units, f"Debug ID: {trace_id}\nPost job {job_id} succeeded."),
-                    reply_markup=await self.dashboard_reply_markup(user_id),
-                )
-            else:
-                progress_message_id = await self.edit_or_send_message(
-                    chat_id,
-                    progress_message_id,
-                    progress_card("Posting...", total_units, total_units, f"Debug ID: {trace_id}\nPost job {job_id} failed: {error[:500]}"),
-                    reply_markup=await self.dashboard_reply_markup(user_id),
-                )
+            progress_message_id = await self.send_posting_complete_card(
+                chat_id,
+                user_id,
+                posting_result_card(
+                    [
+                        {
+                            "page": page_name or page_id_or_url,
+                            "success": success,
+                            "result": result.get("result") or result.get("status") or result.get("error") or error,
+                        }
+                    ],
+                    debug_id=trace_id,
+                    elapsed_seconds=time.monotonic() - started,
+                ),
+                progress_message_id=progress_message_id,
+            )
         except Exception as exc:
             logger.exception("Post job failed")
             self.debug_event("post_job_failed", trace_id, job_id=job_id, error=compact_error(exc))
@@ -5462,15 +5484,17 @@ class TelegramBotApp:
                 context="single_post_exception",
             )
             await asyncio.to_thread(self.storage.mark_job_completed, job_id, False, {"exception": str(exc)}, str(exc))
-            if progress_message_id:
-                await self.edit_or_send_message(
-                    chat_id,
-                    progress_message_id,
-                    "\n".join([progress_card("Posting...", total_units, total_units, "Post job failed."), "", f"Debug ID: {trace_id}", compact_error(exc)]),
-                    reply_markup=await self.dashboard_reply_markup(user_id),
-                )
-            else:
-                await self.send_message(chat_id, f"Post job {job_id} failed: {exc}", reply_markup=await self.dashboard_reply_markup(user_id))
+            progress_message_id = await self.send_posting_complete_card(
+                chat_id,
+                user_id,
+                posting_result_card(
+                    [{"page": page_name or page_id_or_url, "success": False, "result": compact_error(exc)}],
+                    title="Posting complete: 0/1 succeeded",
+                    debug_id=trace_id,
+                    elapsed_seconds=time.monotonic() - started,
+                ),
+                progress_message_id=progress_message_id,
+            )
         finally:
             if heartbeat_task is not None:
                 heartbeat_task.cancel()
@@ -5757,11 +5781,11 @@ class TelegramBotApp:
                     trace_id=trace_id,
                     context="batch_post_result",
                 )
-            progress_message_id = await self.edit_or_send_message(
+            progress_message_id = await self.send_posting_complete_card(
                 chat_id,
-                progress_message_id,
+                user_id,
                 posting_result_card(result_items, debug_id=trace_id, elapsed_seconds=time.monotonic() - started),
-                reply_markup=await self.dashboard_reply_markup(user_id),
+                progress_message_id=progress_message_id,
             )
             self.debug_event(
                 "batch_post_complete",
@@ -5809,19 +5833,23 @@ class TelegramBotApp:
                     }
                     for job in jobs
                 ]
-                await self.edit_or_send_message(
+                await self.send_posting_complete_card(
                     chat_id,
-                    progress_message_id,
+                    user_id,
                     posting_result_card(
                         failed_results,
                         title=f"Posting complete: 0/{len(jobs)} succeeded",
                         debug_id=trace_id,
                         elapsed_seconds=time.monotonic() - started,
                     ),
-                    reply_markup=await self.dashboard_reply_markup(user_id),
+                    progress_message_id=progress_message_id,
                 )
             else:
-                await self.send_message(chat_id, f"Batch posting failed: {exc}", reply_markup=await self.dashboard_reply_markup(user_id))
+                await self.send_posting_complete_card(
+                    chat_id,
+                    user_id,
+                    f"Batch posting failed: {compact_error(exc)}",
+                )
         finally:
             if heartbeat_task is not None:
                 heartbeat_task.cancel()

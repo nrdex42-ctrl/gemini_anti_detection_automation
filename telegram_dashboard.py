@@ -46,7 +46,7 @@ AR_BUTTON_ADD_ACCOUNT = "➕ إضافة حساب"
 AR_BUTTON_POST_ACTIVE = "⚡ النشر في الصفحات"
 AR_BUTTON_QUICK_TEXT = "📝 منشور نصي"
 AR_BUTTON_QUICK_IMAGE = "📸 منشور صورة"
-AR_BUTTON_QUICK_VIDEO = "🎬 منشور فيديو"
+AR_BUTTON_QUICK_VIDEO = "🎬 منشور ريلز"
 AR_BUTTON_POST_ALL_PAGES = "📋 انشر لكل الصفحات"
 AR_BUTTON_SWITCH_ACCOUNT = "🔁 تغيير الحساب"
 AR_BUTTON_SELECT_ACCOUNT = "📱 اختار حساب وانشر"
@@ -231,7 +231,9 @@ DASHBOARD_ACTIONS = {
     "⚡ انشر بالحساب النشط": "post_active",
     "📝 منشور نصي سريع": "quick_text",
     "📸 منشور صورة سريع": "quick_image",
+    "🎬 منشور فيديو": "quick_video",
     "🎬 منشور فيديو سريع": "quick_video",
+    "🎬 منشور ريلز سريع": "quick_video",
     "🔁 غيّر الحساب النشط": "switch_account",
     "🧪 افحص كل الكوكيز": "check_cookies",
     "📊 حالة البوت": "status",
@@ -294,7 +296,7 @@ def parse_post_type_choice(text: str) -> str:
     normalized = (text or "").strip().lower()
     if "image" in normalized or "photo" in normalized or "صورة" in normalized:
         return "image"
-    if "video" in normalized or "فيديو" in normalized:
+    if "video" in normalized or "فيديو" in normalized or "ريلز" in normalized:
         return "video"
     if (
         "text" in normalized
@@ -309,7 +311,7 @@ def parse_post_type_choice(text: str) -> str:
 
 def post_type_choices(lang: str = "en") -> Sequence[str]:
     if normalize_lang(lang) == "ar":
-        return ("نص", "صورة", "فيديو")
+        return ("نص", "صورة", "ريلز")
     return POST_TYPE_CHOICES
 
 
@@ -341,30 +343,12 @@ def dashboard_markup(
 
 
 
-    if posting_blocked and has_accounts and active_account:
-        rows.append([tr(lang, "⏳ Posting cooldown active", "⏳ مهلة النشر مفعلة")])
-        rows.append([button_text("switch_account", lang)])
-    elif not has_accounts:
-        rows.append([button_text("add_account", lang)])
-    elif active_account:
-        rows.append([button_text("post_active", lang)])
-        rows.append([
-            button_text("my_accounts", lang),
-            button_text("switch_account", lang),
-            button_text("add_account", lang)
-        ])
-        rows.append([
-            button_text("check_cookies", lang),
-            button_text("post_history", lang)
-        ])
-    else:
-        rows.append([button_text("select_account", lang), button_text("add_account", lang)])
-        rows.append([button_text("my_accounts", lang), button_text("check_cookies", lang)])
-        rows.append([button_text("discover_pages", lang)])
-
-    rows.append([button_text("language", lang)])
+    rows.append([button_text("add_account", lang), button_text("switch_account", lang), button_text("my_accounts", lang)])
+    rows.append([button_text("post_active", lang), button_text("check_cookies", lang), button_text("post_history", lang)])
     if is_admin:
-        rows.append([button_text("admin", lang)])
+        rows.append([button_text("language", lang), button_text("admin", lang)])
+    else:
+        rows.append([button_text("language", lang)])
     return reply_keyboard(rows, placeholder=tr(lang, "Choose a dashboard action...", "اختر إجراء لوحة التحكم..."))
 
 
@@ -579,7 +563,7 @@ def post_type_inline_markup(lang: str = "en") -> Dict[str, Any]:
     return inline_markup(
         [
             [inline_button(tr(lang, "📝 Caption/Text", "📝 نص/كابشن"), "post:type:text")],
-            [inline_button(tr(lang, "📸 Image", "📸 صورة"), "post:type:image"), inline_button(tr(lang, "🎬 Video", "🎬 فيديو"), "post:type:video")],
+            [inline_button(tr(lang, "📸 Image", "📸 صورة"), "post:type:image"), inline_button(tr(lang, "🎬 Video", "🎬 ريلز"), "post:type:video")],
             [inline_button(tr(lang, "⬅️ Pages", "⬅️ الصفحات"), "post:pages"), inline_button(button_text("dashboard", lang), "dash:back")],
         ]
     )
@@ -596,13 +580,13 @@ def video_mode_card(*, account_name: str, pages: List[Dict[str, Any]], selected_
         preview += f", +{len(page_names) - 4} more"
     return "\n".join(
         [
-            tr(lang, "🎬 Video Posting Mode", "🎬 طريقة نشر الفيديو"),
+            tr(lang, "🎬 Video Posting Mode", "🎬 طريقة نشر الريلز"),
             "━━━━━━━━━━━━━━━━━━",
             tr(lang, f"Account: {_short(account_name or 'Facebook Account', 70)}", f"الحساب: {_short(account_name or 'Facebook Account', 70)}"),
             tr(lang, f"Pages: {len(page_names)}", f"الصفحات: {len(page_names)}"),
             tr(lang, f"Selected: {preview or 'none'}", f"المحدد: {preview or 'لا يوجد'}"),
             "",
-            tr(lang, "Choose how videos should be attached.", "اختار طريقة إرفاق الفيديوهات."),
+            tr(lang, "Choose how videos should be attached.", "اختار طريقة إرفاق الريلز."),
         ]
     )
 
@@ -610,10 +594,10 @@ def video_mode_card(*, account_name: str, pages: List[Dict[str, Any]], selected_
 def video_mode_inline_markup(lang: str = "en") -> Dict[str, Any]:
     return inline_markup(
         [
-            [inline_button(tr(lang, "📄 Single video upload → all pages", "📄 فيديو واحد → كل الصفحات"), "video:single_upload")],
-            [inline_button(tr(lang, "📚 Multi videos upload → one per page", "📚 فيديو لكل صفحة"), "video:multi_upload")],
-            [inline_button(tr(lang, "🔗 Single video URL → all pages", "🔗 رابط فيديو واحد → كل الصفحات"), "video:single_url")],
-            [inline_button(tr(lang, "🔗 Multi video URLs → one per page", "🔗 رابط فيديو لكل صفحة"), "video:multi_url")],
+            [inline_button(tr(lang, "📄 Single video upload → all pages", "📄 ريلز واحد → كل الصفحات"), "video:single_upload")],
+            [inline_button(tr(lang, "📚 Multi videos upload → one per page", "📚 ريلز لكل صفحة"), "video:multi_upload")],
+            [inline_button(tr(lang, "🔗 Single video URL → all pages", "🔗 رابط ريلز واحد → كل الصفحات"), "video:single_url")],
+            [inline_button(tr(lang, "🔗 Multi video URLs → one per page", "🔗 رابط ريلز لكل صفحة"), "video:multi_url")],
             [inline_button(tr(lang, "⬅️ Pages", "⬅️ الصفحات"), "post:pages"), inline_button(button_text("dashboard", lang), "dash:back")],
         ]
     )
@@ -627,8 +611,8 @@ def post_input_card(post_type: str, lang: str = "en") -> str:
         action = tr(lang, "Send or reply with the image now. Telegram media caption is optional.", "ابعت الصورة أو اعمل رد بصورة دلوقتي. كابشن الميديا اختياري.")
         title = tr(lang, "📸 Image Post", "📸 منشور صورة")
     else:
-        action = tr(lang, "Send or reply with the video now. Telegram media caption is optional.", "ابعت الفيديو أو اعمل رد بفيديو دلوقتي. كابشن الميديا اختياري.")
-        title = tr(lang, "🎬 Video Post", "🎬 منشور فيديو")
+        action = tr(lang, "Send or reply with the video now. Telegram media caption is optional.", "ابعت الريلز أو اعمل رد بريلز دلوقتي. كابشن الميديا اختياري.")
+        title = tr(lang, "🎬 Video Post", "🎬 منشور ريلز")
     return "\n".join([title, "━━━━━━━━━━━━━━━━━━", action, "", tr(lang, "After that, I will show a final review card.", "بعد كده هاعرضلك كارت المراجعة النهائي.")])
 
 
@@ -864,9 +848,9 @@ def prompt_text(action: str, step: str = "", lang: str = "en") -> str:
     if step == "media_image":
         return tr(lang, "Attach or reply with the image now. The media caption will be used as the post caption.", "ارفق الصورة أو اعمل رد بصورة دلوقتي. كابشن الميديا هيتستخدم ككابشن للمنشور.")
     if step == "media_video":
-        return tr(lang, "Attach or reply with the video now. The media caption will be used as the post caption.", "ارفق الفيديو أو اعمل رد بفيديو دلوقتي. كابشن الميديا هيتستخدم ككابشن للمنشور.")
+        return tr(lang, "Attach or reply with the video now. The media caption will be used as the post caption.", "ارفق الريلز أو اعمل رد بريلز دلوقتي. كابشن الميديا هيتستخدم ككابشن للمنشور.")
     if step == "media_image_all":
         return tr(lang, "Attach or reply with the image to post to every stored page. The media caption will be used as the caption.", "ارفق الصورة للنشر على كل الصفحات المحفوظة. كابشن الميديا هيتستخدم ككابشن.")
     if step == "media_video_all":
-        return tr(lang, "Attach or reply with the video to post to every stored page. The media caption will be used as the caption.", "ارفق الفيديو للنشر على كل الصفحات المحفوظة. كابشن الميديا هيتستخدم ككابشن.")
+        return tr(lang, "Attach or reply with the video to post to every stored page. The media caption will be used as the caption.", "ارفق الريلز للنشر على كل الصفحات المحفوظة. كابشن الميديا هيتستخدم ككابشن.")
     return tr(lang, "Send the requested value.", "ابعت القيمة المطلوبة.")
