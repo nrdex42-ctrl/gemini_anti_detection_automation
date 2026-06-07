@@ -37,6 +37,16 @@ def test_security_text_regex_keeps_account_specific_arabic_security_terms():
     assert engine._FACEBOOK_SECURITY_TEXT_RE.search("يرجى تأكيد هويتك")
 
 
+def test_caption_text_match_requires_complete_arabic_and_english_text():
+    caption = "استشعار وجود الله أمر يجعلني في غاية السكينة.\nEnglish caption: quiet, exact words."
+
+    assert engine._caption_text_matches(caption, caption)
+    assert engine._caption_text_matches(caption, f"{caption}\n")
+    assert not engine._caption_text_matches(caption, "استشعار وجود الله أمر يجعلني")
+    assert not engine._caption_text_matches(caption, caption.replace("quiet", "quite"))
+    assert not engine._caption_text_matches(caption, caption.replace("السكينة", "السكينه"))
+
+
 def test_switch_dialog_selection_is_confirmed_before_waiting(monkeypatch):
     async def run():
         calls = []

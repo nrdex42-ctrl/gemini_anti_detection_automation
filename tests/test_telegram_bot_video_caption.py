@@ -24,11 +24,56 @@ def test_multi_video_caption_prompt_uses_shared_caption_step():
     }
 
     text = app.multi_video_caption_prompt(session)
+    instructions = app.multi_video_caption_instruction_card(session)
 
     assert "Video Caption" in text
-    assert "Send one shared caption for all videos." in text
-    assert "tap ✅ Done" in text
+    assert "Videos received: 2/2" in text
     assert "Current caption: Shared caption" in text
+    assert "Send one shared caption for all videos." not in text
+    assert "Send one shared caption for all videos." in instructions
+    assert "tap ✅ Done" in instructions
+
+
+def test_final_multi_video_upload_sends_caption_instructions_as_separate_card():
+    async def run():
+        app, sent = build_session_app(
+            {
+                "action": "post",
+                "step": "multi_video_upload",
+                "lang": "en",
+                "account_id": "acct_1",
+                "pages": [{"page_name": "Huawei"}, {"page_name": "Oppo"}],
+                "selected_pages": [0, 1],
+                "multi_media_paths": ["/tmp/one.mp4"],
+            }
+        )
+
+        async def download_file(file_id, account_id):
+            return "/tmp/two.mp4"
+
+        app.download_file = download_file
+
+        handled = await app.handle_dashboard_session(
+            123,
+            99,
+            456,
+            "",
+            {"video": {"file_id": "video_2"}},
+        )
+
+        assert handled is True
+        assert len(sent) == 2
+        assert "✅ All 2 videos received." in sent[0]["text"]
+        assert "Videos received: 2/2" in sent[0]["text"]
+        assert "Send one shared caption" not in sent[0]["text"]
+        assert "Caption Instructions" in sent[1]["text"]
+        assert "Send one shared caption for all videos." in sent[1]["text"]
+        assert sent[1]["reply_markup"]["keyboard"][0] == ["✅ Done"]
+        session = app.get_dashboard_session(123, 99)
+        assert session["step"] == "multi_caption"
+        assert session["multi_media_paths"] == ["/tmp/one.mp4", "/tmp/two.mp4"]
+
+    asyncio.run(run())
 
 
 def test_edit_message_ignores_telegram_message_not_modified():
@@ -307,6 +352,43 @@ def test_multi_video_download_error_keeps_upload_session_active():
         session = app.get_dashboard_session(123, 99)
         assert session["step"] == "multi_video_upload"
         assert session["multi_media_paths"] == []
+
+    asyncio.run(run())
+
+
+def test_caption_after_media_preserves_raw_arabic_english_caption_text():
+    async def run():
+        app, _sent = build_session_app(
+            {
+                "action": "post",
+                "step": "caption_after_media",
+                "lang": "en",
+                "account_id": "acct_1",
+                "pages": [{"page_name": "Huawei"}],
+                "selected_pages": [0],
+                "post_type": "image",
+                "media_path": "/tmp/image.jpg",
+            }
+        )
+        raw_caption = "  استشعار وجود الله أمر يجعلني في غاية السكينة...\nEnglish caption: exact words stay here.  "
+        reviewed = []
+
+        async def show_post_review(chat_id, message_id, user_id, session, *, edit=False):
+            reviewed.append(dict(session))
+
+        app.show_post_review = show_post_review
+
+        handled = await app.handle_dashboard_session(
+            123,
+            99,
+            456,
+            raw_caption,
+            {"text": raw_caption},
+        )
+
+        assert handled is True
+        assert reviewed
+        assert reviewed[0]["caption"] == raw_caption
 
     asyncio.run(run())
 

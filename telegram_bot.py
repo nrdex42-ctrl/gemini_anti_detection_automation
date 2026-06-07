@@ -2107,35 +2107,75 @@ class TelegramBotApp:
             ]
         )
 
-    def multi_video_caption_prompt(self, session: Dict[str, Any]) -> str:
+    def multi_video_caption_prompt(self, session: Dict[str, Any], prefix: str = "") -> str:
         lang = str(session.get("lang") or "en")
         selected_pages = self.selected_pages_from_session(session)
         draft = str(session.get("caption_draft") or "")
         if lang == "ar":
-            lines = [
+            lines = []
+            if prefix:
+                lines.extend([prefix, ""])
+            lines.extend([
                 "📝 كابشن الريلز",
                 "━━━━━━━━━━━━━━━━━━",
                 f"الريلز المستلمة: {len(session.get('multi_media_paths') or [])}/{len(selected_pages)}",
-                "",
-                "ابعت كابشن واحد مشترك لكل الريلز.",
-                "ابعت مسافة واحدة لو عايز تنشر بدون كابشن.",
-                "بعد ما تكتب الكابشن اضغط ✅ تم لعرض كارت المراجعة.",
-            ]
+            ])
             if draft:
                 lines.extend(["", f"الكابشن الحالي: {compact_text(draft, 700)}"])
             return "\n".join(lines)
-        lines = [
+        lines = []
+        if prefix:
+            lines.extend([prefix, ""])
+        lines.extend([
             "📝 Video Caption",
             "━━━━━━━━━━━━━━━━━━",
             f"Videos received: {len(session.get('multi_media_paths') or [])}/{len(selected_pages)}",
-            "",
-            "Send one shared caption for all videos.",
-            "Send a single space if you want to post without a caption.",
-            "After typing the caption, tap ✅ Done to show the review card.",
-        ]
+        ])
         if draft:
             lines.extend(["", f"Current caption: {compact_text(draft, 700)}"])
         return "\n".join(lines)
+
+    def multi_video_caption_instruction_card(self, session: Dict[str, Any]) -> str:
+        lang = str(session.get("lang") or "en")
+        if lang == "ar":
+            return "\n".join(
+                [
+                    "ℹ️ تعليمات الكابشن",
+                    "━━━━━━━━━━━━━━━━━━",
+                    "ابعت كابشن واحد مشترك لكل الريلز.",
+                    "ابعت مسافة واحدة لو عايز تنشر بدون كابشن.",
+                    "بعد ما تكتب الكابشن اضغط ✅ تم لعرض كارت المراجعة.",
+                ]
+            )
+        return "\n".join(
+            [
+                "ℹ️ Caption Instructions",
+                "━━━━━━━━━━━━━━━━━━",
+                "Send one shared caption for all videos.",
+                "Send a single space if you want to post without a caption.",
+                "After typing the caption, tap ✅ Done to show the review card.",
+            ]
+        )
+
+    async def send_multi_video_caption_cards(
+        self,
+        chat_id: int,
+        reply_to_message_id: int,
+        session: Dict[str, Any],
+        *,
+        prefix: str = "",
+    ) -> None:
+        lang = str(session.get("lang") or "en")
+        await self.send_message(chat_id, self.multi_video_caption_prompt(session, prefix=prefix), reply_to_message_id)
+        await self.send_message(
+            chat_id,
+            self.multi_video_caption_instruction_card(session),
+            reply_to_message_id,
+            reply_markup=done_cancel_markup(
+                lang=lang,
+                placeholder="اكتب الكابشن ثم اضغط تم" if lang == "ar" else "Type caption, then tap Done",
+            ),
+        )
 
     async def validate_video_url_or_reply(self, chat_id: int, message_id: int, text: str, lang: str = "en") -> str:
         ok, value = parse_video_media_url(text)
@@ -3258,8 +3298,7 @@ class TelegramBotApp:
             return True
 
         if action == "post" and step == "caption":
-            caption = text.strip()
-            if not caption:
+            if not text.strip():
                 await self.send_message(
                     chat_id,
                     "الكابشن لا يمكن يكون فارغ. ابعت نص المنشور." if lang == "ar" else "Caption cannot be empty. Send the post text.",
@@ -3268,7 +3307,7 @@ class TelegramBotApp:
                 )
                 return True
             session["post_type"] = "text"
-            session["caption"] = caption
+            session["caption"] = text
             session["media_path"] = ""
             self.set_dashboard_session(chat_id, user_id, session)
             await self.show_post_review(chat_id, message_id, user_id, session)
@@ -3279,22 +3318,21 @@ class TelegramBotApp:
             if clean_text in {"skip", "none", "⏭️ skip", "⏭️ تخطي", "تخطي"}:
                 pass
             else:
-                session["caption"] = text.strip()
+                session["caption"] = text if text.strip() else ""
             session["step"] = "review"
             self.set_dashboard_session(chat_id, user_id, session)
             await self.show_post_review(chat_id, message_id, user_id, session)
             return True
 
         if action == "post" and step == "caption_edit":
-            session["caption"] = "" if text == " " else text.strip()
+            session["caption"] = "" if not text.strip() else text
             session.pop("multi_captions", None)
             self.set_dashboard_session(chat_id, user_id, session)
             await self.show_post_review(chat_id, message_id, user_id, session)
             return True
 
         if action == "post_all_pages" and step == "caption_all":
-            caption = text.strip()
-            if not caption:
+            if not text.strip():
                 await self.send_message(
                     chat_id,
                     "الكابشن لا يمكن يكون فارغ. ابعت نص المنشور." if lang == "ar" else "Caption cannot be empty. Send the post text.",
@@ -3325,7 +3363,7 @@ class TelegramBotApp:
                 str(session.get("account_id") or ""),
                 pages,
                 "text",
-                caption,
+                text,
                 "",
             )
             return True
@@ -3360,7 +3398,7 @@ class TelegramBotApp:
                 str(session.get("account_id") or ""),
                 pages,
                 post_type,
-                text.strip(),
+                text if text.strip() else "",
                 media_path,
             )
             return True
@@ -3439,15 +3477,7 @@ class TelegramBotApp:
                 if lang == "ar"
                 else f"✅ All {len(paths)} videos received."
             )
-            await self.send_message(
-                chat_id,
-                "\n".join([all_received, "", self.multi_video_caption_prompt(session)]),
-                message_id,
-                reply_markup=done_cancel_markup(
-                    lang=lang,
-                    placeholder="اكتب الكابشن ثم اضغط تم" if lang == "ar" else "Type caption, then tap Done",
-                ),
-            )
+            await self.send_multi_video_caption_cards(chat_id, message_id, session, prefix=all_received)
             return True
 
         if action == "post" and step == "multi_video_url":
@@ -3495,15 +3525,7 @@ class TelegramBotApp:
                 if lang == "ar"
                 else f"✅ All {len(paths)} video URLs saved."
             )
-            await self.send_message(
-                chat_id,
-                "\n".join([all_received, "", self.multi_video_caption_prompt(session)]),
-                message_id,
-                reply_markup=done_cancel_markup(
-                    lang=lang,
-                    placeholder="اكتب الكابشن ثم اضغط تم" if lang == "ar" else "Type caption, then tap Done",
-                ),
-            )
+            await self.send_multi_video_caption_cards(chat_id, message_id, session, prefix=all_received)
             return True
 
         if action == "post" and step == "multi_caption":
@@ -3515,22 +3537,14 @@ class TelegramBotApp:
                 self.set_dashboard_session(chat_id, user_id, session)
                 await self.show_post_review(chat_id, message_id, user_id, session)
                 return True
-            session["caption_draft"] = "" if text == " " else text.strip()
+            session["caption_draft"] = "" if not text.strip() else text
             self.set_dashboard_session(chat_id, user_id, session)
             saved_line = (
                 "✅ تم حفظ الكابشن. اضغط ✅ تم لعرض كارت المراجعة، أو ابعت كابشن جديد لاستبداله."
                 if lang == "ar"
                 else "✅ Caption saved. Tap ✅ Done to show the review card, or send another caption to replace it."
             )
-            await self.send_message(
-                chat_id,
-                "\n".join([saved_line, "", self.multi_video_caption_prompt(session)]),
-                message_id,
-                reply_markup=done_cancel_markup(
-                    lang=lang,
-                    placeholder="اكتب الكابشن ثم اضغط تم" if lang == "ar" else "Type caption, then tap Done",
-                ),
-            )
+            await self.send_multi_video_caption_cards(chat_id, message_id, session, prefix=saved_line)
             return True
 
         if action == "post" and step in {"media_image", "media_video"}:
@@ -3543,8 +3557,8 @@ class TelegramBotApp:
             session["post_type"] = post_type
             session["media_path"] = media_path
             
-            attached_caption = str(message.get("caption") or "").strip()
-            if attached_caption:
+            attached_caption = str(message.get("caption") or "")
+            if attached_caption.strip():
                 session["caption"] = attached_caption
                 session["step"] = "review"
                 self.set_dashboard_session(chat_id, user_id, session)
@@ -4352,7 +4366,8 @@ class TelegramBotApp:
             return
 
         message = update.get("message") or update.get("edited_message") or {}
-        text = str(message.get("text") or message.get("caption") or "").strip()
+        raw_text = str(message.get("text") or message.get("caption") or "")
+        text = raw_text.strip()
         chat = message.get("chat") or {}
         user = message.get("from") or {}
         chat_id = int(chat.get("id") or 0)
@@ -4399,12 +4414,12 @@ class TelegramBotApp:
             "admin_debug_snapshot",
         }
         if session and action not in explicit_escape_actions:
-            if await self.handle_dashboard_session(chat_id, user_id, message_id, text, message):
+            if await self.handle_dashboard_session(chat_id, user_id, message_id, raw_text, message):
                 return
         if action:
             await self.handle_dashboard_button(chat_id, user_id, message_id, action)
             return
-        if await self.handle_dashboard_session(chat_id, user_id, message_id, text, message):
+        if await self.handle_dashboard_session(chat_id, user_id, message_id, raw_text, message):
             return
         # Ignore common session utility button clicks if no session is active to prevent duplicates
         if text.strip() in {"Done", BUTTON_DONE, "✅ تم", "تم", "Cancel", "❌ Cancel", "❌ إلغاء", "إلغاء", "back", "Back"}:

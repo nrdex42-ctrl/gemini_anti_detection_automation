@@ -26,6 +26,7 @@ import threading
 import socket
 import tempfile
 import importlib
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Coroutine, Dict, List, Optional, Tuple, Any, Set, cast
@@ -7496,47 +7497,18 @@ async def _create_post_mobile(
             return False, _with_diagnostic("Could not find text input in mobile composer. Page may not be loaded properly.", diagnostic_path)
 
         if caption:
-            text_filled = False
             try:
-                await text_target.fill(caption, timeout=5000)
-                text_filled = True
+                text_filled = await _insert_text_target_exact(page, text_target, caption)
             except Exception as fill_exc:
-                logger.debug(f'Mobile composer: locator.fill failed, falling back to keyboard typing: {fill_exc}')
-
+                logger.warning(f'Mobile composer: exact caption insertion failed: {fill_exc}')
+                text_filled = False
             if not text_filled:
-                text_focused = False
-                try:
-                    await text_target.click(timeout=5000)
-                    text_focused = True
-                except Exception as click_exc:
-                    logger.warning(
-                        f'Mobile composer: textbox click failed; trying forced DOM focus: {click_exc}'
-                    )
-                    try:
-                        await page.set_viewport_size({'width': 390, 'height': 1200})
-                    except Exception:
-                        pass
-                    try:
-                        await text_target.evaluate(
-                            """el => {
-                                el.scrollIntoView({block: 'center', inline: 'nearest'});
-                                if (typeof el.focus === 'function') {
-                                    el.focus();
-                                }
-                            }"""
-                        )
-                        await text_target.click(timeout=3000, force=True)
-                        text_focused = True
-                    except Exception as focus_exc:
-                        logger.warning(f'Mobile composer: forced textbox focus failed: {focus_exc}')
-
-                if not text_focused:
-                    diagnostic_path = await _save_diagnostics(page, 'mobile_composer_text_focus_failed')
-                    return False, _with_diagnostic(
-                        'Could not focus text input in mobile composer.',
-                        diagnostic_path,
-                    )
-                await page.keyboard.type(caption, delay=25)
+                diagnostic_path = await _save_diagnostics(page, 'mobile_composer_caption_mismatch')
+                return False, _with_diagnostic(
+                    'Could not insert the full caption exactly into the mobile composer. '
+                    'Posting was stopped to avoid publishing corrupted text.',
+                    diagnostic_path,
+                )
 
         if post_type in {'image', 'video'} and media_url:
             import tempfile
@@ -7654,11 +7626,135 @@ async def _create_text_post_mobile(page: Page, target_url: str, caption: str) ->
     return await _create_post_mobile(page, target_url, caption, 'post', None)
 
 
+def _normalize_caption_for_compare(value: Any) -> str:
+    text = str(value or '').replace('\r\n', '\n').replace('\r', '\n')
+    return unicodedata.normalize('NFC', text).replace('\u00a0', ' ')
+
+
+def _caption_text_matches(expected: str, actual: str) -> bool:
+    expected_text = _normalize_caption_for_compare(expected)
+    actual_text = _normalize_caption_for_compare(actual)
+    if actual_text == expected_text:
+        return True
+    if actual_text.rstrip('\n') == expected_text:
+        return True
+    return bool(expected_text and expected_text in actual_text)
+
+
+async def _read_text_target_value(target: Any) -> str:
+    return await target.evaluate(
+        """el => {
+            if ('value' in el) {
+                return el.value || '';
+            }
+            return el.innerText || el.textContent || '';
+        }"""
+    )
+
+
+async def _focus_text_target(page: Page, target: Any) -> None:
+    await target.evaluate(
+        """el => {
+            el.scrollIntoView({block: 'center', inline: 'nearest'});
+            if (typeof el.focus === 'function') {
+                el.focus();
+            }
+        }"""
+    )
+    await target.click(timeout=2500, force=True)
+
+
+async def _clear_text_target(page: Page, target: Any) -> None:
+    try:
+        await target.fill('', timeout=1500)
+        return
+    except Exception:
+        pass
+    await _focus_text_target(page, target)
+    try:
+        await page.keyboard.press('Control+A')
+        await page.keyboard.press('Backspace')
+    except Exception:
+        await target.evaluate(
+            """el => {
+                if ('value' in el) {
+                    el.value = '';
+                } else {
+                    el.textContent = '';
+                }
+                el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'deleteContentBackward'}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+            }"""
+        )
+
+
+async def _insert_text_target_exact(page: Page, target: Any, caption: str) -> bool:
+    caption = unicodedata.normalize('NFC', str(caption or '').replace('\r\n', '\n').replace('\r', '\n'))
+    if not caption:
+        return True
+
+    async def verify() -> bool:
+        try:
+            current = await _read_text_target_value(target)
+            return _caption_text_matches(caption, current)
+        except Exception:
+            return False
+
+    for strategy in ('fill', 'insert_text', 'exec_command', 'dom_set'):
+        try:
+            await _clear_text_target(page, target)
+            await _focus_text_target(page, target)
+            if strategy == 'fill':
+                await target.fill(caption, timeout=5000)
+            elif strategy == 'insert_text':
+                await page.keyboard.insert_text(caption)
+            elif strategy == 'exec_command':
+                await target.evaluate(
+                    """(el, value) => {
+                        el.focus();
+                        document.execCommand('selectAll', false, null);
+                        document.execCommand('delete', false, null);
+                        document.execCommand('insertText', false, value);
+                        el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
+                    }""",
+                    caption,
+                )
+            else:
+                await target.evaluate(
+                    """(el, value) => {
+                        if ('value' in el) {
+                            el.value = value;
+                        } else {
+                            el.textContent = value;
+                        }
+                        el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
+                        el.dispatchEvent(new Event('change', {bubbles: true}));
+                    }""",
+                    caption,
+                )
+            await _smart_wait(verify, timeout_ms=900, check_interval_ms=100)
+            if await verify():
+                logger.info('✅ Caption inserted exactly via %s.', strategy)
+                return True
+            current = await _read_text_target_value(target)
+            logger.warning(
+                'Caption insertion verification failed via %s: expected_len=%d actual_len=%d',
+                strategy,
+                len(caption),
+                len(current),
+            )
+        except Exception as exc:
+            logger.debug(f'Caption insertion strategy {strategy} failed: {exc}')
+            continue
+    return False
+
+
 async def _fill_composer_caption(page: Page, caption: str) -> None:
     if not caption:
         return
 
-    logger.info("✍️ Filling composer caption...")
+    caption = unicodedata.normalize('NFC', str(caption).replace('\r\n', '\n').replace('\r', '\n'))
+    logger.info("✍️ Filling composer caption exactly...")
 
     # Try multiple times to find and focus the textbox
     for attempt in range(3):
@@ -7681,30 +7777,10 @@ async def _fill_composer_caption(page: Page, caption: str) -> None:
                 target = candidate() if callable(candidate) else dialog.locator(candidate).first
                 if await target.is_visible(timeout=1500):
                     logger.info(f"Target textbox found on attempt {attempt+1}. Clicking to focus...")
-                    await target.click(force=True)
-
-                    # Clear any existing text if possible
-                    try:
-                        await target.fill("")
-                    except Exception:
-                        pass
-
-                    # Type the caption (fast: 15ms delay)
-                    await page.keyboard.type(caption, delay=15)
-
-                    # Verify text was entered
-                    current_text = ''
-                    await _smart_wait(
-                        lambda: target.evaluate("el => el.innerText || el.textContent || ''"),
-                        timeout_ms=600,
-                        check_interval_ms=100,
-                    )
-                    current_text = await target.evaluate("el => el.innerText || el.textContent || ''")
-                    if current_text.strip():
-                        logger.info("✅ Caption successfully written and verified in textbox!")
+                    if await _insert_text_target_exact(page, target, caption):
+                        logger.info("✅ Caption successfully written and verified exactly in textbox!")
                         return
-                    else:
-                        logger.warning("⚠️ Textbox verified empty after typing. Retrying...")
+                    logger.warning("⚠️ Caption textbox did not match expected text after insertion. Retrying...")
             except Exception as e:
                 logger.debug(f"Textbox candidate failed: {e}")
                 continue
@@ -7718,9 +7794,10 @@ async def _fill_composer_caption(page: Page, caption: str) -> None:
             check_interval_ms=150,
         )
 
-    # Fallback: Type directly on page if all else fails
-    logger.warning("⚠️ Textbox targeting failed; falling back to direct keyboard entry...")
-    await page.keyboard.type(caption, delay=35)
+    raise RuntimeError(
+        "Could not insert the full caption exactly into the Facebook composer. "
+        "Posting was stopped to avoid publishing corrupted text."
+    )
 
 
 async def _set_input_files_via_cdp(page: Page, file_input: Any, file_path: str) -> bool:
