@@ -8,25 +8,25 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from page_name_utils import clean_facebook_page_name
 
 
-BUTTON_ADD_ACCOUNT = "➕ Add Facebook Account"
-BUTTON_POST_ACTIVE = "⚡ Post With Active Account"
-BUTTON_QUICK_TEXT = "📝 Quick Text Post"
-BUTTON_QUICK_IMAGE = "📸 Quick Image Post"
-BUTTON_QUICK_VIDEO = "🎬 Quick Video Post"
+BUTTON_ADD_ACCOUNT = "➕ Add Account"
+BUTTON_POST_ACTIVE = "⚡ Post to Pages"
+BUTTON_QUICK_TEXT = "📝 Text Post"
+BUTTON_QUICK_IMAGE = "📸 Image Post"
+BUTTON_QUICK_VIDEO = "🎬 Video Post"
 BUTTON_POST_ALL_PAGES = "📋 Post to All Pages"
-BUTTON_SWITCH_ACCOUNT = "🔁 Switch Active Account"
+BUTTON_SWITCH_ACCOUNT = "🔁 Switch Account"
 BUTTON_SELECT_ACCOUNT = "📱 Select Account & Post"
 BUTTON_MY_ACCOUNTS = "👤 My Accounts"
-BUTTON_CHECK_COOKIES = "🧪 Check All Cookies"
+BUTTON_CHECK_COOKIES = "🧪 Check Cookies"
 BUTTON_POST_HISTORY = "📊 Post History"
-BUTTON_STATUS = "📊 Bot Status"
+BUTTON_STATUS = "⚡ Bot Status"
 BUTTON_BACK = "⬅️ Back to Dashboard"
 BUTTON_DASHBOARD = "🏠 Dashboard"
 BUTTON_LANGUAGE = "🌐 Language"
 BUTTON_DISCOVER_PAGES = "🔎 Discover Pages"
 BUTTON_REFRESH_PAGES = "🔄 Refresh Pages"
 BUTTON_LIST_PAGES = "📄 Stored Pages"
-BUTTON_CHECK_THIS_ACCOUNT = "🧪 Check this account"
+BUTTON_CHECK_THIS_ACCOUNT = "🧪 Check Account"
 BUTTON_CONTINUE_TO_PAGES = "➡️ Continue to pages"
 BUTTON_DONE = "✅ Done"
 BUTTON_CANCEL = "❌ Cancel"
@@ -40,25 +40,25 @@ BUTTON_RUNTIME_LOCKS = "🔐 Runtime Locks"
 BUTTON_SYSTEM_CONFIG = "⚙️ System Config"
 BUTTON_DEBUG_SNAPSHOT = "🧰 Debug Snapshot"
 
-AR_BUTTON_ADD_ACCOUNT = "➕ ضيف حساب فيسبوك"
-AR_BUTTON_POST_ACTIVE = "⚡ انشر بالحساب النشط"
-AR_BUTTON_QUICK_TEXT = "📝 منشور نصي سريع"
-AR_BUTTON_QUICK_IMAGE = "📸 منشور صورة سريع"
-AR_BUTTON_QUICK_VIDEO = "🎬 منشور فيديو سريع"
+AR_BUTTON_ADD_ACCOUNT = "➕ إضافة حساب"
+AR_BUTTON_POST_ACTIVE = "⚡ النشر في الصفحات"
+AR_BUTTON_QUICK_TEXT = "📝 منشور نصي"
+AR_BUTTON_QUICK_IMAGE = "📸 منشور صورة"
+AR_BUTTON_QUICK_VIDEO = "🎬 منشور فيديو"
 AR_BUTTON_POST_ALL_PAGES = "📋 انشر لكل الصفحات"
-AR_BUTTON_SWITCH_ACCOUNT = "🔁 غيّر الحساب النشط"
+AR_BUTTON_SWITCH_ACCOUNT = "🔁 تغيير الحساب"
 AR_BUTTON_SELECT_ACCOUNT = "📱 اختار حساب وانشر"
 AR_BUTTON_MY_ACCOUNTS = "👤 حساباتي"
-AR_BUTTON_CHECK_COOKIES = "🧪 افحص كل الكوكيز"
+AR_BUTTON_CHECK_COOKIES = "🧪 فحص الكوكيز"
 AR_BUTTON_POST_HISTORY = "📊 سجل المنشورات"
-AR_BUTTON_STATUS = "📊 حالة البوت"
+AR_BUTTON_STATUS = "⚡ حالة البوت"
 AR_BUTTON_BACK = "⬅️ ارجع للوحة التحكم"
 AR_BUTTON_DASHBOARD = "🏠 لوحة التحكم"
 AR_BUTTON_LANGUAGE = "🌐 اللغة"
 AR_BUTTON_DISCOVER_PAGES = "🔎 اكتشف الصفحات"
-AR_BUTTON_REFRESH_PAGES = "🔄 حدّث الصفحات"
+AR_BUTTON_REFRESH_PAGES = "🔄 تحديث الصفحات"
 AR_BUTTON_LIST_PAGES = "📄 الصفحات المحفوظة"
-AR_BUTTON_CHECK_THIS_ACCOUNT = "🧪 افحص الحساب ده"
+AR_BUTTON_CHECK_THIS_ACCOUNT = "🧪 فحص الحساب ده"
 AR_BUTTON_CONTINUE_TO_PAGES = "➡️ كمل للصفحات"
 AR_BUTTON_DONE = "✅ تم"
 AR_BUTTON_CANCEL = "❌ إلغاء"
@@ -196,6 +196,22 @@ DASHBOARD_ACTIONS = {
     "📝 Text Post": "quick_text",
     "🖼 Image Post": "quick_image",
     "🎬 Video Post": "quick_video",
+    "➕ Add Facebook Account": "add_account",
+    "⚡ Post With Active Account": "post_active",
+    "📝 Quick Text Post": "quick_text",
+    "📸 Quick Image Post": "quick_image",
+    "🎬 Quick Video Post": "quick_video",
+    "🔁 Switch Active Account": "switch_account",
+    "🧪 Check All Cookies": "check_cookies",
+    "📊 Bot Status": "status",
+    "➕ ضيف حساب فيسبوك": "add_account",
+    "⚡ انشر بالحساب النشط": "post_active",
+    "📝 منشور نصي سريع": "quick_text",
+    "📸 منشور صورة سريع": "quick_image",
+    "🎬 منشور فيديو سريع": "quick_video",
+    "🔁 غيّر الحساب النشط": "switch_account",
+    "🧪 افحص كل الكوكيز": "check_cookies",
+    "📊 حالة البوت": "status",
 }
 
 DASHBOARD_ACTIONS.update(
@@ -306,18 +322,38 @@ def dashboard_markup(
     elif not has_accounts:
         rows.append([button_text("add_account", lang)])
     elif active_account:
-        rows.append([button_text("post_active", lang), button_text("switch_account", lang)])
-        rows.append([button_text("quick_text", lang), button_text("quick_image", lang)])
-        rows.append([button_text("quick_video", lang), button_text("post_all_pages", lang)])
-        rows.append([button_text("refresh_pages", lang), button_text("list_pages", lang)])
+        # Row 1: Quick Posting Actions (3 buttons side-by-side)
+        rows.append([
+            button_text("quick_text", lang),
+            button_text("quick_image", lang),
+            button_text("quick_video", lang)
+        ])
+        # Row 2: Advanced Posting Flows
+        rows.append([
+            button_text("post_active", lang),
+            button_text("post_all_pages", lang)
+        ])
+        # Row 3: Account & Session Management
+        rows.append([
+            button_text("my_accounts", lang),
+            button_text("switch_account", lang),
+            button_text("add_account", lang)
+        ])
+        # Row 4: Page Management
+        rows.append([
+            button_text("refresh_pages", lang),
+            button_text("list_pages", lang)
+        ])
+        # Row 5: Utilities & Verification
+        rows.append([
+            button_text("check_cookies", lang),
+            button_text("post_history", lang)
+        ])
     else:
+        # No active account, but has accounts
         rows.append([button_text("select_account", lang), button_text("add_account", lang)])
-
-    if has_accounts:
-        rows.append([button_text("my_accounts", lang), button_text("add_account", lang)])
-        rows.append([button_text("check_cookies", lang), button_text("post_history", lang)])
-        if not active_account:
-            rows.append([button_text("discover_pages", lang), button_text("list_pages", lang)])
+        rows.append([button_text("my_accounts", lang), button_text("check_cookies", lang)])
+        rows.append([button_text("discover_pages", lang), button_text("list_pages", lang)])
 
     rows.append([button_text("status", lang), button_text("language", lang)])
     if is_admin:

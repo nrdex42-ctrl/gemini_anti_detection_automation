@@ -2066,6 +2066,9 @@ class TelegramBotApp:
             parsed.cookie_header,
             label,
         )
+        cookie_ok = False
+        status_desc = "Not verified yet"
+        status_desc_ar = "لم يتم التحقق بعد"
         try:
             await asyncio.to_thread(
                 self.storage.upsert_account,
@@ -2082,6 +2085,25 @@ class TelegramBotApp:
                     chat_id,
                     edit_message_id=progress_message_id,
                 )
+
+            # Perform inline cookie verification immediately
+            from playwright_engine import validate_facebook_session
+            try:
+                session_ok, detail = await validate_facebook_session(cookies_json(parse_cookies(parsed.cookie_header)))
+                icon, status_text = cookie_validation_summary(session_ok, detail)
+                owner_scope = self.account_owner_scope(user_id)
+                await asyncio.to_thread(
+                    self.storage.update_account_cookie_validation,
+                    parsed.account_id,
+                    "valid" if session_ok else "invalid",
+                    status_text,
+                    owner_scope,
+                )
+                cookie_ok = session_ok
+                status_desc = status_text
+                status_desc_ar = "الكوكيز صالحة" if session_ok else status_text
+            except Exception as val_exc:
+                logger.error(f"Failed to validate cookies inline on account add: {val_exc}")
         except Exception as exc:
             await self.edit_or_send_message(
                 chat_id,
@@ -2103,6 +2125,8 @@ class TelegramBotApp:
                     await self.delete_message(chat_id, cookie_message_id)
 
         if lang == "ar":
+            cookie_icon = "🟢" if cookie_ok else "🔴"
+            cookie_status = f"{cookie_icon} الكوكيز: {status_desc_ar}"
             final_card = "\n".join(
                 [
                     "✅ تم إضافة الحساب بنجاح",
@@ -2111,10 +2135,12 @@ class TelegramBotApp:
                     f"🆔 {parsed.account_id}",
                     f"📋 {name_source_ar}",
                     "🟢 المحدد: نشط",
-                    "🔴 الكوكيز: لم يتم التحقق منها ضد فيسبوك بعد",
+                    cookie_status,
                 ]
             )
         else:
+            cookie_icon = "🟢" if cookie_ok else "🔴"
+            cookie_status = f"{cookie_icon} Cookies: {status_desc}"
             final_card = "\n".join(
                 [
                     "✅ Account Added Successfully",
@@ -2123,7 +2149,7 @@ class TelegramBotApp:
                     f"🆔 {parsed.account_id}",
                     f"📋 {name_source_en}",
                     "🟢 Selected: Active",
-                    "🔴 Cookies: Not verified against Facebook posting yet",
+                    cookie_status,
                 ]
             )
         await self.show_dashboard(
@@ -3151,6 +3177,9 @@ class TelegramBotApp:
             await self.handle_dashboard_button(chat_id, user_id, message_id, action)
             return
         if await self.handle_dashboard_session(chat_id, user_id, message_id, text, message):
+            return
+        # Ignore common session utility button clicks if no session is active to prevent duplicates
+        if text.strip() in {"Done", BUTTON_DONE, "✅ تم", "تم", "Cancel", "❌ Cancel", "❌ إلغاء", "إلغاء", "back", "Back"}:
             return
         # Ignore unrecognized commands to avoid spamming the user, but refresh/show the dashboard
         await self.show_dashboard(chat_id, message_id, user_id=user_id)

@@ -20,10 +20,10 @@ def test_arabic_dashboard_keyboard_actions_and_prompts():
     markup = dashboard_markup(has_accounts=True, active_account="123", lang="ar")
     labels = _reply_labels(markup)
 
-    assert "⚡ انشر بالحساب النشط" in labels
+    assert "⚡ النشر في الصفحات" in labels
     assert "🌐 اللغة" in labels
     assert dashboard_action("🌐 اللغة") == "language"
-    assert dashboard_action("📝 منشور نصي سريع") == "quick_text"
+    assert dashboard_action("📝 منشور نصي") == "quick_text"
     assert dashboard_action("📄 الصفحات المحفوظة") == "list_pages"
 
     assert post_type_choices("ar") == ("نص", "صورة", "فيديو")
