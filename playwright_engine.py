@@ -145,6 +145,11 @@ POST_PROFILE_SWITCH_FAST_SETTLE_GRACE_SECONDS = _env_float(
     1.0,
     minimum=0.0,
 )
+POST_PROFILE_SWITCH_CONFIRM_TIMEOUT_MS = _env_int(
+    'POST_PROFILE_SWITCH_CONFIRM_TIMEOUT_MS',
+    1200,
+    minimum=200,
+)
 REDIS_URL = os.getenv('REDIS_URL', '').strip()
 DATABASE_URL = os.getenv('DATABASE_URL', '').strip()
 POST_ACCOUNT_LOCK_TTL_SECONDS = _env_int('POST_ACCOUNT_LOCK_TTL_SECONDS', 1800)
@@ -221,6 +226,7 @@ POST_PUBLISH_IN_PROGRESS_TIMEOUT_MS = _env_int(
 )
 POST_NETWORK_CONFIRMATION_ENABLED = os.getenv('POST_NETWORK_CONFIRMATION_ENABLED', 'true').lower() == 'true'
 POST_NETWORK_CONFIRMATION_TIMEOUT_MS = _env_int('POST_NETWORK_CONFIRMATION_TIMEOUT_MS', 10000, minimum=1500)
+POST_VIDEO_NETWORK_CONFIRMATION_TIMEOUT_MS = _env_int('POST_VIDEO_NETWORK_CONFIRMATION_TIMEOUT_MS', 3500, minimum=1500)
 POST_TARGET_FEED_CONFIRMATION_ENABLED = os.getenv('POST_TARGET_FEED_CONFIRMATION_ENABLED', 'true').lower() == 'true'
 POST_TARGET_FEED_CONFIRMATION_TIMEOUT_MS = _env_int('POST_TARGET_FEED_CONFIRMATION_TIMEOUT_MS', 10000, minimum=1500)
 
@@ -1557,13 +1563,20 @@ def _start_post_network_monitor(page: Page) -> Optional[_FacebookPostNetworkMoni
 
 async def _await_post_network_confirmation(
     network_monitor: Optional[_FacebookPostNetworkMonitor],
+    timeout_ms: Optional[int] = None,
 ) -> Tuple[Optional[bool], str]:
     if network_monitor is None:
         return None, 'network confirmation disabled'
     try:
-        return await network_monitor.wait(POST_NETWORK_CONFIRMATION_TIMEOUT_MS)
+        return await network_monitor.wait(timeout_ms or POST_NETWORK_CONFIRMATION_TIMEOUT_MS)
     finally:
         network_monitor.stop()
+
+
+def _post_network_confirmation_timeout_ms(post_type: str) -> int:
+    if str(post_type or '').strip().lower() == 'video':
+        return min(POST_NETWORK_CONFIRMATION_TIMEOUT_MS, POST_VIDEO_NETWORK_CONFIRMATION_TIMEOUT_MS)
+    return POST_NETWORK_CONFIRMATION_TIMEOUT_MS
 
 
 async def _facebook_posting_in_progress_visible(page: Page) -> bool:
@@ -1971,10 +1984,11 @@ async def _await_initial_publish_confirmation(
     """
     if network_monitor is None:
         return None, 'network confirmation disabled'
+    network_timeout_ms = _post_network_confirmation_timeout_ms(post_type)
     if not POST_INITIAL_UI_CONFIRMATION_ENABLED:
-        return await _await_post_network_confirmation(network_monitor)
+        return await _await_post_network_confirmation(network_monitor, timeout_ms=network_timeout_ms)
 
-    network_task = asyncio.create_task(_await_post_network_confirmation(network_monitor))
+    network_task = asyncio.create_task(_await_post_network_confirmation(network_monitor, timeout_ms=network_timeout_ms))
     ui_task = asyncio.create_task(
         _verify_post_published(
             page,
@@ -6272,7 +6286,7 @@ async def _wait_for_composer_action_controls(dialog: Any, timeout: int = 30000) 
             pass
         if text_content and 'Post settings' not in text_content:
             return
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(0.25)
 
 
 async def _submit_desktop_composer(page: Page) -> bool:
@@ -6360,8 +6374,30 @@ async def _submit_desktop_composer(page: Page) -> bool:
             try:
                 await page.wait_for_function(
                     """() => {
-                        const buttons = document.querySelectorAll('div[role="button"][aria-label]');
-                        return Array.from(buttons).some(b => /^(Post|Publish|نشر|مشاركة)$/i.test(b.getAttribute('aria-label') || b.innerText?.trim()));
+                        const normalize = value => (value || '').replace(/\\s+/g, ' ').trim();
+                        const disabled = element => Boolean(
+                            element.disabled ||
+                            element.getAttribute('disabled') !== null ||
+                            element.getAttribute('aria-disabled') === 'true' ||
+                            element.closest('[aria-disabled="true"]') ||
+                            element.closest('[disabled]')
+                        );
+                        const buttons = document.querySelectorAll(
+                            'div[role="dialog"] button, div[role="dialog"] div[role="button"], div[role="dialog"] a[role="button"]'
+                        );
+                        return Array.from(buttons).some(button => {
+                            const rect = button.getBoundingClientRect();
+                            if (rect.width <= 0 || rect.height <= 0 || disabled(button)) {
+                                return false;
+                            }
+                            const text = normalize(
+                                button.getAttribute('aria-label') ||
+                                button.innerText ||
+                                button.getAttribute('title') ||
+                                ''
+                            );
+                            return /^(Next|Continue|Post|Publish|Share|التالي|متابعة|نشر|مشاركة)$/i.test(text);
+                        });
                     }""",
                     timeout=3500,
                 )
@@ -6709,42 +6745,65 @@ async def _click_profile_switch_option(page: Page, page_name: str, timeout: int 
     return False
 
 
-async def _confirm_profile_switch_dialog(page: Page, timeout: int = 2500) -> bool:
+async def _confirm_profile_switch_dialog(page: Page, timeout: Optional[int] = None) -> bool:
     """Click the final Switch confirmation in Facebook's two-step actor switch dialog."""
-    confirm_pattern = re.compile(
-        r'^\s*(Switch|Switch now|Switch profile|تبديل|تبديل الآن|بدّل|بدّل الآن|بدل|بدل الآن)\s*$',
-        re.I,
+    timeout_ms = POST_PROFILE_SWITCH_CONFIRM_TIMEOUT_MS if timeout is None else max(1, int(timeout))
+    deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000)
+    selector = (
+        "div[role='dialog'] button, "
+        "div[role='dialog'] div[role='button'], "
+        "div[role='dialog'] a[role='button'], "
+        "div[role='dialog'] input[type='submit']"
     )
-    reject_pattern = re.compile(
-        r'See all profiles|Cancel|Not now|Close|Back|'
-        r'عرض كل الملفات الشخصية|إلغاء|الغاء|ليس الآن|رجوع|إغلاق',
-        re.I,
-    )
-    deadline = asyncio.get_running_loop().time() + (timeout / 1000)
     while asyncio.get_running_loop().time() < deadline:
         try:
-            dialogs = await page.locator("div[role='dialog']").all()
-        except Exception:
-            dialogs = []
-        for dialog in reversed(dialogs):
-            text_content = await _locator_compact_text(dialog)
-            if not _looks_like_profile_switch_dialog_text(text_content):
-                continue
-            try:
-                if not await dialog.is_visible(timeout=300):
-                    continue
-            except Exception:
-                continue
-            clicked = await _click_enabled_text_match(
-                dialog,
-                confirm_pattern,
-                timeout=700,
-                reject_pattern=reject_pattern,
+            matches = await page.locator(selector).evaluate_all(
+                """
+                elements => elements.map((element, index) => {
+                    const rect = element.getBoundingClientRect();
+                    const style = window.getComputedStyle(element);
+                    const text = (
+                        element.innerText ||
+                        element.getAttribute('aria-label') ||
+                        element.getAttribute('title') ||
+                        element.getAttribute('value') ||
+                        element.textContent ||
+                        ''
+                    ).replace(/\\s+/g, ' ').trim();
+                    const disabled = Boolean(
+                        element.disabled ||
+                        element.getAttribute('disabled') !== null ||
+                        element.getAttribute('aria-disabled') === 'true' ||
+                        element.closest('[aria-disabled="true"]') ||
+                        element.closest('[disabled]')
+                    );
+                    const visible = (
+                        rect.width > 0 &&
+                        rect.height > 0 &&
+                        style &&
+                        style.visibility !== 'hidden' &&
+                        style.display !== 'none'
+                    );
+                    return { index, text, disabled, visible };
+                }).filter(item => {
+                    if (!item.visible || item.disabled || !item.text) {
+                        return false;
+                    }
+                    if (/See all profiles|Cancel|Not now|Close|Back|عرض كل الملفات الشخصية|إلغاء|الغاء|ليس الآن|رجوع|إغلاق/i.test(item.text)) {
+                        return false;
+                    }
+                    return /^(Switch|Switch now|Switch profile|تبديل|تبديل الآن|بدّل|بدّل الآن|بدل|بدل الآن)$/i.test(item.text);
+                })
+                """
             )
-            if clicked:
-                logger.info(f"Page Switch: clicked profile switch confirmation: '{clicked}'")
+            if matches:
+                match = matches[-1]
+                await page.locator(selector).nth(int(match.get('index') or 0)).click(timeout=min(900, timeout_ms))
+                logger.info(f"Page Switch: clicked profile switch confirmation: '{match.get('text')}'")
                 return True
-        await asyncio.sleep(0.2)
+        except Exception as exc:
+            logger.debug(f'Page Switch: fast confirmation scan failed: {exc}')
+        await asyncio.sleep(0.1)
     return False
 
 

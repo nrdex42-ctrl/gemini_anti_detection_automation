@@ -67,8 +67,8 @@ def test_initial_video_confirmation_uses_fast_publish_click_acceptance(monkeypat
     async def run():
         calls = []
 
-        async def slow_network_confirmation(network_monitor):
-            calls.append(("network", network_monitor))
+        async def slow_network_confirmation(network_monitor, timeout_ms=None):
+            calls.append(("network", network_monitor, timeout_ms))
             await asyncio.sleep(30)
             return None, "late network confirmation"
 
@@ -100,7 +100,7 @@ def test_initial_video_confirmation_uses_fast_publish_click_acceptance(monkeypat
             True,
             "quick UI publish confirmation: video publish accepted after final publish click",
         )
-        assert ("network", fake_monitor) in calls
+        assert ("network", fake_monitor, engine._post_network_confirmation_timeout_ms("video")) in calls
         assert ("verify", fake_page, "video", engine.POST_INITIAL_UI_CONFIRMATION_TIMEOUT_MS, True) in calls
 
     asyncio.run(run())

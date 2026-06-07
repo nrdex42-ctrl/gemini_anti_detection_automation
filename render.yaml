@@ -95,7 +95,11 @@ services:
         value: "2500"
       - key: POST_PROFILE_SWITCH_FAST_SETTLE_GRACE_SECONDS
         value: "1"
+      - key: POST_PROFILE_SWITCH_CONFIRM_TIMEOUT_MS
+        value: "1200"
       - key: POST_INITIAL_UI_CONFIRMATION_TIMEOUT_MS
+        value: "3500"
+      - key: POST_VIDEO_NETWORK_CONFIRMATION_TIMEOUT_MS
         value: "3500"
       - key: POST_COMPOSER_BUTTON_TIMEOUT_MS
         value: "5000"

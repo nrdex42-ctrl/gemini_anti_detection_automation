@@ -2078,13 +2078,6 @@ class TelegramBotApp:
                 user_id,
             )
             await asyncio.to_thread(self.storage.set_active_account, user_id, parsed.account_id)
-            if not name_resolved:
-                self.schedule_account_name_refresh(
-                    user_id,
-                    [{"account_id": parsed.account_id, "label": label, "active": True}],
-                    chat_id,
-                    edit_message_id=progress_message_id,
-                )
 
             # Perform inline cookie verification immediately
             from playwright_engine import validate_facebook_session
@@ -2152,12 +2145,21 @@ class TelegramBotApp:
                     cookie_status,
                 ]
             )
-        await self.show_dashboard(
+        if progress_message_id:
+            with suppress(Exception):
+                await self.delete_message(chat_id, progress_message_id)
+        dashboard_message_id = await self.show_dashboard(
             chat_id,
             prefix=final_card,
             user_id=user_id,
-            edit_message_id=progress_message_id,
         )
+        if not name_resolved:
+            self.schedule_account_name_refresh(
+                user_id,
+                [{"account_id": parsed.account_id, "label": label, "active": True}],
+                chat_id,
+                edit_message_id=dashboard_message_id,
+            )
         return True
 
     async def handle_dashboard_session(
