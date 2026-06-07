@@ -449,8 +449,10 @@ class TelegramBotApp:
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         if _env_bool("AUTO_SET_TELEGRAM_WEBHOOK", True):
             await self.configure_telegram_webhook()
-        if _env_bool("RESTART_BROADCAST_ENABLED", True):
-            self.start_background_task(self.notify_restart_dashboard(), "restart dashboard broadcast")
+        self.start_background_task(
+            self.startup_validation_and_broadcast(),
+            "startup validation and broadcast"
+        )
 
     async def cleanup(self, app: web.Application) -> None:
         for task in list(self.background_tasks):
@@ -581,6 +583,56 @@ class TelegramBotApp:
             logger.info("Restart dashboard broadcast sent to %d user(s)", sent)
         except Exception:
             logger.exception("Restart dashboard broadcast failed")
+
+    async def startup_validation_and_broadcast(self) -> None:
+        try:
+            await self.validate_all_accounts_cookies_startup()
+        except Exception:
+            logger.exception("Startup validation task failed")
+        try:
+            if _env_bool("RESTART_BROADCAST_ENABLED", True):
+                await self.notify_restart_dashboard()
+        except Exception:
+            logger.exception("Startup notify restart dashboard failed")
+
+    async def validate_all_accounts_cookies_startup(self) -> None:
+        logger.info("Starting startup cookie validation background task...")
+        try:
+            accounts = await asyncio.to_thread(self.storage.list_accounts, None)
+            if not accounts:
+                logger.info("No active accounts found for startup cookie validation.")
+                return
+            
+            from playwright_engine import validate_facebook_session
+            for account in accounts:
+                account_id = str(account.get("account_id") or "")
+                display = account_display_name(account, account_id)
+                logger.info("Startup cookie validation: Checking %s...", display)
+                try:
+                    cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, None)
+                    parsed = parse_account_cookie_payload(cookie_header, account_id)
+                    session_ok, detail = await validate_facebook_session(cookies_json(parse_cookies(parsed.cookie_header)))
+                    status_text = "Facebook session is valid" if session_ok else detail
+                    await asyncio.to_thread(
+                        self.storage.update_account_cookie_validation,
+                        account_id,
+                        "valid" if session_ok else "invalid",
+                        status_text,
+                        None,
+                    )
+                    logger.info("Startup cookie validation: %s is %s", display, "valid" if session_ok else "invalid")
+                except Exception as exc:
+                    logger.exception("Startup cookie validation failed for %s", display)
+                    await asyncio.to_thread(
+                        self.storage.update_account_cookie_validation,
+                        account_id,
+                        "invalid",
+                        compact_error(exc, 500),
+                        None,
+                    )
+            logger.info("Startup cookie validation background task complete.")
+        except Exception as e:
+            logger.exception("Failed to complete startup cookie validation task")
 
     async def send_message(
         self,
