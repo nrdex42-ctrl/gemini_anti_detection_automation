@@ -6211,6 +6211,8 @@ class TelegramBotApp:
             _env_int("LIVE_MATRIX_COOKIE_COOLDOWN_SECONDS", 360, minimum=0),
             minimum=0,
         )
+        engine_min_interval_seconds = _env_int("POST_COOKIE_MIN_INTERVAL_SECONDS", 0, minimum=0)
+        cooldown_seconds = max(cooldown_seconds, engine_min_interval_seconds)
         lease_seconds = _env_int(
             "BOT_ACCOUNT_LOCK_LEASE_SECONDS",
             max(1800, cooldown_seconds + 900),
@@ -6258,7 +6260,7 @@ class TelegramBotApp:
                 if remaining > 0:
                     while remaining > 0:
                         await notify(
-                            f"Account slot acquired. Cookie cooldown active: {format_elapsed_seconds(remaining)} before browser posting starts."
+                            f"Facebook account cooldown active. Posting will start in {format_elapsed_seconds(remaining)}."
                         )
                         sleep_for = min(max(1, poll_seconds), remaining)
                         await asyncio.sleep(sleep_for)

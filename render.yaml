@@ -38,7 +38,7 @@ services:
       - key: DELETE_COOKIE_MESSAGES
         value: "true"
       - key: BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS
-        value: "360"
+        value: "900"
       - key: BOT_ACCOUNT_LOCK_LEASE_SECONDS
         value: "1800"
       - key: BOT_ACCOUNT_LOCK_MAX_WAIT_SECONDS

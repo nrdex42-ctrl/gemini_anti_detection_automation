@@ -10,6 +10,7 @@ if "aiohttp" not in sys.modules:
     aiohttp_stub.web = types.SimpleNamespace()
     sys.modules["aiohttp"] = aiohttp_stub
 
+import telegram_bot
 from telegram_bot import (
     LTR_MARK,
     POP_DIRECTIONAL_ISOLATE,
@@ -118,5 +119,48 @@ def test_posting_complete_card_restores_dashboard_reply_keyboard():
         assert "✅ Done" not in labels
         assert "❌ Cancel" not in labels
         assert "⬅️ Back to Dashboard" not in labels
+
+    asyncio.run(run())
+
+
+def test_account_slot_wait_uses_engine_cookie_min_interval(monkeypatch):
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.debug_event = lambda *args, **kwargs: None
+        updates = []
+        sleeps = []
+
+        class Storage:
+            def claim_account_runtime(self, account_id, owner, lease_seconds):
+                return {
+                    "account_id": account_id,
+                    "last_cookie_used_at": "recent",
+                    "locked_until": None,
+                    "locked_by": owner,
+                }
+
+        async def progress_update(detail):
+            updates.append(detail)
+
+        seconds_values = iter([0, 5])
+
+        def fake_seconds_since(value):
+            return next(seconds_values)
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        app.storage = Storage()
+        monkeypatch.setenv("BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS", "0")
+        monkeypatch.setenv("POST_COOKIE_MIN_INTERVAL_SECONDS", "5")
+        monkeypatch.setenv("BOT_ACCOUNT_LOCK_POLL_SECONDS", "1")
+        monkeypatch.setattr(telegram_bot, "seconds_since", fake_seconds_since)
+        monkeypatch.setattr(telegram_bot.asyncio, "sleep", fake_sleep)
+
+        acquired = await app.wait_for_account_slot("acct_1", "owner_1", 123, progress_update)
+
+        assert acquired is True
+        assert sleeps == [1]
+        assert any("Facebook account cooldown active. Posting will start in 5s." in item for item in updates)
 
     asyncio.run(run())
