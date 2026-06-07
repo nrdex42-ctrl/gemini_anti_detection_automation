@@ -339,6 +339,18 @@ _SAMESITE_ALIASES = {
     'unspecified': '',
 }
 
+
+def _parallel_batch_effective_concurrency(total: int, max_parallel: Optional[int] = None) -> int:
+    requested_concurrency = max_parallel or MAX_PARALLEL_PAGES
+    return max(
+        1,
+        min(
+            max(1, total),
+            requested_concurrency,
+            POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS,
+        ),
+    )
+
 _PAGE_DISCOVERY_URLS = (
     'https://www.facebook.com/pages/?category=your_pages',
     'https://www.facebook.com/bookmarks/pages',
@@ -9916,14 +9928,7 @@ async def _create_facebook_posts_parallel_unstaged(
             'set POST_ALLOW_PARALLEL_SAME_COOKIE=true to opt in'
         )
         return await _create_facebook_posts_unstaged(cookies_json, posts, progress_callback)
-    concurrency = max(
-        1,
-        min(
-            total,
-            requested_concurrency,
-            POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS,
-        ),
-    )
+    concurrency = _parallel_batch_effective_concurrency(total, max_parallel)
     if concurrency <= 1:
         logger.info(
             'PARALLEL_BATCH stage="disabled" reason="same_cookie_parallel_cap_is_one"; '

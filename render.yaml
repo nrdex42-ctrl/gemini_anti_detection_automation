@@ -110,15 +110,15 @@ services:
       - key: MEDIA_UPLOAD_READY_VIDEO_TIMEOUT
         value: "120"
       - key: POST_PARALLEL_BATCH_ENABLED
-        value: "false"
+        value: "true"
       - key: POST_ALLOW_PARALLEL_SAME_COOKIE
-        value: "false"
+        value: "true"
       - key: POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS
-        value: "1"
+        value: "3"
       - key: MAX_PARALLEL_PAGES
-        value: "1"
+        value: "3"
       - key: POST_PARALLEL_SAME_COOKIE_STAGGER_SECONDS
-        value: "0"
+        value: "1.5"
       - key: POST_PARALLEL_ENABLE_PAGES_PORTAL_FALLBACK
         value: "true"
       - key: POST_PARALLEL_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS
