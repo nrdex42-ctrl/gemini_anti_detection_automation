@@ -432,6 +432,7 @@ class TelegramBotApp:
         self.session: Optional[ClientSession] = None
         self.api_base = f"https://api.telegram.org/bot{self.token}"
         self.dashboard_sessions: Dict[str, Dict[str, Any]] = {}
+        self.update_locks: Dict[str, asyncio.Lock] = {}
         self.account_name_lookup_tasks: set[str] = set()
         self.background_tasks: set[asyncio.Task[Any]] = set()
         self.background_task_labels: Dict[asyncio.Task[Any], str] = {}
@@ -905,8 +906,17 @@ class TelegramBotApp:
     async def download_file(self, file_id: str, account_id: str) -> str:
         if self.session is None:
             raise RuntimeError("HTTP session is not ready")
-        file_info = await self.telegram_api("getFile", {"file_id": file_id})
-        file_path = str((file_info.get("result") or {}).get("file_path") or "")
+        attempts = _env_int("BOT_TELEGRAM_GET_FILE_ATTEMPTS", 5, minimum=1)
+        retry_seconds = _env_float("BOT_TELEGRAM_GET_FILE_RETRY_SECONDS", 0.8, minimum=0.0)
+        file_info: Dict[str, Any] = {}
+        file_path = ""
+        for attempt in range(attempts):
+            file_info = await self.telegram_api("getFile", {"file_id": file_id})
+            file_path = str((file_info.get("result") or {}).get("file_path") or "")
+            if file_path:
+                break
+            if attempt < attempts - 1:
+                await asyncio.sleep(retry_seconds)
         if not file_path:
             raise RuntimeError("Telegram did not return a downloadable file path")
         suffix = Path(file_path).suffix or ".bin"
@@ -1006,6 +1016,21 @@ class TelegramBotApp:
 
     def clear_dashboard_session(self, chat_id: int, user_id: int) -> None:
         self.dashboard_sessions.pop(self.dashboard_session_key(chat_id, user_id), None)
+
+    def update_lock_key(self, chat_id: int, user_id: int) -> str:
+        return f"{chat_id}:{user_id}"
+
+    def update_lock(self, chat_id: int, user_id: int) -> asyncio.Lock:
+        locks = getattr(self, "update_locks", None)
+        if locks is None:
+            locks = {}
+            self.update_locks = locks
+        key = self.update_lock_key(chat_id, user_id)
+        lock = locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[key] = lock
+        return lock
 
     async def touch_user_seen(self, user_id: int, chat_id: int) -> None:
         try:
@@ -2587,7 +2612,23 @@ class TelegramBotApp:
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
                 return True
-            media_path = await self.download_file(file_id, str(session.get("account_id") or ""))
+            try:
+                media_path = await self.download_file(file_id, str(session.get("account_id") or ""))
+            except Exception as exc:
+                self.set_dashboard_session(chat_id, user_id, session)
+                detail = compact_error(exc, 500)
+                warning = (
+                    f"⚠️ لم أقدر أحمل الفيديو ده من تيليجرام.\n{detail}\n\nابعت نفس الفيديو مرة تانية."
+                    if lang == "ar"
+                    else f"⚠️ I could not download that video from Telegram.\n{detail}\n\nSend the same video again."
+                )
+                await self.send_message(
+                    chat_id,
+                    "\n".join([warning, "", self.multi_video_prompt(session)]),
+                    message_id,
+                    reply_markup=cancel_markup(lang=lang),
+                )
+                return True
             paths = list(session.get("multi_media_paths") or [])
             paths.append(media_path)
             session["post_type"] = "video"
@@ -3104,7 +3145,11 @@ class TelegramBotApp:
             callback_data=callback_data,
         )
         try:
-            await self.handle_update(update)
+            if chat_id and user_id:
+                async with self.update_lock(chat_id, user_id):
+                    await self.handle_update(update)
+            else:
+                await self.handle_update(update)
             self.debug_event(
                 "telegram_update_complete",
                 trace_id,
@@ -3189,6 +3234,11 @@ class TelegramBotApp:
             self.clear_dashboard_session(chat_id, user_id)
             await self.show_dashboard(chat_id, message_id, user_id=user_id)
             return
+        session = self.get_dashboard_session(chat_id, user_id)
+        explicit_escape_actions = {"dashboard", "cancel", "language", "user_dashboard", "admin_dashboard"}
+        if session and action not in explicit_escape_actions:
+            if await self.handle_dashboard_session(chat_id, user_id, message_id, text, message):
+                return
         if action:
             await self.handle_dashboard_button(chat_id, user_id, message_id, action)
             return
@@ -3197,8 +3247,8 @@ class TelegramBotApp:
         # Ignore common session utility button clicks if no session is active to prevent duplicates
         if text.strip() in {"Done", BUTTON_DONE, "✅ تم", "تم", "Cancel", "❌ Cancel", "❌ إلغاء", "إلغاء", "back", "Back"}:
             return
-        # Ignore unrecognized commands to avoid spamming the user, but refresh/show the dashboard
-        await self.show_dashboard(chat_id, message_id, user_id=user_id)
+        if command.startswith("/"):
+            await self.send_message(chat_id, help_text(), message_id, reply_markup=await self.dashboard_reply_markup(user_id))
 
     async def command_add_account(
         self,
