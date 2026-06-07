@@ -1118,7 +1118,7 @@ class TelegramBotApp:
                 "اختار لغة لوحة التحكم." if lang == "ar" else "Choose the dashboard language.",
             ]
         )
-        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=language_selection_markup(lang=lang))
+        await self.edit_or_send_message(chat_id, message_id, "\n".join(lines), reply_markup=language_selection_markup(lang=lang))
 
     def admin_overview_text(self, summary: Dict[str, Any], prefix: str = "") -> str:
         status_counts = summary.get("job_status_counts") or {}
@@ -1676,10 +1676,7 @@ class TelegramBotApp:
         session["step"] = "review"
         session["lang"] = lang
         self.set_dashboard_session(chat_id, user_id, session)
-        if edit:
-            await self.edit_message(chat_id, message_id, text, reply_markup=post_confirm_inline_markup(lang=lang))
-            return
-        await self.send_message(chat_id, text, message_id, reply_markup=post_confirm_inline_markup(lang=lang))
+        await self.edit_or_send_message(chat_id, message_id, text, reply_markup=post_confirm_inline_markup(lang=lang))
 
     async def queue_reviewed_post(self, chat_id: int, user_id: int, session: Dict[str, Any]) -> None:
         account_id = str(session.get("account_id") or "")
@@ -3364,7 +3361,7 @@ class TelegramBotApp:
         recent_jobs = summary.get("recent_jobs") or []
         if not recent_jobs:
             text = "لا توجد مهام نشر بعد." if lang == "ar" else "No post jobs yet."
-            await self.send_message(chat_id, text, message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+            await self.edit_or_send_message(chat_id, message_id, text, reply_markup=await self.dashboard_reply_markup(user_id))
             return
         lines = ["📊 سجل المنشورات" if lang == "ar" else "📊 Post History", "━━━━━━━━━━━━━━━━━━━━━━"]
         for job in recent_jobs:
@@ -3376,7 +3373,7 @@ class TelegramBotApp:
                 -1,
             )[:42]
             lines.append(f"- {job.get('status')} | {job.get('account_id')} | {job.get('post_type')} | {page}")
-        await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+        await self.edit_or_send_message(chat_id, message_id, "\n".join(lines), reply_markup=await self.dashboard_reply_markup(user_id))
 
     async def command_remove_account(self, chat_id: int, message_id: int, args: List[str], user_id: int = 0) -> None:
         if len(args) != 1:
@@ -3421,18 +3418,17 @@ class TelegramBotApp:
             refresh=refresh,
         )
         refresh_markup = self.refresh_pages_inline_markup(lang)
-        progress = await self.send_message(
+        progress_message_id = await self.edit_or_send_message(
             chat_id,
+            message_id,
             progress_card(
                 f"{verb}...",
                 0,
                 3,
                 f"Debug ID: {trace_id}\n{'جاري تجهيز جلسة فيسبوك...' if lang == 'ar' else 'Preparing Facebook session...'}",
             ),
-            message_id,
             reply_markup=refresh_markup,
         )
-        progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
 
         async def update_refresh_card(text: str) -> None:
             nonlocal progress_message_id
