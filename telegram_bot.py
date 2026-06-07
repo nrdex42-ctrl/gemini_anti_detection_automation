@@ -979,7 +979,7 @@ class TelegramBotApp:
             return False
         return not label or label == account_id or label == "Facebook Account" or label == f"Facebook Account {account_id}"
 
-    def schedule_account_name_refresh(self, user_id: int, accounts: List[Dict[str, Any]], chat_id: int = 0) -> None:
+    def schedule_account_name_refresh(self, user_id: int, accounts: List[Dict[str, Any]], chat_id: int = 0, edit_message_id: int = 0) -> None:
         owner_scope = self.account_owner_scope(user_id)
         for account in accounts[:5]:
             account_id = str(account.get("account_id") or "").strip()
@@ -990,7 +990,7 @@ class TelegramBotApp:
                 continue
             self.account_name_lookup_tasks.add(task_key)
             self.start_background_task(
-                self.refresh_account_name_task(account_id, owner_scope, task_key, chat_id, user_id),
+                self.refresh_account_name_task(account_id, owner_scope, task_key, chat_id, user_id, edit_message_id=edit_message_id),
                 f"account name lookup {account_id}",
             )
 
@@ -1001,6 +1001,7 @@ class TelegramBotApp:
         task_key: str,
         chat_id: int = 0,
         user_id: int = 0,
+        edit_message_id: int = 0,
     ) -> None:
         try:
             cookie_string = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_id)
@@ -1015,6 +1016,7 @@ class TelegramBotApp:
                         chat_id,
                         prefix=f"Account name updated: {resolved_name}",
                         user_id=user_id,
+                        edit_message_id=edit_message_id,
                     )
             elif error:
                 logger.info("Facebook account label refresh did not resolve %s: %s", account_id, error[:200])
@@ -1066,12 +1068,19 @@ class TelegramBotApp:
             lang=lang,
         )
 
-    async def show_dashboard(self, chat_id: int, message_id: int = 0, prefix: str = "", user_id: int = 0) -> None:
+    async def show_dashboard(
+        self,
+        chat_id: int,
+        message_id: int = 0,
+        prefix: str = "",
+        user_id: int = 0,
+        edit_message_id: int = 0,
+    ) -> int:
         try:
             accounts, summary, active_account = await self.dashboard_state(user_id)
             lang = await self.user_language(user_id)
             if user_id:
-                self.schedule_account_name_refresh(user_id, accounts, chat_id)
+                self.schedule_account_name_refresh(user_id, accounts, chat_id, edit_message_id=edit_message_id or message_id)
             text = dashboard_text(accounts=accounts, summary=summary, active_account=active_account, prefix=prefix, lang=lang)
             status_counts = summary.get("job_status_counts") or {}
             active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
@@ -1087,7 +1096,12 @@ class TelegramBotApp:
             lang = "en"
             text = f"{prefix + chr(10) + chr(10) if prefix else ''}Dashboard is available, but database status could not be loaded: {exc}"
             reply_markup = dashboard_markup(has_accounts=False, lang=lang)
-        await self.send_message(chat_id, text, message_id, reply_markup=reply_markup)
+        return await self.edit_or_send_message(
+            chat_id,
+            edit_message_id or message_id,
+            text,
+            reply_markup=reply_markup,
+        )
 
     async def show_language_card(self, chat_id: int, message_id: int = 0, user_id: int = 0, prefix: str = "") -> None:
         lang = await self.user_language(user_id)
@@ -2016,6 +2030,7 @@ class TelegramBotApp:
                     user_id,
                     [{"account_id": parsed.account_id, "label": label, "active": True}],
                     chat_id,
+                    edit_message_id=progress_message_id,
                 )
         except Exception as exc:
             await self.edit_or_send_message(
@@ -2061,17 +2076,11 @@ class TelegramBotApp:
                     "🔴 Cookies: Not verified against Facebook posting yet",
                 ]
             )
-        await self.edit_or_send_message(
-            chat_id,
-            progress_message_id,
-            progress_card(progress_title, 3, 3, "تم حفظ الحساب." if lang == "ar" else "Account saved."),
-            reply_to_message_id=message_id,
-            reply_markup=await self.dashboard_reply_markup(user_id),
-        )
         await self.show_dashboard(
             chat_id,
             prefix=final_card,
             user_id=user_id,
+            edit_message_id=progress_message_id,
         )
         return True
 
