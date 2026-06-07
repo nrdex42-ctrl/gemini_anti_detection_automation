@@ -6630,9 +6630,10 @@ async def _handle_pages_portal_profile_switch(page: Page, page_name: str) -> boo
         if await _profile_switch_dialog_visible(page):
             selected = await _click_profile_switch_option(page, page_name, timeout=3500)
             if selected:
+                await _confirm_profile_switch_dialog(page)
                 switched = await _wait_for_profile_switch_to_settle(
                     page,
-                    timeout_ms=8000,
+                    timeout_ms=10000,
                     initial_grace_seconds=POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS,
                 )
         if not switched:
@@ -6645,7 +6646,7 @@ async def _handle_pages_portal_profile_switch(page: Page, page_name: str) -> boo
                 await switch_button.click(timeout=3000)
                 switched = await _wait_for_profile_switch_to_settle(
                     page,
-                    timeout_ms=8000,
+                    timeout_ms=10000,
                     initial_grace_seconds=POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS,
                 )
     except Exception as exc:
@@ -6695,15 +6696,55 @@ async def _click_profile_switch_option(page: Page, page_name: str, timeout: int 
     return False
 
 
+async def _confirm_profile_switch_dialog(page: Page, timeout: int = 2500) -> bool:
+    """Click the final Switch confirmation in Facebook's two-step actor switch dialog."""
+    confirm_pattern = re.compile(
+        r'^\s*(Switch|Switch now|Switch profile|تبديل|تبديل الآن|بدّل|بدّل الآن|بدل|بدل الآن)\s*$',
+        re.I,
+    )
+    reject_pattern = re.compile(
+        r'See all profiles|Cancel|Not now|Close|Back|'
+        r'عرض كل الملفات الشخصية|إلغاء|الغاء|ليس الآن|رجوع|إغلاق',
+        re.I,
+    )
+    deadline = asyncio.get_running_loop().time() + (timeout / 1000)
+    while asyncio.get_running_loop().time() < deadline:
+        try:
+            dialogs = await page.locator("div[role='dialog']").all()
+        except Exception:
+            dialogs = []
+        for dialog in reversed(dialogs):
+            text_content = await _locator_compact_text(dialog)
+            if not _looks_like_profile_switch_dialog_text(text_content):
+                continue
+            try:
+                if not await dialog.is_visible(timeout=300):
+                    continue
+            except Exception:
+                continue
+            clicked = await _click_enabled_text_match(
+                dialog,
+                confirm_pattern,
+                timeout=700,
+                reject_pattern=reject_pattern,
+            )
+            if clicked:
+                logger.info(f"Page Switch: clicked profile switch confirmation: '{clicked}'")
+                return True
+        await asyncio.sleep(0.2)
+    return False
+
+
 async def _click_onscreen_switch_button(page: Page, page_name: str = '') -> bool:
     """Detect and click any prominent 'Switch Now' or 'Switch' button in the page content itself."""
     try:
         if page_name and await _profile_switch_dialog_visible(page):
             selected = await _click_profile_switch_option(page, page_name)
             if selected:
+                await _confirm_profile_switch_dialog(page)
                 return await _wait_for_profile_switch_to_settle(
                     page,
-                    timeout_ms=6000,
+                    timeout_ms=9000,
                     initial_grace_seconds=POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS,
                 )
             return False
@@ -6736,9 +6777,10 @@ async def _click_onscreen_switch_button(page: Page, page_name: str = '') -> bool
                             initial_grace_seconds=POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS,
                         )
                         return False
+                    await _confirm_profile_switch_dialog(page)
                 return await _wait_for_profile_switch_to_settle(
                     page,
-                    timeout_ms=6000,
+                    timeout_ms=9000,
                     initial_grace_seconds=POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS,
                 )
     except Exception as e:
@@ -6954,6 +6996,7 @@ async def _switch_to_page_profile(page: Page, page_name: str = '') -> bool:
         logger.warning(f"Could not find switcher option for '{page_name or 'Premium Service'}' in account menu.")
         return False
 
+    await _confirm_profile_switch_dialog(page)
     logger.info("Waiting for profile switch reload...")
     if not await _wait_for_facebook_ui_ready(page, timeout=4000):
         await _smart_wait(
@@ -6961,14 +7004,18 @@ async def _switch_to_page_profile(page: Page, page_name: str = '') -> bool:
             timeout_ms=1000,
             check_interval_ms=150,
         )
-    logger.info(f'Successfully switched Facebook actor to page profile: {clicked}')
-    if not await _wait_for_switch_to_settle(
+    settled = await _wait_for_switch_to_settle(
         page,
-        timeout_seconds=8,
+        timeout_seconds=10,
         initial_grace_seconds=POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS,
-    ):
-        await _click_onscreen_switch_button(page, page_name)
-    return True
+    )
+    if not settled:
+        settled = await _click_onscreen_switch_button(page, page_name)
+    if settled:
+        logger.info(f'Successfully switched Facebook actor to page profile: {clicked}')
+    else:
+        logger.warning(f'Facebook actor switch to page profile did not settle: {clicked}')
+    return settled
 
 
 async def _click_safe_composer_button(page: Page, create_pattern: re.Pattern, reject_pattern: re.Pattern, timeout: int = 6000) -> bool:
@@ -9395,9 +9442,6 @@ def _post_result_is_safe_to_recover(detail: str) -> bool:
         'cookies expired',
         'login page detected',
         'redirected to login',
-        'could not publish through direct composer',
-        'could not open the desktop composer',
-        'desktop_composer_not_opened',
         'missing image media',
         'missing video media',
         'refusing to publish a media post without media',

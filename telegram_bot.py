@@ -3525,17 +3525,18 @@ class TelegramBotApp:
             refresh=refresh,
         )
         refresh_markup = self.refresh_pages_inline_markup(lang)
-        progress_message_id = await self.edit_or_send_message(
+        sent = await self.send_message(
             chat_id,
-            message_id,
             progress_card(
                 f"{verb}...",
                 0,
                 3,
                 f"Debug ID: {trace_id}\n{'جاري تجهيز جلسة فيسبوك...' if lang == 'ar' else 'Preparing Facebook session...'}",
             ),
+            message_id,
             reply_markup=refresh_markup,
         )
+        progress_message_id = int((sent.get("result") or {}).get("message_id") or 0)
 
         async def update_refresh_card(text: str) -> None:
             nonlocal progress_message_id
