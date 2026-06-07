@@ -64,6 +64,7 @@ logger = logging.getLogger("telegram_bot")
 
 POST_TYPES = {"text", "image", "video"}
 UPLOAD_DIR = Path(os.getenv("TELEGRAM_UPLOAD_DIR", "artifacts/telegram_uploads"))
+POSTING_STATUS_SYNC_TEXT = "Page status sync: each page result is matched with its progress bar."
 
 
 def progress_bar(done: int, total: int, width: int = 10) -> str:
@@ -121,7 +122,7 @@ def posting_result_card(
     if elapsed_seconds is not None:
         lines.append(f"Total time: {format_elapsed_seconds(elapsed_seconds)}")
     if debug_id:
-        lines.append(f"Debug ID: {debug_id}")
+        lines.append(POSTING_STATUS_SYNC_TEXT)
     lines.append("")
 
     omitted = 0
@@ -158,7 +159,7 @@ def posting_live_status_card(
     done = sum(1 for state in statuses.values() if str(state.get("status") or "") in {"success", "failed", "skipped"})
     lines = [progress_card(title, done, total, active_detail or "Posting pages...")]
     if debug_id:
-        lines.append(f"Debug ID: {debug_id}")
+        lines.append(POSTING_STATUS_SYNC_TEXT)
     lines.append("")
     for index, job in enumerate(jobs[:max_rows]):
         page = compact_text(job.get("page_name") or job.get("page_id_or_url") or f"Page {index + 1}", 34)

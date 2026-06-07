@@ -8,7 +8,15 @@ if "aiohttp" not in sys.modules:
     aiohttp_stub.web = types.SimpleNamespace()
     sys.modules["aiohttp"] = aiohttp_stub
 
-from telegram_bot import LTR_MARK, POP_DIRECTIONAL_ISOLATE, format_elapsed_seconds, posting_result_card, status_detail_line
+from telegram_bot import (
+    LTR_MARK,
+    POP_DIRECTIONAL_ISOLATE,
+    POSTING_STATUS_SYNC_TEXT,
+    format_elapsed_seconds,
+    posting_live_status_card,
+    posting_result_card,
+    status_detail_line,
+)
 
 
 def test_format_elapsed_seconds_is_compact():
@@ -31,10 +39,27 @@ def test_posting_result_card_includes_overall_elapsed_time():
 
     assert "Posting complete: 3/3 succeeded" in card
     assert "Total time: 2m 05s" in card
-    assert "Debug ID: batch_test" in card
+    assert POSTING_STATUS_SYNC_TEXT in card
+    assert "Debug ID" not in card
+    assert "batch_test" not in card
     assert "Caption page" in card
     assert "Image page" in card
     assert "Video page" in card
+
+
+def test_posting_live_status_card_uses_page_sync_text_instead_of_debug_id():
+    card = posting_live_status_card(
+        "Batch posting...",
+        [{"job_id": "job_1", "page_name": "Page A"}],
+        {"job_1": {"status": "running", "stage": "Uploading video"}},
+        debug_id="batch_live",
+    )
+
+    assert POSTING_STATUS_SYNC_TEXT in card
+    assert "Debug ID" not in card
+    assert "batch_live" not in card
+    assert "Page A" in card
+    assert "Uploading video" in card
 
 
 def test_status_detail_line_keeps_status_icon_left_aligned_for_mixed_languages():
