@@ -123,6 +123,8 @@ POST_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS = _env_int('POST_PAGES_PORTAL_TEXT_TIMEOU
 POST_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS = _env_int('POST_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS', 150, minimum=60)
 POST_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS = _env_int('POST_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS', 180, minimum=90)
 POST_SUBMIT_ACTION_TIMEOUT_SECONDS = _env_int('POST_SUBMIT_ACTION_TIMEOUT_SECONDS', 22, minimum=8)
+POST_CAPTION_OPERATION_TIMEOUT_MS = _env_int('POST_CAPTION_OPERATION_TIMEOUT_MS', 1800, minimum=500)
+POST_CAPTION_TARGET_INSERT_TIMEOUT_MS = _env_int('POST_CAPTION_TARGET_INSERT_TIMEOUT_MS', 6500, minimum=1500)
 POST_COMPOSER_ROUTE_LIMIT = _env_int('POST_COMPOSER_ROUTE_LIMIT', 2, minimum=1)
 POST_COMPOSER_ENTRY_MODE = os.getenv('POST_COMPOSER_ENTRY_MODE', 'target').strip().lower() or 'target'
 POST_COMPOSER_BUTTON_TIMEOUT_MS = _env_int('POST_COMPOSER_BUTTON_TIMEOUT_MS', 3500, minimum=800)
@@ -7657,7 +7659,8 @@ async def _read_text_target_value(target: Any) -> str:
                 return el.value || '';
             }
             return el.innerText || el.textContent || '';
-        }"""
+        }""",
+        timeout=POST_CAPTION_OPERATION_TIMEOUT_MS,
     )
 
 
@@ -7668,17 +7671,18 @@ async def _focus_text_target(page: Page, target: Any) -> None:
             if (typeof el.focus === 'function') {
                 el.focus();
             }
-        }"""
+        }""",
+        timeout=POST_CAPTION_OPERATION_TIMEOUT_MS,
     )
     try:
-        await target.click(timeout=2500, force=True)
+        await target.click(timeout=POST_CAPTION_OPERATION_TIMEOUT_MS, force=True)
     except Exception as exc:
         logger.debug(f'Text target click focus skipped after DOM focus: {exc}')
 
 
 async def _clear_text_target(page: Page, target: Any) -> None:
     try:
-        await target.fill('', timeout=1500)
+        await target.fill('', timeout=POST_CAPTION_OPERATION_TIMEOUT_MS)
         return
     except Exception:
         pass
@@ -7696,7 +7700,8 @@ async def _clear_text_target(page: Page, target: Any) -> None:
                 }
                 el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'deleteContentBackward'}));
                 el.dispatchEvent(new Event('change', {bubbles: true}));
-            }"""
+            }""",
+            timeout=POST_CAPTION_OPERATION_TIMEOUT_MS,
         )
 
 
@@ -7705,60 +7710,78 @@ async def _insert_text_target_exact(page: Page, target: Any, caption: str) -> bo
     if not caption:
         return True
 
-    async def verify() -> bool:
-        try:
-            current = await _read_text_target_value(target)
-            return _caption_text_matches(caption, current)
-        except Exception:
-            return False
+    async def insert_with_strategies() -> bool:
+        async def verify() -> bool:
+            try:
+                current = await _read_text_target_value(target)
+                return _caption_text_matches(caption, current)
+            except Exception:
+                return False
 
-    for strategy in ('fill', 'insert_text', 'exec_command', 'dom_set'):
-        try:
-            await _clear_text_target(page, target)
-            await _focus_text_target(page, target)
-            if strategy == 'fill':
-                await target.fill(caption, timeout=5000)
-            elif strategy == 'insert_text':
-                await page.keyboard.insert_text(caption)
-            elif strategy == 'exec_command':
-                await target.evaluate(
-                    """(el, value) => {
-                        el.focus();
-                        document.execCommand('selectAll', false, null);
-                        document.execCommand('delete', false, null);
-                        document.execCommand('insertText', false, value);
-                        el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
-                    }""",
-                    caption,
+        for strategy in ('fill', 'insert_text', 'exec_command', 'dom_set'):
+            try:
+                await _clear_text_target(page, target)
+                await _focus_text_target(page, target)
+                if strategy == 'fill':
+                    await target.fill(caption, timeout=POST_CAPTION_OPERATION_TIMEOUT_MS)
+                elif strategy == 'insert_text':
+                    await asyncio.wait_for(
+                        page.keyboard.insert_text(caption),
+                        timeout=POST_CAPTION_OPERATION_TIMEOUT_MS / 1000,
+                    )
+                elif strategy == 'exec_command':
+                    await target.evaluate(
+                        """(el, value) => {
+                            el.focus();
+                            document.execCommand('selectAll', false, null);
+                            document.execCommand('delete', false, null);
+                            document.execCommand('insertText', false, value);
+                            el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
+                        }""",
+                        caption,
+                        timeout=POST_CAPTION_OPERATION_TIMEOUT_MS,
+                    )
+                else:
+                    await target.evaluate(
+                        """(el, value) => {
+                            if ('value' in el) {
+                                el.value = value;
+                            } else {
+                                el.textContent = value;
+                            }
+                            el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
+                            el.dispatchEvent(new Event('change', {bubbles: true}));
+                        }""",
+                        caption,
+                        timeout=POST_CAPTION_OPERATION_TIMEOUT_MS,
+                    )
+                await _smart_wait(verify, timeout_ms=900, check_interval_ms=100)
+                if await verify():
+                    logger.info('✅ Caption inserted exactly via %s.', strategy)
+                    return True
+                current = await _read_text_target_value(target)
+                logger.warning(
+                    'Caption insertion verification failed via %s: expected_len=%d actual_len=%d',
+                    strategy,
+                    len(caption),
+                    len(current),
                 )
-            else:
-                await target.evaluate(
-                    """(el, value) => {
-                        if ('value' in el) {
-                            el.value = value;
-                        } else {
-                            el.textContent = value;
-                        }
-                        el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
-                        el.dispatchEvent(new Event('change', {bubbles: true}));
-                    }""",
-                    caption,
-                )
-            await _smart_wait(verify, timeout_ms=1400, check_interval_ms=100)
-            if await verify():
-                logger.info('✅ Caption inserted exactly via %s.', strategy)
-                return True
-            current = await _read_text_target_value(target)
-            logger.warning(
-                'Caption insertion verification failed via %s: expected_len=%d actual_len=%d',
-                strategy,
-                len(caption),
-                len(current),
-            )
-        except Exception as exc:
-            logger.debug(f'Caption insertion strategy {strategy} failed: {exc}')
-            continue
-    return False
+            except Exception as exc:
+                logger.debug(f'Caption insertion strategy {strategy} failed: {exc}')
+                continue
+        return False
+
+    try:
+        return await asyncio.wait_for(
+            insert_with_strategies(),
+            timeout=POST_CAPTION_TARGET_INSERT_TIMEOUT_MS / 1000,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            'Caption insertion target timed out after %dms; trying the next editor.',
+            POST_CAPTION_TARGET_INSERT_TIMEOUT_MS,
+        )
+        return False
 
 
 def _caption_editor_mark_script(parameters: str, root_expression: str) -> str:

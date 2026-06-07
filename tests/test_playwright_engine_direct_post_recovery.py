@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import time
 from pathlib import Path
 
 
@@ -45,6 +46,35 @@ def test_caption_text_match_requires_complete_arabic_and_english_text():
     assert not engine._caption_text_matches(caption, "استشعار وجود الله أمر يجعلني")
     assert not engine._caption_text_matches(caption, caption.replace("quiet", "quite"))
     assert not engine._caption_text_matches(caption, caption.replace("السكينة", "السكينه"))
+
+
+def test_caption_insertion_bad_target_times_out_quickly(monkeypatch):
+    async def run():
+        class SlowTarget:
+            async def evaluate(self, *args, **kwargs):
+                await asyncio.sleep(5)
+                return ""
+
+            async def click(self, *args, **kwargs):
+                await asyncio.sleep(5)
+
+            async def fill(self, *args, **kwargs):
+                await asyncio.sleep(5)
+
+        class SlowKeyboard:
+            async def insert_text(self, value):
+                await asyncio.sleep(5)
+
+        class FakePage:
+            keyboard = SlowKeyboard()
+
+        monkeypatch.setattr(engine, "POST_CAPTION_TARGET_INSERT_TIMEOUT_MS", 80)
+        started = time.monotonic()
+
+        assert not await engine._insert_text_target_exact(FakePage(), SlowTarget(), "exact caption")
+        assert time.monotonic() - started < 1.0
+
+    asyncio.run(run())
 
 
 def test_switch_dialog_selection_is_confirmed_before_waiting(monkeypatch):
