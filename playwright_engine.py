@@ -2445,7 +2445,7 @@ def _acquire_postgres_account_lock(account_lock_key: str, wait_seconds: Optional
     deadline = time.monotonic() + max(1, wait_seconds if wait_seconds is not None else POST_ACCOUNT_LOCK_WAIT_SECONDS)
     conn = None
     try:
-        conn = psycopg.connect(DATABASE_URL, connect_timeout=10)
+        conn = psycopg.connect(DATABASE_URL, connect_timeout=10, prepare_threshold=None)
         while time.monotonic() < deadline:
             with conn.cursor() as cursor:
                 cursor.execute('SELECT pg_try_advisory_lock(%s)', (lock_id,))

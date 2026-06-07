@@ -214,6 +214,19 @@ def cookie_validation_summary(session_ok: bool, detail: str, max_length: int = 1
     return "🔴", compact_detail[:max_length] or "Facebook session is not valid"
 
 
+LTR_MARK = "\u200e"
+FIRST_STRONG_ISOLATE = "\u2068"
+POP_DIRECTIONAL_ISOLATE = "\u2069"
+
+
+def bidi_isolate(value: Any) -> str:
+    return f"{FIRST_STRONG_ISOLATE}{str(value or '')}{POP_DIRECTIONAL_ISOLATE}"
+
+
+def status_detail_line(icon: str, name: str, detail: str) -> str:
+    return f"{LTR_MARK}{icon} {bidi_isolate(name)}: {bidi_isolate(detail)}"
+
+
 def is_encryption_key_error(exc: BaseException) -> bool:
     detail = str(exc or "").lower()
     return "encryption_key" in detail or "could not be decrypted" in detail
@@ -3387,7 +3400,7 @@ class TelegramBotApp:
                 )
                 if session_ok:
                     valid_count += 1
-                lines.append(f"{icon} {display}: {status_text}")
+                lines.append(status_detail_line(icon, display, status_text))
             except Exception as exc:
                 error_text = (
                     self.encryption_key_recovery_text(lang)
@@ -3401,7 +3414,7 @@ class TelegramBotApp:
                     compact_error(exc, 500),
                     owner_scope,
                 )
-                lines.append(f"🔴 {display}: {error_text[:900]}")
+                lines.append(status_detail_line("🔴", display, error_text[:900]))
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,

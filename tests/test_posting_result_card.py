@@ -8,7 +8,7 @@ if "aiohttp" not in sys.modules:
     aiohttp_stub.web = types.SimpleNamespace()
     sys.modules["aiohttp"] = aiohttp_stub
 
-from telegram_bot import format_elapsed_seconds, posting_result_card
+from telegram_bot import LTR_MARK, POP_DIRECTIONAL_ISOLATE, format_elapsed_seconds, posting_result_card, status_detail_line
 
 
 def test_format_elapsed_seconds_is_compact():
@@ -34,3 +34,14 @@ def test_posting_result_card_includes_overall_elapsed_time():
     assert "Caption page" in card
     assert "Image page" in card
     assert "Video page" in card
+
+
+def test_status_detail_line_keeps_status_icon_left_aligned_for_mixed_languages():
+    arabic_line = status_detail_line("🟢", "اسماء ضياء", "Facebook session is valid")
+    english_line = status_detail_line("🔴", "Mohammed Mohammed", "Session check inconclusive")
+
+    assert arabic_line.startswith(f"{LTR_MARK}🟢 ")
+    assert english_line.startswith(f"{LTR_MARK}🔴 ")
+    assert "اسماء ضياء" in arabic_line
+    assert "Facebook session is valid" in arabic_line
+    assert arabic_line.count(POP_DIRECTIONAL_ISOLATE) == 2

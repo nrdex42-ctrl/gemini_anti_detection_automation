@@ -62,7 +62,12 @@ class BotStorage:
         return cls(os.getenv("DATABASE_URL", "").strip())
 
     def connect(self):
-        return psycopg.connect(self.database_url, connect_timeout=15, row_factory=dict_row)
+        return psycopg.connect(
+            self.database_url,
+            connect_timeout=15,
+            row_factory=dict_row,
+            prepare_threshold=None,
+        )
 
     def ensure_schema(self) -> None:
         schema_path = Path(__file__).resolve().parent / "supabase" / "schema.sql"
