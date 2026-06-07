@@ -73,6 +73,8 @@ def test_refresh_pages_uses_one_message_with_in_place_updates():
     all_text = "\n".join([item["text"] for item in sends] + [item["text"] for item in edits])
     assert len(sends) == 1
     assert len(edits) >= 3
+    assert "Debug ID" not in all_text
+    assert "pages_" not in all_text
     assert "Dashboard keyboard restored" not in all_text
     assert "Refreshed and cached 2 page(s):" in edits[-1]["text"]
     assert "- Huawei" in edits[-1]["text"]

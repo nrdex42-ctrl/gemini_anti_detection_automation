@@ -85,6 +85,7 @@ https://render.com/docs/blueprint-spec
 ```text
 TELEGRAM_BOT_TOKEN=<BotFather token>
 BOT_ADMIN_IDS=<your Telegram numeric user id>
+BOT_REQUIRE_USER_APPROVAL=true
 DATABASE_URL=<Supabase Session Pooler URL>
 ENCRYPTION_KEY=<stable Fernet key; keep the same value for the same Supabase database>
 ```
@@ -124,7 +125,8 @@ POST_BATCH_HOME_NETWORK_IDLE_TIMEOUT_MS=0
 POST_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS=120
 POST_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS=180
 POST_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS=240
-POST_PUBLISH_IN_PROGRESS_TIMEOUT_MS=45000
+POST_PUBLISH_IN_PROGRESS_TIMEOUT_MS=15000
+POST_ACCEPT_POST_PUBLISH_POPUP_AS_SUCCESS=true
 POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS=3
 POST_PROFILE_SWITCH_FAST_SETTLE_TIMEOUT_MS=2500
 POST_PROFILE_SWITCH_FAST_SETTLE_GRACE_SECONDS=1
@@ -190,7 +192,7 @@ The dashboard Add Facebook Account button accepts raw cookie headers, JSON cooki
 
 Page discovery is cached in `fb_pages`. Normal posting reads the saved page list and does not rediscover pages before each post. Use the `🔄 Refresh Pages` dashboard button when you want to refresh a selected account's cached pages.
 
-Normal users can use `/start` and the typing-area dashboard. Their accounts, cached pages, and post jobs are scoped to their Telegram user id.
+Normal users can use `/start` and the typing-area dashboard after approval. With `BOT_REQUIRE_USER_APPROVAL=true`, new users are saved as pending and cannot add accounts or post until an admin approves them from `🔒 Admin Dashboard` -> `👥 Users`.
 
 Admins listed in `BOT_ADMIN_IDS` can use `🔒 Admin Dashboard` to view system stats, users, accounts, post stats, active account locks, and runtime config.
 

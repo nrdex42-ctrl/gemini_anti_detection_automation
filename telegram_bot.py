@@ -65,7 +65,7 @@ logger = logging.getLogger("telegram_bot")
 
 POST_TYPES = {"text", "image", "video"}
 UPLOAD_DIR = Path(os.getenv("TELEGRAM_UPLOAD_DIR", "artifacts/telegram_uploads"))
-POSTING_STATUS_SYNC_TEXT = "Page status sync: each page result is matched with its progress bar."
+POSTING_STATUS_SYNC_TEXT = "Page results are listed below."
 ADMIN_USER_PAGE_SIZE = 7
 
 
@@ -183,8 +183,7 @@ def posting_result_card(
         lines.append(f"Completed: {format_display_datetime(completed_at)}")
     if elapsed_seconds is not None:
         lines.append(f"Total time: {format_elapsed_seconds(elapsed_seconds)}")
-    if debug_id:
-        lines.append(POSTING_STATUS_SYNC_TEXT)
+    lines.append(POSTING_STATUS_SYNC_TEXT)
     lines.append("")
 
     omitted = 0
@@ -235,8 +234,7 @@ def posting_live_status_card(
     total = max(1, len(jobs))
     done = sum(1 for state in statuses.values() if str(state.get("status") or "") in {"success", "failed", "skipped"})
     lines = [progress_card(title, done, total, active_detail or "Posting pages...")]
-    if debug_id:
-        lines.append(POSTING_STATUS_SYNC_TEXT)
+    lines.append("Page statuses update below as each page finishes.")
     lines.append("")
     for index, job in enumerate(jobs[:max_rows]):
         page = compact_text(job.get("page_name") or job.get("page_id_or_url") or f"Page {index + 1}", 34)
@@ -541,6 +539,7 @@ class TelegramBotApp:
         if self.webhook_secret != raw_webhook_secret:
             logger.info("Telegram webhook secret normalized to a Bot API-safe token")
         self.admin_ids = _csv_ints("BOT_ADMIN_IDS")
+        self.require_user_approval = _env_bool("BOT_REQUIRE_USER_APPROVAL", False)
         self.storage = BotStorage.from_env()
         self.session: Optional[ClientSession] = None
         self.api_base = f"https://api.telegram.org/bot{self.token}"
@@ -590,7 +589,20 @@ class TelegramBotApp:
             await self.session.close()
 
     def authorized(self, update: Dict[str, Any]) -> bool:
-        return True
+        if not self.user_approval_required():
+            return True
+        _chat_id, user_id, _message_id = self.update_chat_context(update)
+        if not user_id or self.is_admin_user(user_id):
+            return True
+        try:
+            status = self.storage.get_user_approval_status(user_id)
+        except Exception:
+            logger.warning("Could not read Telegram user approval status", exc_info=True)
+            return False
+        return self._approval_status(status, default="") == "approved"
+
+    def user_approval_required(self) -> bool:
+        return bool(getattr(self, "require_user_approval", _env_bool("BOT_REQUIRE_USER_APPROVAL", False)))
 
     async def telegram_api(self, method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if self.session is None:
@@ -1180,6 +1192,39 @@ class TelegramBotApp:
         except Exception:
             logger.warning("Could not update Telegram user state", exc_info=True)
 
+    async def notify_admin_approval_request(self, request: Dict[str, Any]) -> None:
+        if not (request.get("request_created") and getattr(self, "admin_ids", set())):
+            return
+        target_user_id = int(request.get("telegram_user_id") or 0)
+        if not target_user_id:
+            return
+        user_label = self._admin_user_label(request)
+        chat_id = int(request.get("last_chat_id") or target_user_id)
+        text = "\n".join(
+            [
+                "🛂 New User Approval Request",
+                "━━━━━━━━━━━━━━━━━━",
+                f"User: {user_label}",
+                f"Chat ID: {chat_id}",
+                "",
+                "Approve this user before they can use the bot.",
+            ]
+        )
+        markup = inline_markup(
+            [
+                [
+                    inline_button("✅ Approve", f"adm:approve:{target_user_id}:0"),
+                    inline_button("⛔ Suspend", f"adm:suspend:{target_user_id}:0"),
+                ],
+                [inline_button("👤 Details", f"adm:user:{target_user_id}")],
+            ]
+        )
+        for admin_id in sorted(int(item) for item in getattr(self, "admin_ids", set()) if int(item or 0)):
+            try:
+                await self.send_message(admin_id, text, reply_markup=markup)
+            except Exception:
+                logger.warning("Could not notify admin %s about user approval request", admin_id, exc_info=True)
+
     async def dashboard_accounts(self, user_id: int = 0) -> List[Dict[str, Any]]:
         return await asyncio.to_thread(self.storage.list_accounts, self.account_owner_scope(user_id))
 
@@ -1362,6 +1407,8 @@ class TelegramBotApp:
 
     def admin_overview_text(self, summary: Dict[str, Any], prefix: str = "", lang: str = "en") -> str:
         status_counts = summary.get("job_status_counts") or {}
+        approval_counts = summary.get("user_approval_counts") or {}
+        pending_users = int(approval_counts.get("pending", 0))
         active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
         lines: List[str] = []
         if prefix:
@@ -1371,7 +1418,7 @@ class TelegramBotApp:
                 [
                     "🔒 لوحة الأدمن",
                     "━━━━━━━━━━━━━━━━━━",
-                    f"المستخدمين: {summary.get('user_count', 0)}",
+                    f"المستخدمين: {summary.get('user_count', 0)} | في انتظار الموافقة: {pending_users}",
                     f"الحسابات: {summary.get('total_accounts', 0)} إجمالي، {summary.get('active_accounts', 0)} نشطة، {summary.get('inactive_accounts', 0)} غير نشطة",
                     f"الصفحات المحفوظة: {summary.get('page_count', 0)}",
                     f"المهام: {active_jobs} نشطة، {int(status_counts.get('success', 0))} ناجحة، {int(status_counts.get('failed', 0))} فاشلة",
@@ -1385,7 +1432,7 @@ class TelegramBotApp:
                 [
                     "🔒 Admin Dashboard",
                     "━━━━━━━━━━━━━━━━━━",
-                    f"Users: {summary.get('user_count', 0)}",
+                    f"Users: {summary.get('user_count', 0)} | pending approval: {pending_users}",
                     f"Accounts: {summary.get('total_accounts', 0)} total, {summary.get('active_accounts', 0)} active, {summary.get('inactive_accounts', 0)} inactive",
                     f"Stored pages: {summary.get('page_count', 0)}",
                     f"Jobs: {active_jobs} active, {int(status_counts.get('success', 0))} success, {int(status_counts.get('failed', 0))} failed",
@@ -1417,6 +1464,21 @@ class TelegramBotApp:
             return f"id={user_id}"
         return f"{name} | id={user_id}"
 
+    def _approval_status(self, value: Any, default: str = "approved") -> str:
+        status = str(value or "").strip().lower()
+        if status in {"pending", "approved", "suspended"}:
+            return status
+        return default
+
+    def _approval_icon(self, status: str) -> str:
+        return {"approved": "✅", "pending": "⏳", "suspended": "⛔"}.get(self._approval_status(status), "✅")
+
+    def _approval_label(self, status: str, lang: str = "en") -> str:
+        normalized = self._approval_status(status)
+        if lang == "ar":
+            return {"approved": "✅ موافق عليه", "pending": "⏳ في انتظار الموافقة", "suspended": "⛔ موقوف"}.get(normalized, "✅ موافق عليه")
+        return {"approved": "✅ approved", "pending": "⏳ pending", "suspended": "⛔ suspended"}.get(normalized, "✅ approved")
+
     def _admin_user_page_bounds(self, page: int, total: int, page_size: int = ADMIN_USER_PAGE_SIZE) -> Tuple[int, int]:
         page_count = max(1, (max(0, total) + page_size - 1) // page_size)
         normalized_page = min(max(0, int(page or 0)), page_count - 1)
@@ -1436,11 +1498,12 @@ class TelegramBotApp:
             lines.append("لا يوجد مستخدمين مسجلين بعد." if lang == "ar" else "No users recorded yet.")
         else:
             for row in rows:
+                status_label = self._approval_label(str(row.get("approval_status") or "approved"), lang)
                 lines.append(
                     (
-                        f"- {self._admin_user_label(row)} | حسابات={row.get('account_count', 0)} | صفحات={row.get('page_count', 0)} | آخر={self._format_time(row.get('last_seen'))}"
+                        f"- {self._admin_user_label(row)} | {status_label} | حسابات={row.get('account_count', 0)} | صفحات={row.get('page_count', 0)} | آخر={self._format_time(row.get('last_seen'))}"
                         if lang == "ar"
-                        else f"- {self._admin_user_label(row)} | accounts={row.get('account_count', 0)} | pages={row.get('page_count', 0)} | last={self._format_time(row.get('last_seen'))}"
+                        else f"- {self._admin_user_label(row)} | {status_label} | accounts={row.get('account_count', 0)} | pages={row.get('page_count', 0)} | last={self._format_time(row.get('last_seen'))}"
                     )
                 )
         lines.extend(["", "اضغط على مستخدم لعرض التفاصيل." if lang == "ar" else "Tap a user to view details."])
@@ -1453,7 +1516,8 @@ class TelegramBotApp:
             user_id = int(row.get("telegram_user_id") or 0)
             if not user_id:
                 continue
-            keyboard.append([inline_button(self._admin_user_label(row)[:60], f"adm:user:{user_id}")])
+            label = f"{self._approval_icon(str(row.get('approval_status') or 'approved'))} {self._admin_user_label(row)}"
+            keyboard.append([inline_button(label[:60], f"adm:user:{user_id}")])
         nav: List[Dict[str, str]] = []
         if page > 0:
             nav.append(inline_button("⬅️ السابق" if lang == "ar" else "⬅️ Prev", f"adm:users:{page - 1}"))
@@ -1466,6 +1530,7 @@ class TelegramBotApp:
 
     def admin_user_detail_card(self, detail: Dict[str, Any], lang: str = "en") -> str:
         user_label = self._telegram_profile_name(detail)
+        approval_status = self._approval_status(detail.get("approval_status") or "approved")
         status_counts = detail.get("job_status_counts") or {}
         active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
         lines = [
@@ -1474,20 +1539,29 @@ class TelegramBotApp:
             f"{'الاسم' if lang == 'ar' else 'Name'}: {user_label}",
             f"{'ID' if lang == 'ar' else 'ID'}: {detail.get('telegram_user_id')}",
             f"{'اللغة' if lang == 'ar' else 'Language'}: {detail.get('lang') or 'unknown'}",
+            f"{'صلاحية الدخول' if lang == 'ar' else 'Access'}: {self._approval_label(approval_status, lang)}",
             f"{'أول استخدام' if lang == 'ar' else 'First used'}: {self._format_dt(detail.get('first_seen'))}",
             f"{'آخر ظهور' if lang == 'ar' else 'Last seen'}: {self._format_dt(detail.get('last_seen'))}",
-            "",
-            (
-                f"الحسابات: {detail.get('account_count', 0)} | الصفحات: {detail.get('page_count', 0)} | المهام: {detail.get('job_count', 0)}"
-                if lang == "ar"
-                else f"Accounts: {detail.get('account_count', 0)} | Pages: {detail.get('page_count', 0)} | Jobs: {detail.get('job_count', 0)}"
-            ),
-            (
-                f"حالة المهام: {active_jobs} نشطة، {int(status_counts.get('success', 0))} ناجحة، {int(status_counts.get('failed', 0))} فاشلة"
-                if lang == "ar"
-                else f"Job status: {active_jobs} active, {int(status_counts.get('success', 0))} success, {int(status_counts.get('failed', 0))} failed"
-            ),
         ]
+        if detail.get("approval_requested_at") and approval_status == "pending":
+            lines.append(f"{'طلب الموافقة' if lang == 'ar' else 'Requested'}: {self._format_dt(detail.get('approval_requested_at'))}")
+        if detail.get("approved_at") and approval_status == "approved":
+            lines.append(f"{'تمت الموافقة' if lang == 'ar' else 'Approved'}: {self._format_dt(detail.get('approved_at'))}")
+        lines.extend(
+            [
+                "",
+                (
+                    f"الحسابات: {detail.get('account_count', 0)} | الصفحات: {detail.get('page_count', 0)} | المهام: {detail.get('job_count', 0)}"
+                    if lang == "ar"
+                    else f"Accounts: {detail.get('account_count', 0)} | Pages: {detail.get('page_count', 0)} | Jobs: {detail.get('job_count', 0)}"
+                ),
+                (
+                    f"حالة المهام: {active_jobs} نشطة، {int(status_counts.get('success', 0))} ناجحة، {int(status_counts.get('failed', 0))} فاشلة"
+                    if lang == "ar"
+                    else f"Job status: {active_jobs} active, {int(status_counts.get('success', 0))} success, {int(status_counts.get('failed', 0))} failed"
+                ),
+            ]
+        )
         last_job = detail.get("last_job") or {}
         lines.extend(["", "آخر منشور:" if lang == "ar" else "Last posting status:"])
         if last_job:
@@ -1524,14 +1598,25 @@ class TelegramBotApp:
             lines.append(f"... +{len(accounts) - 10} {'حسابات إضافية' if lang == 'ar' else 'more account(s)'}")
         return "\n".join(lines)
 
-    def admin_user_detail_markup(self, user_id: int, page: int, lang: str = "en") -> Dict[str, Any]:
-        return inline_markup(
+    def admin_user_detail_markup(self, user_id: int, page: int, lang: str = "en", approval_status: str = "approved") -> Dict[str, Any]:
+        target_user_id = int(user_id)
+        normalized = self._approval_status(approval_status)
+        keyboard: List[List[Dict[str, str]]] = []
+        actions: List[Dict[str, str]] = []
+        if normalized != "approved":
+            actions.append(inline_button("✅ موافقة" if lang == "ar" else "✅ Approve", f"adm:approve:{target_user_id}:{max(0, page)}"))
+        if normalized != "suspended":
+            actions.append(inline_button("⛔ إيقاف" if lang == "ar" else "⛔ Suspend", f"adm:suspend:{target_user_id}:{max(0, page)}"))
+        if actions:
+            keyboard.append(actions)
+        keyboard.extend(
             [
                 [inline_button("⬅️ المستخدمين" if lang == "ar" else "⬅️ Users", f"adm:users:{max(0, page)}")],
-                [inline_button("🗑 تحديد للحذف" if lang == "ar" else "🗑 Select for delete", f"adm:del:toggle:{int(user_id)}")],
-                [inline_button("📣 إرسال تنبيه" if lang == "ar" else "📣 Broadcast to user", f"adm:bc:toggle:{int(user_id)}")],
+                [inline_button("🗑 تحديد للحذف" if lang == "ar" else "🗑 Select for delete", f"adm:del:toggle:{target_user_id}")],
+                [inline_button("📣 إرسال تنبيه" if lang == "ar" else "📣 Broadcast to user", f"adm:bc:toggle:{target_user_id}")],
             ]
         )
+        return inline_markup(keyboard)
 
     def admin_user_picker_card(
         self,
@@ -1654,7 +1739,12 @@ class TelegramBotApp:
             chat_id,
             message_id,
             self.admin_user_detail_card(detail, lang=lang),
-            reply_markup=self.admin_user_detail_markup(int(target_user_id), max(0, int(page or 0)), lang=lang),
+            reply_markup=self.admin_user_detail_markup(
+                int(target_user_id),
+                max(0, int(page or 0)),
+                lang=lang,
+                approval_status=str(detail.get("approval_status") or "approved"),
+            ),
         )
 
     async def show_admin_delete_users(self, chat_id: int, message_id: int, user_id: int, page: int = 0, *, edit: bool = False) -> None:
@@ -1840,7 +1930,6 @@ class TelegramBotApp:
             lines = [
                 "🧰 Debug Snapshot",
                 "━━━━━━━━━━━━━━━━━━",
-                f"Debug ID: {trace_id}",
                 f"Uptime: {int(time.monotonic() - self.started_at)}s",
                 f"Started: {self._format_dt(self.started_wall_at)}",
                 f"Revision: {self.deploy_revision() or 'unknown'}",
@@ -1906,7 +1995,7 @@ class TelegramBotApp:
                 lines.append("- none in latest 12 jobs")
 
             elapsed = time.monotonic() - started
-            lines.extend(["", f"Snapshot generated in {elapsed:.2f}s. Check Render logs for `BOT_DEBUG` with this Debug ID."])
+            lines.extend(["", f"Snapshot generated in {elapsed:.2f}s. Check Render logs for `BOT_DEBUG` details."])
             self.debug_event(
                 "admin_debug_snapshot_complete",
                 trace_id,
@@ -1921,7 +2010,7 @@ class TelegramBotApp:
             logger.exception("Admin debug snapshot failed trace_id=%s", trace_id)
             await self.send_message(
                 chat_id,
-                "\n".join(["Debug snapshot failed.", f"Debug ID: {trace_id}", compact_error(exc)]),
+                "\n".join(["Debug snapshot failed.", compact_error(exc)]),
                 message_id,
                 reply_markup=admin_dashboard_markup(lang=lang),
             )
@@ -3616,6 +3705,45 @@ class TelegramBotApp:
             await self.show_admin_user_detail(chat_id, message_id, user_id, target_user_id, page=page)
             return
 
+        if data.startswith(("adm:approve:", "adm:suspend:")):
+            parts = data.split(":")
+            status = "approved" if len(parts) >= 3 and parts[1] == "approve" else "suspended"
+            try:
+                target_user_id = int(parts[2])
+                callback_page = int(parts[3]) if len(parts) > 3 else page
+            except (ValueError, IndexError):
+                await self.show_admin_users(chat_id, message_id, user_id, page=page, edit=True)
+                return
+            if self.is_admin_user(target_user_id):
+                await self.edit_or_send_message(
+                    chat_id,
+                    message_id,
+                    "لا يمكن تغيير صلاحية أدمن من داخل البوت." if lang == "ar" else "Admin users always have access from BOT_ADMIN_IDS.",
+                    reply_markup=inline_markup([[inline_button("⬅️ المستخدم" if lang == "ar" else "⬅️ User", f"adm:user:{target_user_id}")]]),
+                )
+                return
+            changed = await asyncio.to_thread(self.storage.set_user_approval_status, target_user_id, status, user_id)
+            detail = await asyncio.to_thread(self.storage.admin_user_detail, target_user_id)
+            target_chat_id = int(detail.get("last_chat_id") or target_user_id)
+            if changed and target_chat_id:
+                target_lang = await self.user_language(target_user_id)
+                if status == "approved":
+                    await self.send_message(
+                        target_chat_id,
+                        "✅ تم قبولك لاستخدام البوت. ابعت /start لفتح لوحة التحكم."
+                        if target_lang == "ar"
+                        else "✅ You are approved to use the bot. Send /start to open the dashboard.",
+                    )
+                elif status == "suspended":
+                    await self.send_message(
+                        target_chat_id,
+                        "⛔ تم إيقاف صلاحيتك لاستخدام البوت."
+                        if target_lang == "ar"
+                        else "⛔ Your bot access has been suspended.",
+                    )
+            await self.show_admin_user_detail(chat_id, message_id, user_id, target_user_id, page=callback_page)
+            return
+
         if data.startswith("adm:del:page:"):
             try:
                 page = int(data.rsplit(":", 1)[-1])
@@ -4263,6 +4391,58 @@ class TelegramBotApp:
             int(message.get("message_id") or 0),
         )
 
+    def update_user_profile(self, update: Dict[str, Any]) -> Dict[str, Any]:
+        if update.get("callback_query"):
+            return dict((update.get("callback_query") or {}).get("from") or {})
+        message = update.get("message") or update.get("edited_message") or {}
+        return dict(message.get("from") or {})
+
+    async def ensure_update_authorized(self, update: Dict[str, Any]) -> bool:
+        if not self.user_approval_required():
+            return True
+        chat_id, user_id, message_id = self.update_chat_context(update)
+        if not user_id or self.is_admin_user(user_id):
+            return True
+
+        status = ""
+        try:
+            status = await asyncio.to_thread(self.storage.get_user_approval_status, user_id)
+        except Exception:
+            logger.warning("Could not read Telegram user approval status", exc_info=True)
+        status = self._approval_status(status, default="")
+        if status == "approved":
+            return True
+
+        user = self.update_user_profile(update)
+        request: Dict[str, Any] = {}
+        try:
+            request = await asyncio.to_thread(
+                self.storage.upsert_pending_user,
+                user_id,
+                chat_id or user_id,
+                str(user.get("first_name") or ""),
+                str(user.get("last_name") or ""),
+                str(user.get("username") or ""),
+            )
+            await self.notify_admin_approval_request(request)
+            status = self._approval_status(request.get("approval_status"), default=status or "pending")
+        except Exception:
+            logger.warning("Could not register pending Telegram user", exc_info=True)
+
+        suspended = status == "suspended"
+        callback_query_id = str((update.get("callback_query") or {}).get("id") or "")
+        callback_text = "Access suspended" if suspended else "Pending admin approval"
+        if callback_query_id:
+            await self.answer_callback_query(callback_query_id, callback_text)
+        if chat_id:
+            text = (
+                "⛔ Your bot access is suspended. Contact the admin."
+                if suspended
+                else "⏳ Your access request is pending admin approval. You can use the bot after approval."
+            )
+            await self.send_message(chat_id, text, message_id)
+        return False
+
     async def handle_update_safe(self, update: Dict[str, Any]) -> None:
         trace_id = new_debug_id("upd")
         started = time.monotonic()
@@ -4331,7 +4511,6 @@ class TelegramBotApp:
                             [
                                 "فشل إجراء لوحة التحكم.",
                                 "━━━━━━━━━━━━━━━━━━",
-                                f"Debug ID: {trace_id}",
                                 compact_error(exc),
                                 "",
                                 "تمت إعادة ضبط الخطوات الحالية. استخدم /start أو أزرار لوحة التحكم للمتابعة.",
@@ -4340,7 +4519,6 @@ class TelegramBotApp:
                             else [
                                 "Dashboard action failed.",
                                 "━━━━━━━━━━━━━━━━━━",
-                                f"Debug ID: {trace_id}",
                                 compact_error(exc),
                                 "",
                                 "The current flow was reset. Use /start or the dashboard buttons to continue.",
@@ -4352,15 +4530,11 @@ class TelegramBotApp:
                 )
 
     async def handle_update(self, update: Dict[str, Any]) -> None:
-        if update.get("callback_query"):
-            await self.handle_callback_query(update)
+        if not await self.ensure_update_authorized(update):
             return
 
-        if not self.authorized(update):
-            message = update.get("message") or {}
-            chat_id = int((message.get("chat") or {}).get("id") or 0)
-            if chat_id:
-                await self.send_message(chat_id, "Unauthorized.")
+        if update.get("callback_query"):
+            await self.handle_callback_query(update)
             return
 
         message = update.get("message") or update.get("edited_message") or {}
@@ -4767,7 +4941,7 @@ class TelegramBotApp:
                 f"{verb}...",
                 0,
                 3,
-                f"Debug ID: {trace_id}\n{'جاري تجهيز جلسة فيسبوك...' if lang == 'ar' else 'Preparing Facebook session...'}",
+                "جاري تجهيز جلسة فيسبوك..." if lang == "ar" else "Preparing Facebook session...",
             ),
             message_id,
             reply_markup=refresh_markup,
@@ -4809,7 +4983,7 @@ class TelegramBotApp:
                     f"{verb}...",
                     1,
                     3,
-                    f"Debug ID: {trace_id}\n{'جاري فتح مدير الصفحات...' if lang == 'ar' else 'Opening pages manager...'}",
+                    "جاري فتح مدير الصفحات..." if lang == "ar" else "Opening pages manager...",
                 ),
             )
             discovery_timeout = _env_int("BOT_PAGE_DISCOVERY_TIMEOUT_SECONDS", 150, minimum=30)
@@ -4841,13 +5015,13 @@ class TelegramBotApp:
                     elapsed = int(time.monotonic() - started)
                     if lang == "ar":
                         detail = (
-                            f"Debug ID: {trace_id}\nجاري اكتشاف الصفحات المُدارة... مر {elapsed} ثانية. "
-                            "ما زلت منتظر رد فيسبوك/المتصفح."
+                            f"جاري اكتشاف الصفحات المُدارة... مر {format_elapsed_seconds(elapsed)}. "
+                            "ما زلت منتظر رد فيسبوك."
                         )
                     else:
                         detail = (
-                            f"Debug ID: {trace_id}\nDiscovering managed pages... {elapsed}s elapsed. "
-                            "Still waiting for Facebook/browser response."
+                            f"Discovering managed pages... {format_elapsed_seconds(elapsed)} elapsed. "
+                            "Still waiting for Facebook."
                         )
                     if tick % 3 == 0:
                         detail += (
@@ -4862,8 +5036,7 @@ class TelegramBotApp:
                         f"{verb}...",
                         2,
                         3,
-                        f"Debug ID: {trace_id}\n"
-                        + (
+                        (
                             f"جاري حفظ {len(pages)} صفحة في الكاش..."
                             if lang == "ar"
                             else f"Saving {len(pages)} discovered page(s) to cache..."
@@ -4877,7 +5050,7 @@ class TelegramBotApp:
                         f"{verb}...",
                         3,
                         3,
-                        f"Debug ID: {trace_id}\n{'لم يتم العثور على صفحات مُدارة.' if lang == 'ar' else 'No managed pages discovered.'}",
+                        "لم يتم العثور على صفحات مُدارة." if lang == "ar" else "No managed pages discovered.",
                     ),
                 )
                 self.debug_event("page_discovery_empty", trace_id, account_id=account_id, elapsed_seconds=round(time.monotonic() - started, 3))
@@ -4896,7 +5069,7 @@ class TelegramBotApp:
                             f"{verb}...",
                             3,
                             3,
-                            f"Debug ID: {trace_id}\n{'تم حفظ الصفحات في الكاش.' if lang == 'ar' else 'Pages saved to cache.'}",
+                            "تم حفظ الصفحات في الكاش." if lang == "ar" else "Pages saved to cache.",
                         ),
                         "",
                         *lines,
@@ -4923,7 +5096,6 @@ class TelegramBotApp:
                             "فشل اكتشاف الصفحات." if lang == "ar" else "Page discovery failed.",
                         ),
                         "",
-                        f"Debug ID: {trace_id}",
                         compact_error(exc),
                         "",
                         (
@@ -5507,12 +5679,12 @@ class TelegramBotApp:
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Posting...", 0, total_units, f"Debug ID: {trace_id}\nQueued and waiting for account isolation slot."),
+                progress_card("Posting...", 0, total_units, "Queued. Waiting for the account slot."),
             )
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Posting...", 0, total_units, f"Debug ID: {trace_id}\nMarking job as processing..."),
+                progress_card("Posting...", 0, total_units, "Preparing the posting job..."),
             )
             storage_timeout_seconds = _env_int("BOT_STORAGE_OPERATION_TIMEOUT_SECONDS", 45, minimum=5)
             await asyncio.wait_for(
@@ -5525,7 +5697,7 @@ class TelegramBotApp:
                 progress_message_id = await self.edit_or_send_message(
                     chat_id,
                     progress_message_id,
-                    progress_card("Posting...", 0, total_units, f"Debug ID: {trace_id}\n{detail}"),
+                    progress_card("Posting...", 0, total_units, detail),
                 )
 
             lock_acquired = await self.wait_for_account_slot(account_id, lock_owner, chat_id, lock_progress, trace_id=trace_id)
@@ -5533,7 +5705,7 @@ class TelegramBotApp:
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Posting...", 1, total_units, f"Debug ID: {trace_id}\nAccount slot acquired."),
+                progress_card("Posting...", 1, total_units, "Account slot acquired."),
             )
             heartbeat_task = asyncio.create_task(self.account_lock_heartbeat(account_id, lock_owner))
             self.debug_event("post_job_cookie_load_start", trace_id, job_id=job_id, account_id=account_id)
@@ -5542,7 +5714,7 @@ class TelegramBotApp:
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Posting...", 2, total_units, f"Debug ID: {trace_id}\nCookie loaded. Opening Facebook composer..."),
+                progress_card("Posting...", 2, total_units, "Opening Facebook composer..."),
             )
             post = self.engine_post_payload(page_id_or_url, page_name or page_id_or_url, post_type, caption, media_path)
             self.debug_event("post_job_engine_import_start", trace_id, job_id=job_id)
@@ -5572,7 +5744,7 @@ class TelegramBotApp:
                         "Posting...",
                         2,
                         total_units,
-                        f"Debug ID: {trace_id}\nBrowser posting is still running... {elapsed}s elapsed. Waiting for Facebook result.",
+                        f"Facebook is still confirming the post... {format_elapsed_seconds(elapsed)} elapsed.",
                     ),
                 )
 
@@ -5590,7 +5762,7 @@ class TelegramBotApp:
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
-                progress_card("Posting...", total_units, total_units, f"Debug ID: {trace_id}\nFacebook returned a posting result."),
+                progress_card("Posting...", total_units, total_units, "Facebook returned the posting result."),
             )
             result = results[0] if results else {"success": False, "status": "no_result"}
             success = bool(result.get("success"))
@@ -5857,7 +6029,7 @@ class TelegramBotApp:
                         jobs,
                         page_statuses,
                         debug_id=trace_id,
-                        active_detail=f"Browser still running... {elapsed}s elapsed. Waiting for Facebook result.",
+                        active_detail=f"Facebook is still confirming the posts... {format_elapsed_seconds(elapsed)} elapsed.",
                     ),
                 )
 

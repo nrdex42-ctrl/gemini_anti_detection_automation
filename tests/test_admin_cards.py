@@ -344,3 +344,107 @@ def test_admin_reply_button_bypasses_existing_admin_card_session():
         assert called == [(123, 456, 99, 0, False)]
 
     asyncio.run(run())
+
+
+def test_pending_user_is_blocked_and_admin_is_notified():
+    async def run():
+        class ApprovalStorage:
+            def __init__(self):
+                self.pending = []
+
+            def get_user_approval_status(self, user_id):
+                return ""
+
+            def upsert_pending_user(self, user_id, chat_id, first_name="", last_name="", username=""):
+                self.pending.append((user_id, chat_id, first_name, last_name, username))
+                return {
+                    "telegram_user_id": user_id,
+                    "last_chat_id": chat_id,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "username": username,
+                    "approval_status": "pending",
+                    "request_created": True,
+                }
+
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.storage = ApprovalStorage()
+        app.admin_ids = {99}
+        app.require_user_approval = True
+        app.dashboard_sessions = {}
+        sent = []
+
+        async def send_message(chat_id, text, reply_to_message_id=0, *, reply_markup=None, parse_mode=""):
+            sent.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup})
+            return {"ok": True, "result": {"message_id": 700 + len(sent)}}
+
+        async def show_dashboard(*args, **kwargs):
+            raise AssertionError("pending user should not reach the dashboard")
+
+        app.send_message = send_message
+        app.show_dashboard = show_dashboard
+
+        await app.handle_update(
+            {
+                "message": {
+                    "message_id": 456,
+                    "text": "/start",
+                    "chat": {"id": 111},
+                    "from": {"id": 111, "first_name": "Ali", "last_name": "Hassan", "username": "ali_h"},
+                }
+            }
+        )
+
+        assert app.storage.pending == [(111, 111, "Ali", "Hassan", "ali_h")]
+        assert sent[0]["chat_id"] == 99
+        assert "New User Approval Request" in sent[0]["text"]
+        assert "adm:approve:111:0" in str(sent[0]["reply_markup"])
+        assert sent[1]["chat_id"] == 111
+        assert "pending" in sent[1]["text"].lower()
+
+    asyncio.run(run())
+
+
+def test_approved_user_reaches_dashboard_when_approval_gate_is_enabled():
+    async def run():
+        class ApprovalStorage:
+            def __init__(self):
+                self.touched = []
+
+            def get_user_approval_status(self, user_id):
+                return "approved"
+
+            def touch_user(self, *args):
+                self.touched.append(args)
+
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.storage = ApprovalStorage()
+        app.admin_ids = {99}
+        app.require_user_approval = True
+        app.dashboard_sessions = {}
+        called = []
+
+        def start_background_task(coro, label):
+            coro.close()
+            return None
+
+        async def show_dashboard(chat_id, message_id=0, *, prefix="", user_id=0):
+            called.append((chat_id, message_id, user_id))
+
+        app.start_background_task = start_background_task
+        app.show_dashboard = show_dashboard
+
+        await app.handle_update(
+            {
+                "message": {
+                    "message_id": 456,
+                    "text": "/start",
+                    "chat": {"id": 111},
+                    "from": {"id": 111, "first_name": "Ali"},
+                }
+            }
+        )
+
+        assert called == [(111, 0, 111)]
+
+    asyncio.run(run())

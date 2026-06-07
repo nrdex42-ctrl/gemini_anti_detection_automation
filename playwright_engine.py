@@ -213,6 +213,9 @@ POST_ACCEPT_VIDEO_PUBLISH_CLICK_AS_SUCCESS = os.getenv('POST_ACCEPT_VIDEO_PUBLIS
 POST_ACCEPT_PUBLISH_CLICK_NO_ERROR_AS_SUCCESS = (
     os.getenv('POST_ACCEPT_PUBLISH_CLICK_NO_ERROR_AS_SUCCESS', 'false').lower() == 'true'
 )
+POST_ACCEPT_POST_PUBLISH_POPUP_AS_SUCCESS = (
+    os.getenv('POST_ACCEPT_POST_PUBLISH_POPUP_AS_SUCCESS', 'true').lower() == 'true'
+)
 POST_PUBLISH_NO_ERROR_GRACE_MS = _env_int('POST_PUBLISH_NO_ERROR_GRACE_MS', 3500, minimum=1000)
 POST_INITIAL_UI_CONFIRMATION_ENABLED = os.getenv('POST_INITIAL_UI_CONFIRMATION_ENABLED', 'true').lower() == 'true'
 POST_INITIAL_UI_CONFIRMATION_TIMEOUT_MS = _env_int(
@@ -222,7 +225,7 @@ POST_INITIAL_UI_CONFIRMATION_TIMEOUT_MS = _env_int(
 )
 POST_PUBLISH_IN_PROGRESS_TIMEOUT_MS = _env_int(
     'POST_PUBLISH_IN_PROGRESS_TIMEOUT_MS',
-    30000,
+    15000,
     minimum=3000,
 )
 POST_NETWORK_CONFIRMATION_ENABLED = os.getenv('POST_NETWORK_CONFIRMATION_ENABLED', 'true').lower() == 'true'
@@ -1679,6 +1682,12 @@ async def _wait_for_facebook_posting_to_settle(
             next_security_check = now + 3.0
 
         if await _dismiss_post_publish_blocking_popups(page):
+            if POST_ACCEPT_POST_PUBLISH_POPUP_AS_SUCCESS:
+                await asyncio.sleep(0.6)
+                security_detail = await _facebook_navigation_fatal_block_detail(page)
+                if security_detail:
+                    return False, security_detail
+                return True, 'Facebook post-publish prompt handled; continuing verification'
             if saw_posting_overlay:
                 await asyncio.sleep(0.5)
                 continue
@@ -7732,7 +7741,7 @@ async def _insert_text_target_exact(page: Page, target: Any, caption: str) -> bo
                     }""",
                     caption,
                 )
-            await _smart_wait(verify, timeout_ms=900, check_interval_ms=100)
+            await _smart_wait(verify, timeout_ms=1400, check_interval_ms=100)
             if await verify():
                 logger.info('✅ Caption inserted exactly via %s.', strategy)
                 return True
@@ -7757,7 +7766,7 @@ async def _fill_composer_caption(page: Page, caption: str) -> None:
     logger.info("✍️ Filling composer caption exactly...")
 
     # Try multiple times to find and focus the textbox
-    for attempt in range(3):
+    for attempt in range(4):
         dialog = await _find_composer_context(page)
 
         candidates = [
@@ -7783,6 +7792,35 @@ async def _fill_composer_caption(page: Page, caption: str) -> None:
                     logger.warning("⚠️ Caption textbox did not match expected text after insertion. Retrying...")
             except Exception as e:
                 logger.debug(f"Textbox candidate failed: {e}")
+                continue
+
+        try:
+            visible_editors = await dialog.locator(
+                "div[role='textbox'], "
+                "[contenteditable='true'][role='textbox']:not([aria-label*='Search' i]):not([placeholder*='Search' i]), "
+                "textarea, "
+                "[contenteditable='true']:not([aria-label*='Search' i]):not([placeholder*='Search' i])"
+            ).all()
+        except Exception:
+            visible_editors = []
+        for editor_index, target in enumerate(visible_editors):
+            try:
+                if await target.is_visible(timeout=900):
+                    logger.info(
+                        "Trying visible composer editor %d/%d on caption attempt %d...",
+                        editor_index + 1,
+                        len(visible_editors),
+                        attempt + 1,
+                    )
+                    if await _insert_text_target_exact(page, target, caption):
+                        logger.info("✅ Caption successfully written and verified exactly in visible editor!")
+                        return
+                    logger.warning(
+                        "⚠️ Visible composer editor %d did not match expected text after insertion.",
+                        editor_index + 1,
+                    )
+            except Exception as e:
+                logger.debug(f"Visible editor caption fallback failed: {e}")
                 continue
 
         # Wait a bit before next attempt

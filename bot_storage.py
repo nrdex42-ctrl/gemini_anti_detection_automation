@@ -17,6 +17,14 @@ from page_name_utils import clean_facebook_page_name
 
 
 TOKEN_PREFIX = "fernet:"
+USER_APPROVAL_STATUSES = {"pending", "approved", "suspended"}
+
+
+def normalize_user_approval_status(value: Any, default: str = "approved") -> str:
+    status = str(value or "").strip().lower()
+    if status in USER_APPROVAL_STATUSES:
+        return status
+    return default
 
 
 class SecretCipher:
@@ -248,6 +256,129 @@ class BotStorage:
                 row = cur.fetchone()
         lang = str((row or {}).get("lang") or "en").strip().lower()
         return lang if lang in {"ar", "en"} else "en"
+
+    def get_user_approval_status(self, telegram_user_id: int) -> str:
+        if not telegram_user_id:
+            return ""
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "select approval_status from telegram_user_state where telegram_user_id=%s",
+                    (int(telegram_user_id),),
+                )
+                row = cur.fetchone()
+        if not row:
+            return ""
+        return normalize_user_approval_status(row.get("approval_status"), "approved")
+
+    def upsert_pending_user(
+        self,
+        telegram_user_id: int,
+        chat_id: int,
+        first_name: str = "",
+        last_name: str = "",
+        username: str = "",
+    ) -> Dict[str, Any]:
+        if not telegram_user_id:
+            return {"telegram_user_id": 0, "approval_status": "pending", "request_created": False}
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "select approval_status from telegram_user_state where telegram_user_id=%s",
+                    (int(telegram_user_id),),
+                )
+                existing = cur.fetchone()
+                cur.execute(
+                    """
+                    insert into telegram_user_state (
+                        telegram_user_id,
+                        last_chat_id,
+                        first_name,
+                        last_name,
+                        username,
+                        approval_status,
+                        approval_requested_at,
+                        updated_at,
+                        last_seen_at
+                    )
+                    values (%s, %s, %s, %s, %s, 'pending', now(), now(), now())
+                    on conflict (telegram_user_id) do update set
+                        last_chat_id = excluded.last_chat_id,
+                        first_name = coalesce(nullif(excluded.first_name, ''), telegram_user_state.first_name),
+                        last_name = coalesce(nullif(excluded.last_name, ''), telegram_user_state.last_name),
+                        username = coalesce(nullif(excluded.username, ''), telegram_user_state.username),
+                        approval_requested_at = case
+                            when telegram_user_state.approval_status = 'pending'
+                                then coalesce(telegram_user_state.approval_requested_at, now())
+                            else telegram_user_state.approval_requested_at
+                        end,
+                        updated_at = now(),
+                        last_seen_at = now()
+                    returning telegram_user_id, last_chat_id, first_name, last_name, username,
+                              approval_status, approval_requested_at
+                    """,
+                    (
+                        int(telegram_user_id),
+                        int(chat_id or telegram_user_id),
+                        str(first_name or "")[:120],
+                        str(last_name or "")[:120],
+                        str(username or "")[:120].lstrip("@"),
+                    ),
+                )
+                row = dict(cur.fetchone() or {})
+            conn.commit()
+        row["request_created"] = existing is None
+        row["approval_status"] = normalize_user_approval_status(row.get("approval_status"), "pending")
+        return row
+
+    def set_user_approval_status(self, telegram_user_id: int, status: str, approved_by: Optional[int] = None) -> bool:
+        user_id = int(telegram_user_id or 0)
+        normalized = normalize_user_approval_status(status, "")
+        if not user_id or normalized not in USER_APPROVAL_STATUSES:
+            return False
+        admin_id = int(approved_by or 0) or None
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    insert into telegram_user_state (
+                        telegram_user_id,
+                        approval_status,
+                        approved_by,
+                        approved_at,
+                        approval_requested_at,
+                        updated_at
+                    )
+                    values (
+                        %s,
+                        %s,
+                        case when %s = 'approved' then %s::bigint else null end,
+                        case when %s = 'approved' then now() else null end,
+                        case when %s = 'pending' then now() else null end,
+                        now()
+                    )
+                    on conflict (telegram_user_id) do update set
+                        approval_status = excluded.approval_status,
+                        approved_by = case
+                            when excluded.approval_status = 'approved' then excluded.approved_by
+                            else null
+                        end,
+                        approved_at = case
+                            when excluded.approval_status = 'approved' then now()
+                            else null
+                        end,
+                        approval_requested_at = case
+                            when excluded.approval_status = 'pending'
+                                then coalesce(telegram_user_state.approval_requested_at, now())
+                            else telegram_user_state.approval_requested_at
+                        end,
+                        updated_at = now()
+                    """,
+                    (user_id, normalized, normalized, admin_id, normalized, normalized),
+                )
+                changed = cur.rowcount > 0
+            conn.commit()
+        return changed
 
     def touch_user(
         self,
@@ -633,6 +764,18 @@ class BotStorage:
 
                 cur.execute(
                     """
+                    select approval_status, count(*)::int as count
+                    from telegram_user_state
+                    group by approval_status
+                    """
+                )
+                approval_counts = {
+                    normalize_user_approval_status(row.get("approval_status"), "approved"): int(row.get("count") or 0)
+                    for row in cur.fetchall()
+                }
+
+                cur.execute(
+                    """
                     select status, count(*)::int as count
                     from fb_post_jobs
                     group by status
@@ -677,6 +820,7 @@ class BotStorage:
             "inactive_accounts": int(account_row.get("inactive_accounts") or 0),
             "page_count": int(page_row.get("page_count") or 0),
             "user_count": int(user_row.get("user_count") or 0),
+            "user_approval_counts": approval_counts,
             "job_status_counts": job_status_counts,
             "post_type_counts": post_type_counts,
             "active_locks": active_locks,
@@ -701,6 +845,10 @@ class BotStorage:
                         s.first_name,
                         s.last_name,
                         s.username,
+                        coalesce(s.approval_status, 'approved') as approval_status,
+                        s.approved_by,
+                        s.approved_at,
+                        s.approval_requested_at,
                         count(distinct a.account_id)::int as account_count,
                         count(distinct j.id)::int as job_count,
                         max(greatest(
@@ -712,8 +860,11 @@ class BotStorage:
                     left join telegram_user_state s on s.telegram_user_id = u.telegram_user_id
                     left join fb_accounts a on a.created_by = u.telegram_user_id
                     left join fb_post_jobs j on j.telegram_user_id = u.telegram_user_id
-                    group by u.telegram_user_id, s.active_account_id, s.first_name, s.last_name, s.username
-                    order by last_seen desc nulls last
+                    group by u.telegram_user_id, s.active_account_id, s.first_name, s.last_name, s.username,
+                             s.approval_status, s.approved_by, s.approved_at, s.approval_requested_at
+                    order by
+                        case when coalesce(s.approval_status, 'approved') = 'pending' then 0 else 1 end,
+                        last_seen desc nulls last
                     limit %s
                     """,
                     (int(limit),),
@@ -781,6 +932,10 @@ class BotStorage:
                         s.first_name,
                         s.last_name,
                         s.username,
+                        coalesce(s.approval_status, 'approved') as approval_status,
+                        s.approved_by,
+                        s.approved_at,
+                        s.approval_requested_at,
                         coalesce(c.account_count, 0)::int as account_count,
                         coalesce(c.page_count, 0)::int as page_count,
                         coalesce(c.job_count, 0)::int as job_count,
@@ -790,7 +945,10 @@ class BotStorage:
                     left join telegram_user_state s on s.telegram_user_id = u.telegram_user_id
                     left join user_counts c on c.telegram_user_id = u.telegram_user_id
                     where u.telegram_user_id is not null
-                    order by c.last_seen desc nulls last, u.telegram_user_id desc
+                    order by
+                        case when coalesce(s.approval_status, 'approved') = 'pending' then 0 else 1 end,
+                        c.last_seen desc nulls last,
+                        u.telegram_user_id desc
                     limit %s offset %s
                     """,
                     (limit, offset),
@@ -833,6 +991,10 @@ class BotStorage:
                         s.last_name,
                         s.username,
                         s.lang,
+                        coalesce(s.approval_status, 'approved') as approval_status,
+                        s.approved_by,
+                        s.approved_at,
+                        s.approval_requested_at,
                         (select min(value) from first_seen_values where value is not null) as first_seen,
                         (select max(value) from last_seen_values where value is not null) as last_seen,
                         (select count(*)::int from fb_accounts a where a.created_by = t.telegram_user_id) as account_count,
@@ -958,6 +1120,7 @@ class BotStorage:
                         s.first_name,
                         s.last_name,
                         s.username,
+                        coalesce(s.approval_status, 'approved') as approval_status,
                         greatest(
                             coalesce(s.last_seen_at, 'epoch'::timestamptz),
                             coalesce(s.updated_at, 'epoch'::timestamptz),
@@ -1014,13 +1177,15 @@ class BotStorage:
                         from fb_post_jobs
                         where telegram_user_id is not null
                     )
-                    select telegram_user_id,
-                           coalesce(max(last_chat_id), telegram_user_id) as chat_id,
-                           max(last_seen_at) as last_seen_at
-                    from known_users
-                    where telegram_user_id is not null
-                    group by telegram_user_id
-                    order by max(last_seen_at) desc nulls last
+                    select k.telegram_user_id,
+                           coalesce(max(k.last_chat_id), k.telegram_user_id) as chat_id,
+                           max(k.last_seen_at) as last_seen_at
+                    from known_users k
+                    left join telegram_user_state s on s.telegram_user_id = k.telegram_user_id
+                    where k.telegram_user_id is not null
+                      and coalesce(s.approval_status, 'approved') = 'approved'
+                    group by k.telegram_user_id
+                    order by max(k.last_seen_at) desc nulls last
                     """
                 )
                 return list(cur.fetchall())

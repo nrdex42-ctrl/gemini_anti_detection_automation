@@ -47,6 +47,10 @@ create table if not exists telegram_user_state (
     last_name text not null default '',
     username text not null default '',
     lang text not null default 'en',
+    approval_status text not null default 'approved',
+    approved_by bigint,
+    approved_at timestamptz,
+    approval_requested_at timestamptz,
     created_at timestamptz not null default now(),
     last_seen_at timestamptz,
     updated_at timestamptz not null default now()
@@ -58,6 +62,10 @@ alter table telegram_user_state add column if not exists last_name text not null
 alter table telegram_user_state add column if not exists username text not null default '';
 alter table telegram_user_state add column if not exists last_seen_at timestamptz;
 alter table telegram_user_state add column if not exists lang text not null default 'en';
+alter table telegram_user_state add column if not exists approval_status text not null default 'approved';
+alter table telegram_user_state add column if not exists approved_by bigint;
+alter table telegram_user_state add column if not exists approved_at timestamptz;
+alter table telegram_user_state add column if not exists approval_requested_at timestamptz;
 
 create table if not exists bot_meta (
     key text primary key,

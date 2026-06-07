@@ -45,6 +45,7 @@ def test_posting_result_card_includes_overall_elapsed_time():
     assert "Completed: 2026-06-07 08:54 PM" in card
     assert "Total time: 2m 05s" in card
     assert POSTING_STATUS_SYNC_TEXT in card
+    assert "Page status sync" not in card
     assert "Succeeded pages: 2" in card
     assert "Failed pages: 1" in card
     assert "Debug ID" not in card
@@ -59,7 +60,7 @@ def test_posting_result_card_includes_overall_elapsed_time():
     assert "video rejected" not in card
 
 
-def test_posting_live_status_card_uses_page_sync_text_instead_of_debug_id():
+def test_posting_live_status_card_uses_user_friendly_status_text_instead_of_debug_id():
     card = posting_live_status_card(
         "Batch posting...",
         [{"job_id": "job_1", "page_name": "Page A"}],
@@ -67,7 +68,8 @@ def test_posting_live_status_card_uses_page_sync_text_instead_of_debug_id():
         debug_id="batch_live",
     )
 
-    assert POSTING_STATUS_SYNC_TEXT in card
+    assert "Page statuses update below as each page finishes." in card
+    assert "Page status sync" not in card
     assert "Debug ID" not in card
     assert "batch_live" not in card
     assert "Page A" in card
