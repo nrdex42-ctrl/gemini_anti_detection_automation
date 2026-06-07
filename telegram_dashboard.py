@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from page_name_utils import clean_facebook_page_name
@@ -22,6 +22,7 @@ BUTTON_POST_HISTORY = "📊 Post History"
 BUTTON_STATUS = "📊 Bot Status"
 BUTTON_BACK = "⬅️ Back to Dashboard"
 BUTTON_DASHBOARD = "🏠 Dashboard"
+BUTTON_LANGUAGE = "🌐 Language"
 BUTTON_DISCOVER_PAGES = "🔎 Discover Pages"
 BUTTON_REFRESH_PAGES = "🔄 Refresh Pages"
 BUTTON_LIST_PAGES = "📄 Stored Pages"
@@ -39,10 +40,127 @@ BUTTON_RUNTIME_LOCKS = "🔐 Runtime Locks"
 BUTTON_SYSTEM_CONFIG = "⚙️ System Config"
 BUTTON_DEBUG_SNAPSHOT = "🧰 Debug Snapshot"
 
+AR_BUTTON_ADD_ACCOUNT = "➕ ضيف حساب فيسبوك"
+AR_BUTTON_POST_ACTIVE = "⚡ انشر بالحساب النشط"
+AR_BUTTON_QUICK_TEXT = "📝 منشور نصي سريع"
+AR_BUTTON_QUICK_IMAGE = "📸 منشور صورة سريع"
+AR_BUTTON_QUICK_VIDEO = "🎬 منشور فيديو سريع"
+AR_BUTTON_POST_ALL_PAGES = "📋 انشر لكل الصفحات"
+AR_BUTTON_SWITCH_ACCOUNT = "🔁 غيّر الحساب النشط"
+AR_BUTTON_SELECT_ACCOUNT = "📱 اختار حساب وانشر"
+AR_BUTTON_MY_ACCOUNTS = "👤 حساباتي"
+AR_BUTTON_CHECK_COOKIES = "🧪 افحص كل الكوكيز"
+AR_BUTTON_POST_HISTORY = "📊 سجل المنشورات"
+AR_BUTTON_STATUS = "📊 حالة البوت"
+AR_BUTTON_BACK = "⬅️ ارجع للوحة التحكم"
+AR_BUTTON_DASHBOARD = "🏠 لوحة التحكم"
+AR_BUTTON_LANGUAGE = "🌐 اللغة"
+AR_BUTTON_DISCOVER_PAGES = "🔎 اكتشف الصفحات"
+AR_BUTTON_REFRESH_PAGES = "🔄 حدّث الصفحات"
+AR_BUTTON_LIST_PAGES = "📄 الصفحات المحفوظة"
+AR_BUTTON_CHECK_THIS_ACCOUNT = "🧪 افحص الحساب ده"
+AR_BUTTON_CONTINUE_TO_PAGES = "➡️ كمل للصفحات"
+AR_BUTTON_DONE = "✅ تم"
+AR_BUTTON_CANCEL = "❌ إلغاء"
+AR_BUTTON_ADMIN = "🔒 لوحة الأدمن"
+AR_BUTTON_USER_DASHBOARD = "🔁 لوحة المستخدم"
+AR_BUTTON_SYSTEM_STATS = "📊 إحصائيات النظام"
+AR_BUTTON_USERS = "👥 المستخدمين"
+AR_BUTTON_ADMIN_ACCOUNTS = "🔑 الحسابات"
+AR_BUTTON_POST_STATS = "📈 إحصائيات المنشورات"
+AR_BUTTON_RUNTIME_LOCKS = "🔐 أقفال التشغيل"
+AR_BUTTON_SYSTEM_CONFIG = "⚙️ إعدادات النظام"
+AR_BUTTON_DEBUG_SNAPSHOT = "🧰 لقطة تصحيح"
+
+_BUTTONS_EN = {
+    "add_account": BUTTON_ADD_ACCOUNT,
+    "post_active": BUTTON_POST_ACTIVE,
+    "quick_text": BUTTON_QUICK_TEXT,
+    "quick_image": BUTTON_QUICK_IMAGE,
+    "quick_video": BUTTON_QUICK_VIDEO,
+    "post_all_pages": BUTTON_POST_ALL_PAGES,
+    "switch_account": BUTTON_SWITCH_ACCOUNT,
+    "select_account": BUTTON_SELECT_ACCOUNT,
+    "my_accounts": BUTTON_MY_ACCOUNTS,
+    "check_cookies": BUTTON_CHECK_COOKIES,
+    "post_history": BUTTON_POST_HISTORY,
+    "status": BUTTON_STATUS,
+    "back": BUTTON_BACK,
+    "dashboard": BUTTON_DASHBOARD,
+    "language": BUTTON_LANGUAGE,
+    "discover_pages": BUTTON_DISCOVER_PAGES,
+    "refresh_pages": BUTTON_REFRESH_PAGES,
+    "list_pages": BUTTON_LIST_PAGES,
+    "check_this_account": BUTTON_CHECK_THIS_ACCOUNT,
+    "continue_to_pages": BUTTON_CONTINUE_TO_PAGES,
+    "done": BUTTON_DONE,
+    "cancel": BUTTON_CANCEL,
+    "admin": BUTTON_ADMIN,
+    "user_dashboard": BUTTON_USER_DASHBOARD,
+    "system_stats": BUTTON_SYSTEM_STATS,
+    "users": BUTTON_USERS,
+    "admin_accounts": BUTTON_ADMIN_ACCOUNTS,
+    "post_stats": BUTTON_POST_STATS,
+    "runtime_locks": BUTTON_RUNTIME_LOCKS,
+    "system_config": BUTTON_SYSTEM_CONFIG,
+    "debug_snapshot": BUTTON_DEBUG_SNAPSHOT,
+}
+
+_BUTTONS_AR = {
+    "add_account": AR_BUTTON_ADD_ACCOUNT,
+    "post_active": AR_BUTTON_POST_ACTIVE,
+    "quick_text": AR_BUTTON_QUICK_TEXT,
+    "quick_image": AR_BUTTON_QUICK_IMAGE,
+    "quick_video": AR_BUTTON_QUICK_VIDEO,
+    "post_all_pages": AR_BUTTON_POST_ALL_PAGES,
+    "switch_account": AR_BUTTON_SWITCH_ACCOUNT,
+    "select_account": AR_BUTTON_SELECT_ACCOUNT,
+    "my_accounts": AR_BUTTON_MY_ACCOUNTS,
+    "check_cookies": AR_BUTTON_CHECK_COOKIES,
+    "post_history": AR_BUTTON_POST_HISTORY,
+    "status": AR_BUTTON_STATUS,
+    "back": AR_BUTTON_BACK,
+    "dashboard": AR_BUTTON_DASHBOARD,
+    "language": AR_BUTTON_LANGUAGE,
+    "discover_pages": AR_BUTTON_DISCOVER_PAGES,
+    "refresh_pages": AR_BUTTON_REFRESH_PAGES,
+    "list_pages": AR_BUTTON_LIST_PAGES,
+    "check_this_account": AR_BUTTON_CHECK_THIS_ACCOUNT,
+    "continue_to_pages": AR_BUTTON_CONTINUE_TO_PAGES,
+    "done": AR_BUTTON_DONE,
+    "cancel": AR_BUTTON_CANCEL,
+    "admin": AR_BUTTON_ADMIN,
+    "user_dashboard": AR_BUTTON_USER_DASHBOARD,
+    "system_stats": AR_BUTTON_SYSTEM_STATS,
+    "users": AR_BUTTON_USERS,
+    "admin_accounts": AR_BUTTON_ADMIN_ACCOUNTS,
+    "post_stats": AR_BUTTON_POST_STATS,
+    "runtime_locks": AR_BUTTON_RUNTIME_LOCKS,
+    "system_config": AR_BUTTON_SYSTEM_CONFIG,
+    "debug_snapshot": AR_BUTTON_DEBUG_SNAPSHOT,
+}
+
+
+def normalize_lang(lang: str = "en") -> str:
+    return "ar" if str(lang or "").strip().lower() == "ar" else "en"
+
+
+def tr(lang: str, en: str, ar: str) -> str:
+    return ar if normalize_lang(lang) == "ar" else en
+
+
+def button_text(key: str, lang: str = "en") -> str:
+    table = _BUTTONS_AR if normalize_lang(lang) == "ar" else _BUTTONS_EN
+    return table.get(key, _BUTTONS_EN.get(key, key))
+
+
 DASHBOARD_ACTIONS = {
     BUTTON_DASHBOARD: "dashboard",
     BUTTON_BACK: "dashboard",
+    BUTTON_LANGUAGE: "language",
     "Dashboard": "dashboard",
+    "Language": "language",
+    "🌐 اللغة": "language",
     "menu": "dashboard",
     "Menu": "dashboard",
     BUTTON_ADD_ACCOUNT: "add_account",
@@ -80,6 +198,41 @@ DASHBOARD_ACTIONS = {
     "🎬 Video Post": "quick_video",
 }
 
+DASHBOARD_ACTIONS.update(
+    {
+        AR_BUTTON_ADD_ACCOUNT: "add_account",
+        AR_BUTTON_POST_ACTIVE: "post_active",
+        AR_BUTTON_QUICK_TEXT: "quick_text",
+        AR_BUTTON_QUICK_IMAGE: "quick_image",
+        AR_BUTTON_QUICK_VIDEO: "quick_video",
+        AR_BUTTON_POST_ALL_PAGES: "post_all_pages",
+        AR_BUTTON_SWITCH_ACCOUNT: "switch_account",
+        AR_BUTTON_SELECT_ACCOUNT: "select_account",
+        AR_BUTTON_MY_ACCOUNTS: "manage_accounts",
+        AR_BUTTON_CHECK_COOKIES: "check_cookies",
+        AR_BUTTON_POST_HISTORY: "post_history",
+        AR_BUTTON_STATUS: "status",
+        AR_BUTTON_BACK: "dashboard",
+        AR_BUTTON_DASHBOARD: "dashboard",
+        AR_BUTTON_LANGUAGE: "language",
+        AR_BUTTON_DISCOVER_PAGES: "discover_pages",
+        AR_BUTTON_REFRESH_PAGES: "refresh_pages",
+        AR_BUTTON_LIST_PAGES: "list_pages",
+        AR_BUTTON_CHECK_THIS_ACCOUNT: "check_active_account",
+        AR_BUTTON_CONTINUE_TO_PAGES: "continue_active_account",
+        AR_BUTTON_CANCEL: "cancel",
+        AR_BUTTON_ADMIN: "admin_dashboard",
+        AR_BUTTON_USER_DASHBOARD: "user_dashboard",
+        AR_BUTTON_SYSTEM_STATS: "admin_system_stats",
+        AR_BUTTON_USERS: "admin_users",
+        AR_BUTTON_ADMIN_ACCOUNTS: "admin_accounts",
+        AR_BUTTON_POST_STATS: "admin_post_stats",
+        AR_BUTTON_RUNTIME_LOCKS: "admin_runtime_locks",
+        AR_BUTTON_SYSTEM_CONFIG: "admin_system_config",
+        AR_BUTTON_DEBUG_SNAPSHOT: "admin_debug_snapshot",
+    }
+)
+
 POST_ACTION_TYPES = {
     "quick_text": "text",
     "quick_image": "image",
@@ -98,13 +251,25 @@ def dashboard_action(text: str) -> str:
 
 def parse_post_type_choice(text: str) -> str:
     normalized = (text or "").strip().lower()
-    if "image" in normalized or "photo" in normalized:
+    if "image" in normalized or "photo" in normalized or "صورة" in normalized:
         return "image"
-    if "video" in normalized:
+    if "video" in normalized or "فيديو" in normalized:
         return "video"
-    if "text" in normalized or "caption" in normalized:
+    if (
+        "text" in normalized
+        or "caption" in normalized
+        or "نص" in normalized
+        or "كابشن" in normalized
+        or "منشور نصي" in normalized
+    ):
         return "text"
     return ""
+
+
+def post_type_choices(lang: str = "en") -> Sequence[str]:
+    if normalize_lang(lang) == "ar":
+        return ("نص", "صورة", "فيديو")
+    return POST_TYPE_CHOICES
 
 
 def reply_keyboard(
@@ -129,71 +294,85 @@ def dashboard_markup(
     active_jobs: int = 0,
     posting_blocked: bool = False,
     is_admin: bool = False,
+    lang: str = "en",
 ) -> Dict[str, Any]:
     rows: List[List[str]] = []
 
     if active_jobs:
-        rows.append(["⏳ Posting in progress..."])
+        rows.append([tr(lang, "⏳ Posting in progress...", "⏳ النشر قيد التنفيذ...")])
 
     if posting_blocked and has_accounts and active_account:
-        rows.append(["⏳ Posting cooldown active"])
-        rows.append([BUTTON_SWITCH_ACCOUNT, BUTTON_REFRESH_PAGES])
+        rows.append([tr(lang, "⏳ Posting cooldown active", "⏳ مهلة النشر مفعلة")])
+        rows.append([button_text("switch_account", lang), button_text("refresh_pages", lang)])
     elif not has_accounts:
-        rows.append([BUTTON_ADD_ACCOUNT])
+        rows.append([button_text("add_account", lang)])
     elif active_account:
-        rows.append([BUTTON_POST_ACTIVE, BUTTON_SWITCH_ACCOUNT])
-        rows.append([BUTTON_QUICK_TEXT, BUTTON_QUICK_IMAGE])
-        rows.append([BUTTON_QUICK_VIDEO, BUTTON_POST_ALL_PAGES])
-        rows.append([BUTTON_REFRESH_PAGES, BUTTON_LIST_PAGES])
+        rows.append([button_text("post_active", lang), button_text("switch_account", lang)])
+        rows.append([button_text("quick_text", lang), button_text("quick_image", lang)])
+        rows.append([button_text("quick_video", lang), button_text("post_all_pages", lang)])
+        rows.append([button_text("refresh_pages", lang), button_text("list_pages", lang)])
     else:
-        rows.append([BUTTON_SELECT_ACCOUNT, BUTTON_ADD_ACCOUNT])
+        rows.append([button_text("select_account", lang), button_text("add_account", lang)])
 
     if has_accounts:
-        rows.append([BUTTON_MY_ACCOUNTS, BUTTON_ADD_ACCOUNT])
-        rows.append([BUTTON_CHECK_COOKIES, BUTTON_POST_HISTORY])
+        rows.append([button_text("my_accounts", lang), button_text("add_account", lang)])
+        rows.append([button_text("check_cookies", lang), button_text("post_history", lang)])
         if not active_account:
-            rows.append([BUTTON_DISCOVER_PAGES, BUTTON_LIST_PAGES])
+            rows.append([button_text("discover_pages", lang), button_text("list_pages", lang)])
 
-    rows.append([BUTTON_STATUS, BUTTON_DASHBOARD])
+    rows.append([button_text("status", lang), button_text("language", lang)])
     if is_admin:
-        rows.append([BUTTON_ADMIN])
-    return reply_keyboard(rows)
+        rows.append([button_text("admin", lang)])
+    return reply_keyboard(rows, placeholder=tr(lang, "Choose a dashboard action...", "اختر إجراء لوحة التحكم..."))
 
 
-def admin_dashboard_markup() -> Dict[str, Any]:
+def admin_dashboard_markup(lang: str = "en") -> Dict[str, Any]:
     return reply_keyboard(
         [
-            [BUTTON_SYSTEM_STATS, BUTTON_POST_STATS],
-            [BUTTON_USERS, BUTTON_ADMIN_ACCOUNTS],
-            [BUTTON_RUNTIME_LOCKS, BUTTON_SYSTEM_CONFIG],
-            [BUTTON_DEBUG_SNAPSHOT],
-            [BUTTON_USER_DASHBOARD],
+            [button_text("system_stats", lang), button_text("post_stats", lang)],
+            [button_text("users", lang), button_text("admin_accounts", lang)],
+            [button_text("runtime_locks", lang), button_text("system_config", lang)],
+            [button_text("debug_snapshot", lang)],
+            [button_text("user_dashboard", lang)],
         ],
-        placeholder="Choose an admin action...",
+        placeholder=tr(lang, "Choose an admin action...", "اختر إجراء للأدمن..."),
     )
 
 
-def cancel_markup() -> Dict[str, Any]:
-    return reply_keyboard([[BUTTON_BACK, BUTTON_CANCEL]], placeholder="Send the requested value")
+def cancel_markup(lang: str = "en") -> Dict[str, Any]:
+    return reply_keyboard(
+        [[button_text("back", lang), button_text("cancel", lang)]],
+        placeholder=tr(lang, "Send the requested value", "ابعت القيمة المطلوبة"),
+    )
 
 
-def cookie_input_markup() -> Dict[str, Any]:
-    return reply_keyboard([[BUTTON_DONE], [BUTTON_BACK, BUTTON_CANCEL]], placeholder="Paste cookies or upload JSON")
+def cookie_input_markup(lang: str = "en") -> Dict[str, Any]:
+    return reply_keyboard(
+        [[button_text("done", lang)], [button_text("back", lang), button_text("cancel", lang)]],
+        placeholder=tr(lang, "Paste cookies or upload JSON", "الصق الكوكيز أو ارفع ملف JSON"),
+    )
 
 
-def account_post_action_markup() -> Dict[str, Any]:
+def done_cancel_markup(lang: str = "en", *, placeholder: str = "") -> Dict[str, Any]:
+    return reply_keyboard(
+        [[button_text("done", lang)], [button_text("back", lang), button_text("cancel", lang)]],
+        placeholder=placeholder or tr(lang, "Send value, then tap Done", "ابعت القيمة، ثم اضغط تم"),
+    )
+
+
+def account_post_action_markup(lang: str = "en") -> Dict[str, Any]:
     return reply_keyboard(
         [
-            [BUTTON_CHECK_THIS_ACCOUNT],
-            [BUTTON_CONTINUE_TO_PAGES, BUTTON_REFRESH_PAGES],
-            [BUTTON_BACK],
+            [button_text("check_this_account", lang)],
+            [button_text("continue_to_pages", lang), button_text("refresh_pages", lang)],
+            [button_text("back", lang)],
         ],
-        placeholder="Choose account action",
+        placeholder=tr(lang, "Choose account action", "اختار إجراء الحساب"),
         persistent=False,
     )
 
 
-def choices_markup(choices: Iterable[str], *, placeholder: str = "Choose or type a value") -> Dict[str, Any]:
+def choices_markup(choices: Iterable[str], *, placeholder: str = "Choose or type a value", lang: str = "en") -> Dict[str, Any]:
     rows: List[List[str]] = []
     row: List[str] = []
     for choice in choices:
@@ -206,7 +385,7 @@ def choices_markup(choices: Iterable[str], *, placeholder: str = "Choose or type
             row = []
     if row:
         rows.append(row)
-    rows.append([BUTTON_BACK, BUTTON_CANCEL])
+    rows.append([button_text("back", lang), button_text("cancel", lang)])
     return reply_keyboard(rows, placeholder=placeholder, persistent=False)
 
 
@@ -216,6 +395,16 @@ def inline_button(text: str, callback_data: str) -> Dict[str, str]:
 
 def inline_markup(rows: Sequence[Sequence[Dict[str, str]]]) -> Dict[str, Any]:
     return {"inline_keyboard": [list(row) for row in rows]}
+
+
+def language_selection_markup(lang: str = "en") -> Dict[str, Any]:
+    return inline_markup(
+        [
+            [inline_button(tr(lang, "🇪🇬 Arabic", "🇪🇬 العربية"), "lang:ar")],
+            [inline_button("🇬🇧 English", "lang:en")],
+            [inline_button(tr(lang, "⬅️ Back", "⬅️ رجوع"), "dash:back")],
+        ]
+    )
 
 
 def account_choice_label(account: Dict[str, Any], active_account: str = "") -> str:
@@ -237,9 +426,10 @@ def account_display_name(account: Dict[str, Any], fallback_id: str = "", *, incl
     account_id = str(account.get("account_id") or fallback_id or "").strip()
     label = str(account.get("label") or "").strip()
     if label and label != account_id:
-        display = "Facebook Account" if label.startswith("Facebook Account ") else label
-        return f"{display} ({account_id})" if include_id and account_id else display
-    if include_id and account_id:
+        display = "Facebook Account" if label == "Facebook Account" or label.startswith("Facebook Account ") else label
+        should_show_id = include_id or display == "Facebook Account"
+        return f"{display} ({account_id})" if should_show_id and account_id else display
+    if account_id:
         return account_id
     return "Facebook Account"
 
@@ -273,6 +463,7 @@ def page_selection_card(
     pages: List[Dict[str, Any]],
     selected_indexes: List[int],
     prefix: str = "",
+    lang: str = "en",
 ) -> str:
     selected = set(selected_indexes)
     lines: List[str] = []
@@ -280,41 +471,41 @@ def page_selection_card(
         lines.extend([prefix, ""])
     lines.extend(
         [
-            "📄 Select Pages",
+            tr(lang, "📄 Select Pages", "📄 اختار الصفحات"),
             "━━━━━━━━━━━━━━━━━━",
-            f"Account: {_short(account_name or 'Facebook Account', 70)}",
-            f"Available pages: {len(pages)}",
-            f"Selected: {len(selected)}",
+            tr(lang, f"Account: {_short(account_name or 'Facebook Account', 70)}", f"الحساب: {_short(account_name or 'Facebook Account', 70)}"),
+            tr(lang, f"Available pages: {len(pages)}", f"الصفحات المتاحة: {len(pages)}"),
+            tr(lang, f"Selected: {len(selected)}", f"المحدد: {len(selected)}"),
             "",
         ]
     )
     if not pages:
-        lines.append("No cached pages found. Refresh pages first.")
+        lines.append(tr(lang, "No cached pages found. Refresh pages first.", "لا توجد صفحات محفوظة. حدّث الصفحات أولاً."))
     else:
         for idx, page in enumerate(pages[:10]):
             marker = "✅" if idx in selected else "⬜"
             lines.append(f"{marker} {page_display_name(page, idx)}")
         remaining = len(pages) - 10
         if remaining > 0:
-            lines.append(f"... and {remaining} more")
-    lines.extend(["", "Tap page names to toggle, then Confirm."])
+            lines.append(tr(lang, f"... and {remaining} more", f"... و {remaining} إضافية"))
+    lines.extend(["", tr(lang, "Tap page names to toggle, then Confirm.", "اضغط أسماء الصفحات للتحديد، ثم تأكيد.")])
     return "\n".join(lines)
 
 
-def page_selection_markup(pages: List[Dict[str, Any]], selected_indexes: List[int]) -> Dict[str, Any]:
+def page_selection_markup(pages: List[Dict[str, Any]], selected_indexes: List[int], lang: str = "en") -> Dict[str, Any]:
     selected = set(selected_indexes)
     rows: List[List[Dict[str, str]]] = []
     for idx, page in enumerate(pages[:24]):
         marker = "✅" if idx in selected else "⬜"
         rows.append([inline_button(f"{marker} {_short(page_display_name(page, idx), 48)}", f"pg:{idx}")])
     if pages:
-        rows.append([inline_button("📋 All", "pg:all"), inline_button("✅ Confirm", "pg:confirm")])
-    rows.append([inline_button("🔄 Refresh Pages", "pg:refresh")])
-    rows.append([inline_button("⬅️ Dashboard", "dash:back")])
+        rows.append([inline_button(tr(lang, "📋 All", "📋 الكل"), "pg:all"), inline_button(tr(lang, "✅ Confirm", "✅ تأكيد"), "pg:confirm")])
+    rows.append([inline_button(button_text("refresh_pages", lang), "pg:refresh")])
+    rows.append([inline_button(button_text("dashboard", lang), "dash:back")])
     return inline_markup(rows)
 
 
-def post_type_card(*, account_name: str, pages: List[Dict[str, Any]], selected_indexes: List[int]) -> str:
+def post_type_card(*, account_name: str, pages: List[Dict[str, Any]], selected_indexes: List[int], lang: str = "en") -> str:
     page_names = [
         page_display_name(pages[idx], idx)
         for idx in selected_indexes
@@ -325,28 +516,28 @@ def post_type_card(*, account_name: str, pages: List[Dict[str, Any]], selected_i
         preview += f", +{len(page_names) - 4} more"
     return "\n".join(
         [
-            "📝 Choose Post Type",
+            tr(lang, "📝 Choose Post Type", "📝 اختار نوع المنشور"),
             "━━━━━━━━━━━━━━━━━━",
-            f"Account: {_short(account_name or 'Facebook Account', 70)}",
-            f"Pages: {len(page_names)}",
-            f"Selected: {preview or 'none'}",
+            tr(lang, f"Account: {_short(account_name or 'Facebook Account', 70)}", f"الحساب: {_short(account_name or 'Facebook Account', 70)}"),
+            tr(lang, f"Pages: {len(page_names)}", f"الصفحات: {len(page_names)}"),
+            tr(lang, f"Selected: {preview or 'none'}", f"المحدد: {preview or 'لا يوجد'}"),
             "",
-            "Choose what you want to post.",
+            tr(lang, "Choose what you want to post.", "اختار نوع المحتوى اللي عايز تنشره."),
         ]
     )
 
 
-def post_type_inline_markup() -> Dict[str, Any]:
+def post_type_inline_markup(lang: str = "en") -> Dict[str, Any]:
     return inline_markup(
         [
-            [inline_button("📝 Caption/Text", "post:type:text")],
-            [inline_button("📸 Image", "post:type:image"), inline_button("🎬 Video", "post:type:video")],
-            [inline_button("⬅️ Pages", "post:pages"), inline_button("🏠 Dashboard", "dash:back")],
+            [inline_button(tr(lang, "📝 Caption/Text", "📝 نص/كابشن"), "post:type:text")],
+            [inline_button(tr(lang, "📸 Image", "📸 صورة"), "post:type:image"), inline_button(tr(lang, "🎬 Video", "🎬 فيديو"), "post:type:video")],
+            [inline_button(tr(lang, "⬅️ Pages", "⬅️ الصفحات"), "post:pages"), inline_button(button_text("dashboard", lang), "dash:back")],
         ]
     )
 
 
-def video_mode_card(*, account_name: str, pages: List[Dict[str, Any]], selected_indexes: List[int]) -> str:
+def video_mode_card(*, account_name: str, pages: List[Dict[str, Any]], selected_indexes: List[int], lang: str = "en") -> str:
     page_names = [
         page_display_name(pages[idx], idx)
         for idx in selected_indexes
@@ -357,40 +548,40 @@ def video_mode_card(*, account_name: str, pages: List[Dict[str, Any]], selected_
         preview += f", +{len(page_names) - 4} more"
     return "\n".join(
         [
-            "🎬 Video Posting Mode",
+            tr(lang, "🎬 Video Posting Mode", "🎬 طريقة نشر الفيديو"),
             "━━━━━━━━━━━━━━━━━━",
-            f"Account: {_short(account_name or 'Facebook Account', 70)}",
-            f"Pages: {len(page_names)}",
-            f"Selected: {preview or 'none'}",
+            tr(lang, f"Account: {_short(account_name or 'Facebook Account', 70)}", f"الحساب: {_short(account_name or 'Facebook Account', 70)}"),
+            tr(lang, f"Pages: {len(page_names)}", f"الصفحات: {len(page_names)}"),
+            tr(lang, f"Selected: {preview or 'none'}", f"المحدد: {preview or 'لا يوجد'}"),
             "",
-            "Choose how videos should be attached.",
+            tr(lang, "Choose how videos should be attached.", "اختار طريقة إرفاق الفيديوهات."),
         ]
     )
 
 
-def video_mode_inline_markup() -> Dict[str, Any]:
+def video_mode_inline_markup(lang: str = "en") -> Dict[str, Any]:
     return inline_markup(
         [
-            [inline_button("📄 Single video upload → all pages", "video:single_upload")],
-            [inline_button("📚 Multi videos upload → one per page", "video:multi_upload")],
-            [inline_button("🔗 Single video URL → all pages", "video:single_url")],
-            [inline_button("🔗 Multi video URLs → one per page", "video:multi_url")],
-            [inline_button("⬅️ Pages", "post:pages"), inline_button("🏠 Dashboard", "dash:back")],
+            [inline_button(tr(lang, "📄 Single video upload → all pages", "📄 فيديو واحد → كل الصفحات"), "video:single_upload")],
+            [inline_button(tr(lang, "📚 Multi videos upload → one per page", "📚 فيديو لكل صفحة"), "video:multi_upload")],
+            [inline_button(tr(lang, "🔗 Single video URL → all pages", "🔗 رابط فيديو واحد → كل الصفحات"), "video:single_url")],
+            [inline_button(tr(lang, "🔗 Multi video URLs → one per page", "🔗 رابط فيديو لكل صفحة"), "video:multi_url")],
+            [inline_button(tr(lang, "⬅️ Pages", "⬅️ الصفحات"), "post:pages"), inline_button(button_text("dashboard", lang), "dash:back")],
         ]
     )
 
 
-def post_input_card(post_type: str) -> str:
+def post_input_card(post_type: str, lang: str = "en") -> str:
     if post_type == "text":
-        action = "Send the caption/text message now."
-        title = "📝 Caption Post"
+        action = tr(lang, "Send the caption/text message now.", "ابعت النص/الكابشن دلوقتي.")
+        title = tr(lang, "📝 Caption Post", "📝 منشور نصي")
     elif post_type == "image":
-        action = "Send or reply with the image now. Telegram media caption is optional."
-        title = "📸 Image Post"
+        action = tr(lang, "Send or reply with the image now. Telegram media caption is optional.", "ابعت الصورة أو اعمل رد بصورة دلوقتي. كابشن الميديا اختياري.")
+        title = tr(lang, "📸 Image Post", "📸 منشور صورة")
     else:
-        action = "Send or reply with the video now. Telegram media caption is optional."
-        title = "🎬 Video Post"
-    return "\n".join([title, "━━━━━━━━━━━━━━━━━━", action, "", "After that, I will show a final review card."])
+        action = tr(lang, "Send or reply with the video now. Telegram media caption is optional.", "ابعت الفيديو أو اعمل رد بفيديو دلوقتي. كابشن الميديا اختياري.")
+        title = tr(lang, "🎬 Video Post", "🎬 منشور فيديو")
+    return "\n".join([title, "━━━━━━━━━━━━━━━━━━", action, "", tr(lang, "After that, I will show a final review card.", "بعد كده هاعرضلك كارت المراجعة النهائي.")])
 
 
 def post_review_card(
@@ -401,34 +592,43 @@ def post_review_card(
     caption: str,
     media_path: str = "",
     multi_media_count: int = 0,
+    multi_caption_count: int = 0,
+    lang: str = "en",
 ) -> str:
-    caption_value = _short(caption, 700) if caption else "(none)"
-    media_value = f"{multi_media_count} attached (one per page)" if multi_media_count else ("attached" if media_path else "(none)")
+    if multi_caption_count and not caption:
+        caption_value = tr(lang, f"{multi_caption_count} attached (one per page)", f"{multi_caption_count} مرفقين (واحد لكل صفحة)")
+    else:
+        caption_value = _short(caption, 700) if caption else tr(lang, "(none)", "(لا يوجد)")
+    media_value = (
+        tr(lang, f"{multi_media_count} attached (one per page)", f"{multi_media_count} مرفقين (واحد لكل صفحة)")
+        if multi_media_count
+        else (tr(lang, "attached", "مرفق") if media_path else tr(lang, "(none)", "(لا يوجد)"))
+    )
     lines = [
-        "🧾 Review Post",
+        tr(lang, "🧾 Review Post", "🧾 مراجعة المنشور"),
         "━━━━━━━━━━━━━━━━━━",
-        f"Type: {post_type}",
-        f"Account: {_short(account_name or 'Facebook Account', 70)}",
-        f"Selected pages: {len(pages)}",
+        tr(lang, f"Type: {post_type}", f"النوع: {post_type}"),
+        tr(lang, f"Account: {_short(account_name or 'Facebook Account', 70)}", f"الحساب: {_short(account_name or 'Facebook Account', 70)}"),
+        tr(lang, f"Selected pages: {len(pages)}", f"الصفحات المحددة: {len(pages)}"),
     ]
     for idx, page in enumerate(pages[:6]):
         lines.append(f"• {page_display_name(page, idx)}")
     remaining = len(pages) - 6
     if remaining > 0:
-        lines.append(f"... and {remaining} more")
-    lines.extend(["", f"Caption: {caption_value}"])
+        lines.append(tr(lang, f"... and {remaining} more", f"... و {remaining} إضافية"))
+    lines.extend(["", tr(lang, f"Caption: {caption_value}", f"الكابشن: {caption_value}")])
     if post_type in {"image", "video"}:
-        lines.append(f"Media: {media_value}")
-    lines.extend(["", "Confirm to start posting, or edit the caption."])
+        lines.append(tr(lang, f"Media: {media_value}", f"الميديا: {media_value}"))
+    lines.extend(["", tr(lang, "Confirm to start posting, or edit the caption.", "أكد لبدء النشر، أو عدّل الكابشن.")])
     return "\n".join(lines)
 
 
-def post_confirm_inline_markup() -> Dict[str, Any]:
+def post_confirm_inline_markup(lang: str = "en") -> Dict[str, Any]:
     return inline_markup(
         [
-            [inline_button("✏️ Edit Caption", "post:edit_caption")],
-            [inline_button("✅ Post Now", "post:confirm")],
-            [inline_button("⬅️ Pages", "post:pages"), inline_button("🏠 Dashboard", "dash:back")],
+            [inline_button(tr(lang, "✏️ Edit Caption", "✏️ تعديل الكابشن"), "post:edit_caption")],
+            [inline_button(tr(lang, "✅ Post Now", "✅ انشر الآن"), "post:confirm")],
+            [inline_button(tr(lang, "⬅️ Pages", "⬅️ الصفحات"), "post:pages"), inline_button(button_text("dashboard", lang), "dash:back")],
         ]
     )
 
@@ -445,15 +645,23 @@ def _format_dt(value: Any) -> str:
             return str(value)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    display_tz = timezone(timedelta(hours=3), "UTC+3")
+    return dt.astimezone(display_tz).strftime("%Y-%m-%d %H:%M UTC+3")
 
 
 def _account_health_icon(account: Dict[str, Any], active_account: str) -> str:
-    if str(account.get("account_id") or "") == active_account:
+    if str(account.get("cookie_status") or "unverified").lower() == "valid":
         return "🟢"
-    if account.get("active"):
-        return "🟡"
     return "🔴"
+
+
+def _account_cookie_status_label(account: Dict[str, Any], lang: str = "en") -> str:
+    status = str(account.get("cookie_status") or "unverified").strip().lower()
+    if status == "valid":
+        return tr(lang, "valid", "صالحة")
+    if status == "invalid":
+        return tr(lang, "invalid", "غير صالحة")
+    return tr(lang, "not verified", "لم يتم التحقق")
 
 
 def dashboard_text(
@@ -462,6 +670,7 @@ def dashboard_text(
     summary: Optional[Dict[str, Any]] = None,
     active_account: str = "",
     prefix: str = "",
+    lang: str = "en",
 ) -> str:
     summary = summary or {}
     status_counts = summary.get("job_status_counts") or {}
@@ -475,43 +684,81 @@ def dashboard_text(
         lines.extend([prefix, ""])
 
     account_by_id = {str(account.get("account_id") or ""): account for account in accounts}
-    active_text = account_display_name(account_by_id.get(active_account, {}), active_account) if active_account else "not selected"
+    active_text = (
+        account_display_name(account_by_id.get(active_account, {}), active_account)
+        if active_account
+        else tr(lang, "not selected", "غير محدد")
+    )
     lines.extend(
         [
-            "🎛️ Smart Dashboard",
+            tr(lang, "🎛️ Smart Dashboard", "🎛️ لوحة التحكم الذكية"),
             "━━━━━━━━━━━━━━━━━━",
-            f"Accounts: {len(accounts)} total",
-            f"Active account: {active_text}",
-            f"Stored pages: {int(summary.get('page_count') or 0)}",
-            f"Jobs: {active_jobs} active, {int(status_counts.get('success', 0))} success, {int(status_counts.get('failed', 0))} failed",
+            tr(lang, f"Accounts: {len(accounts)} total", f"الحسابات: {len(accounts)} إجمالي"),
+            tr(lang, f"Active account: {active_text}", f"الحساب النشط: {active_text}"),
+            tr(lang, f"Stored pages: {int(summary.get('page_count') or 0)}", f"الصفحات المحفوظة: {int(summary.get('page_count') or 0)}"),
+            tr(
+                lang,
+                f"Jobs: {active_jobs} active, {int(status_counts.get('success', 0))} success, {int(status_counts.get('failed', 0))} failed",
+                f"المهام: {active_jobs} نشطة، {int(status_counts.get('success', 0))} ناجحة، {int(status_counts.get('failed', 0))} فاشلة",
+            ),
         ]
     )
 
     if not accounts:
-        lines.extend(["", "No accounts yet. Tap Add Facebook Account and paste a raw cookie string or JSON export."])
+        lines.extend(
+            [
+                "",
+                tr(
+                    lang,
+                    "No accounts yet. Tap Add Facebook Account and paste a raw cookie string or JSON export.",
+                    "لا توجد حسابات بعد. اضغط ضيف حساب فيسبوك والصق الكوكيز أو ارفع ملف JSON.",
+                ),
+            ]
+        )
     elif not active_account:
-        lines.extend(["", "No active account selected. Tap Select Account & Post or Switch Active Account."])
+        lines.extend(
+            [
+                "",
+                tr(
+                    lang,
+                    "No active account selected. Tap Select Account & Post or Switch Active Account.",
+                    "لا يوجد حساب نشط. اضغط اختار حساب وانشر أو غيّر الحساب النشط.",
+                ),
+            ]
+        )
     else:
-        lines.extend(["", "Available accounts:"])
+        lines.extend(["", tr(lang, "Available accounts:", "الحسابات المتاحة:")])
         for account in accounts[:6]:
             account_id = str(account.get("account_id") or "")
             icon = _account_health_icon(account, active_account)
             pages = int(page_counts.get(account_id, 0))
-            lines.append(f"{icon} {account_display_name(account)} | pages: {pages}")
+            lines.append(
+                tr(
+                    lang,
+                    f"{icon} {account_display_name(account)} | pages: {pages} | cookies: {_account_cookie_status_label(account, lang)}",
+                    f"{icon} {account_display_name(account)} | صفحات: {pages} | الكوكيز: {_account_cookie_status_label(account, lang)}",
+                )
+            )
         if len(accounts) > 6:
-            lines.append(f"... {len(accounts) - 6} more")
+            lines.append(tr(lang, f"... {len(accounts) - 6} more", f"... و {len(accounts) - 6} إضافية"))
 
     if locked_accounts:
         lines.append("")
-        lines.append("Session safety:")
+        lines.append(tr(lang, "Session safety:", "أمان الجلسة:"))
         for item in locked_accounts[:4]:
             locked_id = str(item.get("account_id") or "")
             locked_name = account_display_name(account_by_id.get(locked_id, {}), locked_id)
-            lines.append(f"- {locked_name}: locked until {_format_dt(item.get('locked_until'))}")
+            lines.append(
+                tr(
+                    lang,
+                    f"- {locked_name}: locked until {_format_dt(item.get('locked_until'))}",
+                    f"- {locked_name}: مقفول لحد {_format_dt(item.get('locked_until'))}",
+                )
+            )
 
     if recent_jobs:
         lines.append("")
-        lines.append("Recent posts:")
+        lines.append(tr(lang, "Recent posts:", "آخر المنشورات:"))
         for job in recent_jobs[:5]:
             target = clean_facebook_page_name(
                 job.get("page_name"),
@@ -522,35 +769,50 @@ def dashboard_text(
                 f"- {job.get('status')} {job.get('post_type')} -> {target}"
             )
 
-    lines.extend(["", "Use the keyboard buttons below. /start refreshes this dashboard."])
+    lines.extend(
+        [
+            "",
+            tr(
+                lang,
+                "Use the keyboard buttons below. /start refreshes this dashboard.",
+                "استخدم أزرار لوحة الكتابة بالأسفل. /start يحدّث لوحة التحكم.",
+            ),
+        ]
+    )
     return "\n".join(lines)
 
 
-def prompt_text(action: str, step: str = "") -> str:
+def prompt_text(action: str, step: str = "", lang: str = "en") -> str:
     if action == "add_account":
-        return (
+        return tr(
+            lang,
             "Send Facebook session cookies.\n\n"
             "Accepted formats:\n"
             "1. Raw cookie string in one message.\n"
             "2. Exported JSON file or JSON text.\n"
-            "3. Long JSON across multiple messages, then tap Done."
+            "3. Long JSON across multiple messages, then tap Done.",
+            "ابعت كوكيز جلسة فيسبوك.\n\n"
+            "الصيغ المقبولة:\n"
+            "1. كوكيز خام في رسالة واحدة.\n"
+            "2. ملف JSON أو نص JSON.\n"
+            "3. JSON طويل على كذا رسالة، وبعدها اضغط تم.",
         )
     if step == "account":
-        return "Choose an account from the keyboard."
+        return tr(lang, "Choose an account from the keyboard.", "اختار حساب من لوحة الكتابة.")
     if step == "post_type":
-        return "Choose the post type."
+        return tr(lang, "Choose the post type.", "اختار نوع المنشور.")
     if step == "page":
-        return "Choose a stored page or type a page id / full page URL."
+        return tr(lang, "Choose a stored page or type a page id / full page URL.", "اختار صفحة محفوظة أو اكتب ID الصفحة / رابطها كامل.")
     if step == "caption":
-        return "Send the post caption/text."
+        return tr(lang, "Send the post caption/text.", "ابعت نص/كابشن المنشور.")
     if step == "caption_all":
-        return "Send the caption/text to post to every stored page for this account."
+        return tr(lang, "Send the caption/text to post to every stored page for this account.", "ابعت النص/الكابشن للنشر على كل الصفحات المحفوظة للحساب ده.")
     if step == "media_image":
-        return "Attach or reply with the image now. The media caption will be used as the post caption."
+        return tr(lang, "Attach or reply with the image now. The media caption will be used as the post caption.", "ارفق الصورة أو اعمل رد بصورة دلوقتي. كابشن الميديا هيتستخدم ككابشن للمنشور.")
     if step == "media_video":
-        return "Attach or reply with the video now. The media caption will be used as the post caption."
+        return tr(lang, "Attach or reply with the video now. The media caption will be used as the post caption.", "ارفق الفيديو أو اعمل رد بفيديو دلوقتي. كابشن الميديا هيتستخدم ككابشن للمنشور.")
     if step == "media_image_all":
-        return "Attach or reply with the image to post to every stored page. The media caption will be used as the caption."
+        return tr(lang, "Attach or reply with the image to post to every stored page. The media caption will be used as the caption.", "ارفق الصورة للنشر على كل الصفحات المحفوظة. كابشن الميديا هيتستخدم ككابشن.")
     if step == "media_video_all":
-        return "Attach or reply with the video to post to every stored page. The media caption will be used as the caption."
-    return "Send the requested value."
+        return tr(lang, "Attach or reply with the video to post to every stored page. The media caption will be used as the caption.", "ارفق الفيديو للنشر على كل الصفحات المحفوظة. كابشن الميديا هيتستخدم ككابشن.")
+    return tr(lang, "Send the requested value.", "ابعت القيمة المطلوبة.")

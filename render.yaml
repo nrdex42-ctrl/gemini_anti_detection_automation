@@ -47,6 +47,8 @@ services:
         value: "10"
       - key: BOT_ACCOUNT_LOCK_HEARTBEAT_SECONDS
         value: "30"
+      - key: BOT_ALLOW_ACCOUNT_OWNERSHIP_TRANSFER
+        value: "true"
       - key: BOT_DASHBOARD_SESSION_TTL_SECONDS
         value: "1800"
       - key: BOT_PROGRESS_EDIT_MIN_SECONDS
@@ -60,9 +62,57 @@ services:
       - key: BOT_POSTING_ENGINE_TIMEOUT_SECONDS
         value: "900"
       - key: BOT_BATCH_POSTING_ENGINE_TIMEOUT_SECONDS
-        value: "1200"
+        value: "3600"
       - key: BOT_VIDEO_URL_PROBE_TIMEOUT_SECONDS
         value: "12"
+      - key: BOT_ACCOUNT_NAME_LOOKUP_TIMEOUT_SECONDS
+        value: "45"
+      - key: FACEBOOK_BROWSER_ACCOUNT_LOOKUP_FALLBACK_ENABLED
+        value: "true"
+      - key: POST_BATCH_PAGE_TIMEOUT_SECONDS
+        value: "180"
+      - key: POST_BATCH_PAGE_TIMEOUT_MAX_SECONDS
+        value: "300"
+      - key: POST_DIRECT_COMPOSER_TIMEOUT_SECONDS
+        value: "45"
+      - key: POST_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS
+        value: "120"
+      - key: POST_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS
+        value: "180"
+      - key: POST_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS
+        value: "240"
+      - key: POST_PUBLISH_IN_PROGRESS_TIMEOUT_MS
+        value: "45000"
+      - key: POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS
+        value: "3"
+      - key: POST_COMPOSER_BUTTON_TIMEOUT_MS
+        value: "5000"
+      - key: POST_COMPOSER_DIALOG_TIMEOUT_MS
+        value: "6500"
+      - key: MEDIA_UPLOAD_READY_IMAGE_TIMEOUT
+        value: "30"
+      - key: MEDIA_UPLOAD_READY_VIDEO_TIMEOUT
+        value: "120"
+      - key: POST_PARALLEL_BATCH_ENABLED
+        value: "false"
+      - key: POST_ALLOW_PARALLEL_SAME_COOKIE
+        value: "false"
+      - key: POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS
+        value: "1"
+      - key: MAX_PARALLEL_PAGES
+        value: "1"
+      - key: POST_PARALLEL_SAME_COOKIE_STAGGER_SECONDS
+        value: "0"
+      - key: POST_PARALLEL_ENABLE_PAGES_PORTAL_FALLBACK
+        value: "true"
+      - key: POST_PARALLEL_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS
+        value: "60"
+      - key: POST_PARALLEL_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS
+        value: "90"
+      - key: POST_PARALLEL_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS
+        value: "120"
+      - key: FACEBOOK_MEDIA_UPLOAD_MAX_ZERO_NETWORK_ATTEMPTS
+        value: "2"
       - key: POST_COOKIE_MIN_INTERVAL_SECONDS
         value: "360"
       - key: POST_COOKIE_SESSION_LOCK_ENABLED
@@ -104,6 +154,4 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: ENCRYPTION_KEY
-        generateValue: true
-      - key: PUBLIC_BASE_URL
         sync: false

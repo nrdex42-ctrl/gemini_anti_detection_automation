@@ -114,13 +114,13 @@ PAGE_DISCOVERY_RESOURCE_BLOCKING = os.getenv('PAGE_DISCOVERY_RESOURCE_BLOCKING',
 PAGE_DISCOVERY_GRAPHQL_WAIT_SECONDS = _env_float('PAGE_DISCOVERY_GRAPHQL_WAIT_SECONDS', 1.2, minimum=0.2)
 PAGE_DISCOVERY_WAIT_UNTIL = os.getenv('PAGE_DISCOVERY_WAIT_UNTIL', 'commit').strip() or 'commit'
 FACEBOOK_POST_TIMEOUT_SECONDS = _env_int('FACEBOOK_POST_TIMEOUT_SECONDS', 180, minimum=60)
-POST_BATCH_PAGE_TIMEOUT_SECONDS = _env_int('POST_BATCH_PAGE_TIMEOUT_SECONDS', 130, minimum=60)
+POST_BATCH_PAGE_TIMEOUT_SECONDS = _env_int('POST_BATCH_PAGE_TIMEOUT_SECONDS', 110, minimum=45)
 POST_BATCH_PAGE_TIMEOUT_MAX_SECONDS = _env_int('POST_BATCH_PAGE_TIMEOUT_MAX_SECONDS', 0, minimum=0)
-POST_DIRECT_COMPOSER_TIMEOUT_SECONDS = _env_int('POST_DIRECT_COMPOSER_TIMEOUT_SECONDS', 45, minimum=15)
+POST_DIRECT_COMPOSER_TIMEOUT_SECONDS = _env_int('POST_DIRECT_COMPOSER_TIMEOUT_SECONDS', 35, minimum=15)
 POST_DESKTOP_COMPOSER_TIMEOUT_SECONDS = _env_int('POST_DESKTOP_COMPOSER_TIMEOUT_SECONDS', 65, minimum=30)
-POST_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS = _env_int('POST_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS', 180, minimum=60)
-POST_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS = _env_int('POST_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS', 210, minimum=60)
-POST_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS = _env_int('POST_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS', 240, minimum=90)
+POST_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS = _env_int('POST_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS', 90, minimum=45)
+POST_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS = _env_int('POST_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS', 150, minimum=60)
+POST_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS = _env_int('POST_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS', 180, minimum=90)
 POST_SUBMIT_ACTION_TIMEOUT_SECONDS = _env_int('POST_SUBMIT_ACTION_TIMEOUT_SECONDS', 22, minimum=8)
 POST_COMPOSER_ROUTE_LIMIT = _env_int('POST_COMPOSER_ROUTE_LIMIT', 2, minimum=1)
 POST_COMPOSER_ENTRY_MODE = os.getenv('POST_COMPOSER_ENTRY_MODE', 'target').strip().lower() or 'target'
@@ -160,6 +160,24 @@ POST_ENABLE_PAGES_PORTAL_FALLBACK = os.getenv('POST_ENABLE_PAGES_PORTAL_FALLBACK
 POST_PAGES_PORTAL_FALLBACK_TEXT_ENABLED = os.getenv('POST_PAGES_PORTAL_FALLBACK_TEXT_ENABLED', 'false').lower() == 'true'
 POST_PAGES_PORTAL_FALLBACK_IMAGE_ENABLED = os.getenv('POST_PAGES_PORTAL_FALLBACK_IMAGE_ENABLED', 'false').lower() == 'true'
 POST_PAGES_PORTAL_FALLBACK_VIDEO_ENABLED = os.getenv('POST_PAGES_PORTAL_FALLBACK_VIDEO_ENABLED', 'false').lower() == 'true'
+POST_PARALLEL_ENABLE_PAGES_PORTAL_FALLBACK = (
+    os.getenv('POST_PARALLEL_ENABLE_PAGES_PORTAL_FALLBACK', 'false').lower() == 'true'
+)
+POST_PARALLEL_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS = _env_int(
+    'POST_PARALLEL_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS',
+    60,
+    minimum=0,
+)
+POST_PARALLEL_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS = _env_int(
+    'POST_PARALLEL_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS',
+    90,
+    minimum=0,
+)
+POST_PARALLEL_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS = _env_int(
+    'POST_PARALLEL_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS',
+    120,
+    minimum=0,
+)
 POST_PREFER_DIRECT_POSTING = os.getenv('POST_PREFER_DIRECT_POSTING', 'true').lower() == 'true'
 POST_SKIP_DIRECT_AFTER_MEDIA_PORTAL_TIMEOUT = (
     os.getenv('POST_SKIP_DIRECT_AFTER_MEDIA_PORTAL_TIMEOUT', 'true').lower() == 'true'
@@ -185,7 +203,7 @@ POST_INITIAL_UI_CONFIRMATION_TIMEOUT_MS = _env_int(
 )
 POST_PUBLISH_IN_PROGRESS_TIMEOUT_MS = _env_int(
     'POST_PUBLISH_IN_PROGRESS_TIMEOUT_MS',
-    45000,
+    30000,
     minimum=3000,
 )
 POST_NETWORK_CONFIRMATION_ENABLED = os.getenv('POST_NETWORK_CONFIRMATION_ENABLED', 'true').lower() == 'true'
@@ -279,6 +297,11 @@ FACEBOOK_BROWSER_USER_AGENT = os.getenv(
 MEDIA_UPLOAD_READY_IMAGE_TIMEOUT = _env_int('MEDIA_UPLOAD_READY_IMAGE_TIMEOUT', 20, minimum=5)
 MEDIA_UPLOAD_READY_VIDEO_TIMEOUT = _env_int('MEDIA_UPLOAD_READY_VIDEO_TIMEOUT', 90, minimum=10)
 FACEBOOK_MEDIA_UPLOAD_MAX_ATTEMPTS = _env_int('FACEBOOK_MEDIA_UPLOAD_MAX_ATTEMPTS', 4, minimum=1)
+FACEBOOK_MEDIA_UPLOAD_MAX_ZERO_NETWORK_ATTEMPTS = _env_int(
+    'FACEBOOK_MEDIA_UPLOAD_MAX_ZERO_NETWORK_ATTEMPTS',
+    2,
+    minimum=1,
+)
 POST_UPLOAD_EARLY_FAILURE_DETECTION_ENABLED = os.getenv('POST_UPLOAD_EARLY_FAILURE_DETECTION_ENABLED', 'true').lower() == 'true'
 MAX_PARALLEL_PAGES = _env_int('MAX_PARALLEL_PAGES', 2, minimum=1)
 _PLAYWRIGHT_BROWSER_INSTALL_ATTEMPTED = False
@@ -5287,8 +5310,8 @@ def _media_upload_ready_timeout_seconds(post_type: str) -> float:
 
 
 def _pages_portal_timeout_seconds(post_type: str, has_media: bool) -> int:
-    publish_processing_budget = int((POST_PUBLISH_IN_PROGRESS_TIMEOUT_MS / 1000) + 55)
-    base_timeout = min(FACEBOOK_POST_TIMEOUT_SECONDS, max(75, publish_processing_budget))
+    publish_processing_budget = int((POST_PUBLISH_IN_PROGRESS_TIMEOUT_MS / 1000) + 25)
+    base_timeout = min(FACEBOOK_POST_TIMEOUT_SECONDS, max(60, publish_processing_budget))
     if post_type == 'video':
         video_timeout = int(_media_upload_ready_timeout_seconds('video') + POST_SUBMIT_ACTION_TIMEOUT_SECONDS + 50)
         return min(
@@ -5302,6 +5325,19 @@ def _pages_portal_timeout_seconds(post_type: str, has_media: bool) -> int:
             max(base_timeout, POST_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS, image_timeout),
         )
     return min(FACEBOOK_POST_TIMEOUT_SECONDS, max(base_timeout, POST_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS))
+
+
+def _parallel_pages_portal_timeout_seconds(post_type: str, has_media: bool) -> int:
+    normal_timeout = _pages_portal_timeout_seconds(post_type, has_media)
+    if post_type == 'video':
+        configured_timeout = POST_PARALLEL_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS
+    elif post_type == 'image' or has_media:
+        configured_timeout = POST_PARALLEL_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS
+    else:
+        configured_timeout = POST_PARALLEL_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS
+    if configured_timeout <= 0:
+        return normal_timeout
+    return max(45, min(normal_timeout, configured_timeout))
 
 
 def _batch_page_timeout_seconds(post_type: str, has_media: bool) -> int:
@@ -7950,6 +7986,14 @@ async def _attach_composer_media(page: Page, post_type: str, media_url: Optional
                 logger.warning(f'Could not prepare CDP image upload fallback: {exc}')
                 return False
 
+        def zero_network_attempts_exhausted(state: Dict[str, Any], attempt: int) -> bool:
+            return (
+                attempt >= FACEBOOK_MEDIA_UPLOAD_MAX_ZERO_NETWORK_ATTEMPTS
+                and int(state.get('seen') or 0) <= 0
+                and int(state.get('success') or 0) <= 0
+                and int(state.get('completed_success') or 0) <= 0
+            )
+
         last_error = ''
         max_upload_attempts = FACEBOOK_MEDIA_UPLOAD_MAX_ATTEMPTS
         for attempt in range(1, max_upload_attempts + 1):
@@ -8077,6 +8121,13 @@ async def _attach_composer_media(page: Page, post_type: str, media_url: Optional
                         f'POST_STEP page="{label}" stage="Media preview missing" | '
                         f'type={post_type} attempt={attempt} before={before_media_count} after={media_count_after}'
                     )
+                    if zero_network_attempts_exhausted(tracker_state, attempt):
+                        last_error = (
+                            f'{last_error} No Facebook upload network request was observed after '
+                            f'{attempt} attempt(s); aborting repeated media retry.'
+                        )
+                        retry_after_failure = False
+                        break
                     continue
                 logger.info(
                     f'POST_STEP page="{label}" stage="Upload verified" | '
@@ -8113,6 +8164,12 @@ async def _attach_composer_media(page: Page, post_type: str, media_url: Optional
                         or switch_to_path_upload(last_error)
                         or (attempt < max_upload_attempts)
                     )
+                    if retry_after_failure and zero_network_attempts_exhausted(tracker_state, attempt):
+                        retry_after_failure = False
+                        last_error = (
+                            f'{last_error}; no Facebook upload network request was observed after '
+                            f'{attempt} attempt(s), so further retries are unlikely to recover.'
+                        )
                 logger.warning(
                     f'POST_STEP page="{label}" stage="Upload attempt failed" | '
                     f'type={post_type} attempt={attempt} retry={retry_after_failure} '
@@ -8774,6 +8831,7 @@ async def _create_facebook_post_direct(
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     try_mobile: Optional[bool] = None,
     allow_portal_fallback: bool = True,
+    portal_timeout_override: Optional[int] = None,
 ) -> Tuple[bool, str]:
     """
     FAST direct-URL posting with optional mobile-first and Pages Portal fallback.
@@ -8834,7 +8892,7 @@ async def _create_facebook_post_direct(
         # ── Fallback: try Pages Portal only when explicitly enabled ──
         if derived_page_name and allow_portal_fallback and _pages_portal_fallback_enabled(post_type, bool(media_url)):
             logger.info(f'⚡ Direct posting failed; falling back to Pages Portal for "{derived_page_name}"')
-            portal_timeout = _pages_portal_timeout_seconds(post_type, bool(media_url))
+            portal_timeout = portal_timeout_override or _pages_portal_timeout_seconds(post_type, bool(media_url))
             await progress('Fallback to Pages Portal', f'timeout={portal_timeout}s')
             try:
                 portal_success, portal_result = await asyncio.wait_for(
@@ -8863,13 +8921,21 @@ async def _create_facebook_post_direct(
     if _is_ad_flow_url(page.url):
         portal_result = 'Pages Portal fallback is disabled.'
         if allow_portal_fallback and _pages_portal_fallback_enabled(post_type, bool(media_url)):
-            await progress('Trying Pages Portal', 'ad flow detected')
-            portal_success, portal_result = await _post_via_pages_portal(page, derived_page_name or page_label, caption, post_type, media_url, target_url)
-            if portal_success:
-                return True, portal_result
-            if _is_publish_sent_unconfirmed(portal_result):
-                logger.warning(f'Pages Portal publish was unconfirmed for "{derived_page_name or page_label}"; suppressing fallback to avoid duplicates.')
-                return False, portal_result
+            portal_timeout = portal_timeout_override or _pages_portal_timeout_seconds(post_type, bool(media_url))
+            await progress('Trying Pages Portal', f'ad flow detected; timeout={portal_timeout}s')
+            try:
+                portal_success, portal_result = await asyncio.wait_for(
+                    _post_via_pages_portal(page, derived_page_name or page_label, caption, post_type, media_url, target_url),
+                    timeout=portal_timeout,
+                )
+                if portal_success:
+                    return True, portal_result
+                if _is_publish_sent_unconfirmed(portal_result):
+                    logger.warning(f'Pages Portal publish was unconfirmed for "{derived_page_name or page_label}"; suppressing fallback to avoid duplicates.')
+                    return False, portal_result
+            except asyncio.TimeoutError:
+                portal_result = f'Pages Portal timed out after {portal_timeout}s.'
+                logger.warning('Pages Portal fallback timed out after direct ad-flow detection')
         diagnostic_path = await _save_diagnostics(page, 'direct_post_ad_flow_failed')
         return False, _with_diagnostic(
             f'Could not publish through direct composer.\nPages Portal: {portal_result}',
@@ -8907,13 +8973,21 @@ async def _create_facebook_post_direct(
             return False, _with_diagnostic(security_detail, diagnostic_path)
         portal_result = 'Pages Portal fallback is disabled.'
         if allow_portal_fallback and _pages_portal_fallback_enabled(post_type, bool(media_url)):
-            await progress('Trying Pages Portal', 'submit did not find publish control')
-            portal_success, portal_result = await _post_via_pages_portal(page, derived_page_name or page_label, caption, post_type, media_url, target_url)
-            if portal_success:
-                return True, portal_result
-            if _is_publish_sent_unconfirmed(portal_result):
-                logger.warning(f'Pages Portal publish was unconfirmed for "{derived_page_name or page_label}"; suppressing fallback to avoid duplicates.')
-                return False, portal_result
+            portal_timeout = portal_timeout_override or _pages_portal_timeout_seconds(post_type, bool(media_url))
+            await progress('Trying Pages Portal', f'submit did not find publish control; timeout={portal_timeout}s')
+            try:
+                portal_success, portal_result = await asyncio.wait_for(
+                    _post_via_pages_portal(page, derived_page_name or page_label, caption, post_type, media_url, target_url),
+                    timeout=portal_timeout,
+                )
+                if portal_success:
+                    return True, portal_result
+                if _is_publish_sent_unconfirmed(portal_result):
+                    logger.warning(f'Pages Portal publish was unconfirmed for "{derived_page_name or page_label}"; suppressing fallback to avoid duplicates.')
+                    return False, portal_result
+            except asyncio.TimeoutError:
+                portal_result = f'Pages Portal timed out after {portal_timeout}s.'
+                logger.warning('Pages Portal fallback timed out after direct publish-control miss')
         diagnostic_path = await _save_diagnostics(page, 'direct_post_publish_missing')
         return False, _with_diagnostic(
             f"Could not publish through direct or Pages Portal composer.\nPages Portal: {portal_result}",
@@ -9470,6 +9544,26 @@ async def _create_facebook_posts_browser(
     staged_paths: List[str] = []
     try:
         staged_posts, staged_paths = await _stage_batch_media_sources(posts)
+        if (
+            POST_PARALLEL_BATCH_ENABLED
+            and len(staged_posts) > 1
+            and not _batch_has_mixed_media_modes(staged_posts)
+        ):
+            logger.info(
+                f'Batch async adaptive mode: parallel_enabled=true pages={len(staged_posts)} '
+                f'allow_same_cookie={POST_ALLOW_PARALLEL_SAME_COOKIE}'
+            )
+            return await _create_facebook_posts_parallel_unstaged(
+                cookies_json,
+                staged_posts,
+                progress_callback,
+                max_parallel=MAX_PARALLEL_PAGES,
+            )
+        if len(staged_posts) > 1:
+            logger.info(
+                f'Batch async adaptive mode: sequential pages={len(staged_posts)} '
+                f'parallel_enabled={POST_PARALLEL_BATCH_ENABLED} mixed_media={_batch_has_mixed_media_modes(staged_posts)}'
+            )
         return await _create_facebook_posts_unstaged(cookies_json, staged_posts, progress_callback)
     finally:
         await asyncio.to_thread(_cleanup_staged_batch_media, staged_paths)
@@ -9730,16 +9824,48 @@ async def _create_facebook_posts_parallel_unstaged(
                         await stealth_async(active_worker_page)
                     await _enable_fast_posting_mode(worker_context, active_worker_page)
 
-                    # Post to this page using FAST direct-URL approach (skips Pages Portal)
-                    success, result = await _create_facebook_post_direct(
-                        active_worker_page,
-                        str(post.get('page_id_or_url') or ''),
-                        str(post.get('post_type') or 'post'),
-                        str(post.get('caption') or ''),
-                        post.get('media_url') or None,
-                        page_label,
-                        _emit_progress,
+                    post_type = str(post.get('post_type') or 'post')
+                    has_media = bool(post.get('media_url'))
+                    page_timeout = _batch_page_timeout_seconds(post_type, has_media)
+                    allow_parallel_portal_fallback = (
+                        POST_PARALLEL_ENABLE_PAGES_PORTAL_FALLBACK
+                        and _pages_portal_fallback_enabled(post_type, has_media)
                     )
+                    portal_timeout_override = (
+                        _parallel_pages_portal_timeout_seconds(post_type, has_media)
+                        if allow_parallel_portal_fallback
+                        else None
+                    )
+                    logger.info(
+                        f'PARALLEL_BATCH stage="worker_route_policy" index={idx + 1}/{total} '
+                        f'page="{page_label}" portal_fallback={allow_parallel_portal_fallback} '
+                        f'portal_timeout={portal_timeout_override or 0}s page_timeout={page_timeout}s'
+                    )
+
+                    # Post to this page using the fast direct-URL approach with bounded batch fallback.
+                    try:
+                        success, result = await asyncio.wait_for(
+                            _create_facebook_post_direct(
+                                active_worker_page,
+                                str(post.get('page_id_or_url') or ''),
+                                post_type,
+                                str(post.get('caption') or ''),
+                                post.get('media_url') or None,
+                                page_label,
+                                _emit_progress,
+                                allow_portal_fallback=allow_parallel_portal_fallback,
+                                portal_timeout_override=portal_timeout_override,
+                            ),
+                            timeout=page_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        diagnostic_path = await _save_diagnostics(active_worker_page, f'parallel_worker_{idx}_timeout')
+                        success = False
+                        result = _with_diagnostic(
+                            f'Parallel page posting timed out after {page_timeout}s. '
+                            'The bot stopped this page to keep the batch moving.',
+                            diagnostic_path,
+                        )
 
                     async with results_lock:
                         current_result = {'page': page_label, 'success': success, 'result': result}
