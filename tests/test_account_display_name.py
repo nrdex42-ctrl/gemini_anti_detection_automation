@@ -17,3 +17,9 @@ def test_account_display_name_shows_id_for_blank_label():
     account = {"account_id": "615123", "label": ""}
 
     assert account_display_name(account) == "615123"
+
+
+def test_account_display_name_ignores_dashboard_button_labels():
+    account = {"account_id": "615123", "label": "🔁 تغيير الحساب"}
+
+    assert account_display_name(account) == "615123"

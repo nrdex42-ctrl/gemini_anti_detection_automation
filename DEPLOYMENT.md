@@ -138,9 +138,9 @@ MEDIA_UPLOAD_READY_VIDEO_TIMEOUT=120
 FB_AUTOMATION_ENABLE_PRIVATE_HTTP=false
 POST_PARALLEL_BATCH_ENABLED=true
 POST_ALLOW_PARALLEL_SAME_COOKIE=true
-POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS=3
-MAX_PARALLEL_PAGES=3
-POST_PARALLEL_SAME_COOKIE_STAGGER_SECONDS=1.5
+POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS=4
+MAX_PARALLEL_PAGES=4
+POST_PARALLEL_SAME_COOKIE_STAGGER_SECONDS=0.5
 POST_PARALLEL_ENABLE_PAGES_PORTAL_FALLBACK=true
 POST_PARALLEL_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS=60
 POST_PARALLEL_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS=90
@@ -158,7 +158,7 @@ PLAYWRIGHT_BROWSERS_PATH=.playwright
 FACEBOOK_BROWSER_NO_SANDBOX=true
 ```
 
-The production posting mode is concurrent for same-media batches: one shared browser with isolated contexts per target page, capped at 3 contexts for the 8 CPU / 32 GB Render instance. If Facebook profile switching starts colliding, lower `MAX_PARALLEL_PAGES` and `POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS` to `2`, or set `POST_PARALLEL_BATCH_ENABLED=false` to return to one-by-one posting.
+The production posting mode is concurrent for same-media batches: one shared browser with isolated contexts per target page, capped at 4 contexts for the 8 CPU / 32 GB Render instance. If Facebook profile switching starts colliding, lower `MAX_PARALLEL_PAGES` and `POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS` to `2`, or set `POST_PARALLEL_BATCH_ENABLED=false` to return to one-by-one posting.
 
 Generate `ENCRYPTION_KEY` locally only for a brand-new Supabase database. If you already have stored accounts/cookies in Supabase, reuse the exact old `ENCRYPTION_KEY` instead:
 

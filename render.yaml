@@ -116,11 +116,11 @@ services:
       - key: POST_ALLOW_PARALLEL_SAME_COOKIE
         value: "true"
       - key: POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS
-        value: "3"
+        value: "4"
       - key: MAX_PARALLEL_PAGES
-        value: "3"
+        value: "4"
       - key: POST_PARALLEL_SAME_COOKIE_STAGGER_SECONDS
-        value: "1.5"
+        value: "0.5"
       - key: POST_PARALLEL_ENABLE_PAGES_PORTAL_FALLBACK
         value: "true"
       - key: POST_PARALLEL_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS

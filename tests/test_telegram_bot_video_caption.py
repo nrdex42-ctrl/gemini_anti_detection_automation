@@ -345,3 +345,39 @@ def test_done_button_review_card_sends_new_message_instead_of_editing_user_messa
         assert app.get_dashboard_session(123, 99)["step"] == "review"
 
     asyncio.run(run())
+
+
+def test_account_rename_rejects_dashboard_button_label():
+    async def run():
+        app, sent = build_session_app(
+            {
+                "action": "manage_accounts",
+                "step": "rename_input",
+                "lang": "ar",
+                "rename_account_id": "acct_1",
+            },
+            lang="ar",
+        )
+        updates = []
+
+        def update_account_label(*args):
+            updates.append(args)
+            return True
+
+        app.storage = types.SimpleNamespace(update_account_label=update_account_label)
+        app.account_owner_scope = lambda user_id: str(user_id)
+
+        handled = await app.handle_dashboard_session(
+            123,
+            99,
+            456,
+            "🔁 تغيير الحساب",
+            {"text": "🔁 تغيير الحساب"},
+        )
+
+        assert handled is True
+        assert updates == []
+        assert "زر من لوحة التحكم" in sent[-1]["text"]
+        assert app.get_dashboard_session(123, 99)["step"] == "rename_input"
+
+    asyncio.run(run())

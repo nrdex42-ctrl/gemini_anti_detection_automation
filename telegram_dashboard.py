@@ -292,6 +292,11 @@ def dashboard_action(text: str) -> str:
     return DASHBOARD_ACTIONS.get((text or "").strip(), "")
 
 
+def is_reserved_dashboard_label(text: str) -> bool:
+    value = (text or "").strip()
+    return bool(value and dashboard_action(value))
+
+
 def parse_post_type_choice(text: str) -> str:
     normalized = (text or "").strip().lower()
     if "image" in normalized or "photo" in normalized or "صورة" in normalized:
@@ -457,6 +462,8 @@ def parse_choice_id(text: str) -> str:
 def account_display_name(account: Dict[str, Any], fallback_id: str = "", *, include_id: bool = False) -> str:
     account_id = str(account.get("account_id") or fallback_id or "").strip()
     label = str(account.get("label") or "").strip()
+    if is_reserved_dashboard_label(label):
+        label = ""
     if label and label != account_id:
         display = "Facebook Account" if label == "Facebook Account" or label.startswith("Facebook Account ") else label
         should_show_id = include_id or display == "Facebook Account"
@@ -678,7 +685,7 @@ def _format_dt(value: Any) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     display_tz = timezone(timedelta(hours=3))
-    return dt.astimezone(display_tz).strftime("%I:%M %p")
+    return dt.astimezone(display_tz).strftime("%Y-%m-%d %I:%M %p")
 
 
 def _account_health_icon(account: Dict[str, Any], active_account: str) -> str:

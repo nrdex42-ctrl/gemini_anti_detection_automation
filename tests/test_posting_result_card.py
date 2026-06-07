@@ -1,6 +1,7 @@
 import sys
 import types
 import asyncio
+from datetime import datetime, timezone
 
 
 if "aiohttp" not in sys.modules:
@@ -33,15 +34,19 @@ def test_posting_result_card_includes_overall_elapsed_time():
         [
             {"page": "Caption page", "success": True, "result": "caption accepted"},
             {"page": "Image page", "success": True, "result": "image accepted"},
-            {"page": "Video page", "success": True, "result": "video accepted"},
+            {"page": "Video page", "success": False, "result": "video rejected"},
         ],
         debug_id="batch_test",
         elapsed_seconds=125,
+        completed_at=datetime(2026, 6, 7, 17, 54, tzinfo=timezone.utc),
     )
 
-    assert "Posting complete: 3/3 succeeded" in card
+    assert "Posting complete: 2/3 succeeded" in card
+    assert "Completed: 2026-06-07 08:54 PM" in card
     assert "Total time: 2m 05s" in card
     assert POSTING_STATUS_SYNC_TEXT in card
+    assert "Succeeded pages: 2" in card
+    assert "Failed pages: 1" in card
     assert "Debug ID" not in card
     assert "batch_test" not in card
     assert "Caption page" in card
@@ -51,7 +56,7 @@ def test_posting_result_card_includes_overall_elapsed_time():
     assert "Error:" not in card
     assert "caption accepted" not in card
     assert "image accepted" not in card
-    assert "video accepted" not in card
+    assert "video rejected" not in card
 
 
 def test_posting_live_status_card_uses_page_sync_text_instead_of_debug_id():

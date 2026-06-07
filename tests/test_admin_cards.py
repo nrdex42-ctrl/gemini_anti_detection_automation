@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import sys
 import types
 from datetime import datetime, timezone
@@ -17,6 +18,8 @@ class AdminStorage:
     def __init__(self):
         self.touched = []
         self.broadcast_target_calls = []
+        self.meta = {}
+        self.restart_targets = []
 
     def admin_users(self):
         return [
@@ -61,8 +64,26 @@ class AdminStorage:
             },
         ]
 
+    def get_meta(self, key):
+        return self.meta.get(key)
 
-def test_admin_users_card_includes_profile_name_and_pm_time():
+    def set_meta(self, key, value):
+        self.meta[key] = value
+
+    def list_restart_targets(self):
+        return list(self.restart_targets)
+
+    def dashboard_summary(self, owner_scope=None):
+        return {"job_status_counts": {}, "total_accounts": 0, "page_count": 0}
+
+    def list_accounts(self, owner_scope=None):
+        return []
+
+    def get_active_account(self, user_id, owner_scope=None):
+        return None
+
+
+def test_admin_users_card_includes_profile_name_and_date_time():
     async def run():
         app = TelegramBotApp.__new__(TelegramBotApp)
         app.storage = AdminStorage()
@@ -81,7 +102,7 @@ def test_admin_users_card_includes_profile_name_and_pm_time():
         assert "Mohammed Shabana" in text
         assert "@m_shabana" not in text
         assert "id=373303307" in text
-        assert "last=05:15 PM" in text
+        assert "last=2026-06-07 05:15 PM" in text
         assert "UTC+3" not in text
 
     asyncio.run(run())
@@ -135,9 +156,8 @@ def test_admin_user_detail_card_includes_accounts_pages_and_last_posting_status(
 
     text = app.admin_user_detail_card(detail)
 
-    assert "First used: 12:00 PM" in text
-    assert "Last seen: 05:15 PM" in text
-    assert "2026-06-01" not in text
+    assert "First used: 2026-06-01 12:00 PM" in text
+    assert "Last seen: 2026-06-07 05:15 PM" in text
     assert "UTC+3" not in text
     assert "Last posting status:" in text
     assert "success video -> Insan" in text
@@ -178,6 +198,37 @@ def test_admin_broadcast_sends_to_selected_targets_with_result_card():
         assert sent[1]["text"] == "Admin notice"
         assert "Delivered: 2/2" in edits[-1]["text"]
         assert app.dashboard_sessions == {}
+
+    asyncio.run(run())
+
+
+def test_restart_dashboard_broadcast_counts_only_successful_sends(caplog):
+    async def run():
+        storage = AdminStorage()
+        storage.restart_targets = [
+            {"telegram_user_id": 111, "chat_id": 111},
+            {"telegram_user_id": 222, "chat_id": 222},
+        ]
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.storage = storage
+        app.admin_ids = set()
+        app.deploy_revision = lambda: "test:rev"
+        app.account_owner_scope = lambda user_id: str(user_id)
+        app.is_admin_user = lambda user_id: False
+        sent = []
+
+        async def send_message(chat_id, text, reply_to_message_id=0, *, reply_markup=None, parse_mode=""):
+            sent.append(chat_id)
+            return {"ok": chat_id == 111}
+
+        app.send_message = send_message
+
+        caplog.set_level(logging.INFO, logger="telegram_bot")
+        await app.notify_restart_dashboard()
+
+        assert sent == [111, 222]
+        assert storage.meta["last_restart_broadcast_revision"] == "test:rev"
+        assert "Restart dashboard broadcast sent to 1 user(s), failed=1" in caplog.text
 
     asyncio.run(run())
 

@@ -283,11 +283,14 @@ POST_COOKIE_SESSION_LOCK_TTL_SECONDS = max(
 POST_COOKIE_MIN_INTERVAL_SECONDS = _env_int('POST_COOKIE_MIN_INTERVAL_SECONDS', 600, minimum=0)
 POST_COOKIE_SECURITY_COOLDOWN_SECONDS = _env_int('POST_COOKIE_SECURITY_COOLDOWN_SECONDS', 21600, minimum=0)
 POST_ALLOW_PARALLEL_SAME_COOKIE = os.getenv('POST_ALLOW_PARALLEL_SAME_COOKIE', 'true').lower() == 'true'
-POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS = _env_int('POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS', 3, minimum=1)
+POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS = _env_int('POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS', 4, minimum=1)
 POST_PARALLEL_SAME_COOKIE_STAGGER_SECONDS = _env_float(
     'POST_PARALLEL_SAME_COOKIE_STAGGER_SECONDS',
-    1.5,
+    0.5,
     minimum=0.0,
+)
+POST_PARALLEL_SAME_COOKIE_ACTOR_LOCK_ENABLED = (
+    os.getenv('POST_PARALLEL_SAME_COOKIE_ACTOR_LOCK_ENABLED', 'true').lower() == 'true'
 )
 POST_BATCH_MEDIA_PRESTAGE_ENABLED = os.getenv('POST_BATCH_MEDIA_PRESTAGE_ENABLED', 'true').lower() == 'true'
 POST_BATCH_MEDIA_PRESTAGE_CONCURRENCY = _env_int('POST_BATCH_MEDIA_PRESTAGE_CONCURRENCY', 4, minimum=1)
@@ -322,7 +325,7 @@ FACEBOOK_MEDIA_UPLOAD_MAX_ZERO_NETWORK_ATTEMPTS = _env_int(
     minimum=1,
 )
 POST_UPLOAD_EARLY_FAILURE_DETECTION_ENABLED = os.getenv('POST_UPLOAD_EARLY_FAILURE_DETECTION_ENABLED', 'true').lower() == 'true'
-MAX_PARALLEL_PAGES = _env_int('MAX_PARALLEL_PAGES', 3, minimum=1)
+MAX_PARALLEL_PAGES = _env_int('MAX_PARALLEL_PAGES', 4, minimum=1)
 _PLAYWRIGHT_BROWSER_INSTALL_ATTEMPTED = False
 _REDIS_CLIENT: Optional[Any] = None
 _COOKIE_SESSION_LOCKS: Dict[str, threading.Lock] = {}
@@ -2876,6 +2879,36 @@ def normalize_facebook_cookies(cookies: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _page_actor_cookie(cookies: List[Dict[str, Any]], actor_id: str) -> Dict[str, Any]:
+    actor_id = str(actor_id or '').strip()
+    template = next((item for item in cookies if str(item.get('name') or '') == 'c_user'), None) or {}
+    actor_cookie: Dict[str, Any] = {
+        'name': 'i_user',
+        'value': actor_id,
+        'domain': str(template.get('domain') or '.facebook.com'),
+        'path': str(template.get('path') or '/'),
+        'secure': True,
+        'httpOnly': False,
+    }
+    for key in ('expires', 'sameSite'):
+        if key in template:
+            actor_cookie[key] = template[key]
+    return {key: value for key, value in actor_cookie.items() if key in _PLAYWRIGHT_COOKIE_KEYS}
+
+
+def _cookies_with_page_actor(cookies: Any, actor_id: str) -> List[Dict[str, Any]]:
+    """Return normalized cookies scoped to a specific Facebook page actor."""
+    normalized = normalize_facebook_cookies(cookies)
+    actor_id = str(actor_id or '').strip()
+    if not actor_id:
+        return normalized
+    without_previous_actor = [
+        cookie for cookie in normalized if str(cookie.get('name') or '') != 'i_user'
+    ]
+    without_previous_actor.append(_page_actor_cookie(without_previous_actor, actor_id))
+    return without_previous_actor
+
+
 def _clean_facebook_account_name(candidate: str) -> str:
     cleaned = ' '.join((candidate or '').split())
     # Strip notification badge prefix, e.g., (9) Facebook or (10) Mohammed Ali
@@ -4097,6 +4130,18 @@ def _page_id_from_url(page_url: str) -> str:
     except Exception:
         pass
     return ''
+
+
+def _target_page_actor_id_from_post(post: Dict[str, Any]) -> str:
+    for key in ('page_id', 'id', 'actor_id'):
+        value = str(post.get(key) or '').strip()
+        if value and value.isdigit():
+            return value
+    target = str(post.get('page_id_or_url') or post.get('page_url') or post.get('url') or '').strip()
+    if target and not target.startswith('http'):
+        target = f'https://www.facebook.com/{target}'
+    page_id = _page_id_from_url(target)
+    return page_id if page_id.isdigit() else ''
 
 
 def _is_blocked_discovered_page_name(name: str) -> bool:
@@ -7153,8 +7198,20 @@ async def _click_safe_composer_button(page: Page, create_pattern: re.Pattern, re
         await asyncio.sleep(0.5)
     return False
 
+async def _context_cookie_value(page: Page, name: str, url: str = 'https://www.facebook.com/') -> str:
+    try:
+        cookies = await page.context.cookies(url)
+    except Exception:
+        return ''
+    for cookie in cookies:
+        if str(cookie.get('name') or '') == name:
+            return str(cookie.get('value') or '').strip()
+    return ''
+
+
 async def _open_desktop_composer(page: Page, target_url: str, page_name: str = '') -> bool:
     page_label = _derive_page_name(target_url, page_name) or page_name or target_url
+    target_actor_id = _page_id_from_url(target_url)
     create_pattern = re.compile(
         r"Create post|Write something|What's on your mind|Share a thought|"
         r"Post something|Start a post|"
@@ -7187,8 +7244,17 @@ async def _open_desktop_composer(page: Page, target_url: str, page_name: str = '
                 logger.warning(f'Facebook target page is logged out or blocked for target={route}')
                 _post_step(page_label, 'Desktop route blocked', f'route={route_idx} reason=logged_out')
                 return False
-            switched = await _switch_to_page_profile(page, page_name)
-            _post_step(page_label, 'Actor switch result', f'route={route_idx} switched={switched}')
+            actor_cookie = await _context_cookie_value(page, 'i_user') if target_actor_id else ''
+            if target_actor_id and actor_cookie == target_actor_id:
+                switched = False
+                _post_step(
+                    page_label,
+                    'Actor switch skipped',
+                    f'route={route_idx} actor_cookie_suffix={target_actor_id[-4:]}',
+                )
+            else:
+                switched = await _switch_to_page_profile(page, page_name)
+                _post_step(page_label, 'Actor switch result', f'route={route_idx} switched={switched}')
             if switched:
                 logger.info(f'Desktop composer: page profile switched, reloading page')
                 await _wait_for_profile_switch_to_settle(page, timeout_ms=6000)
@@ -10037,6 +10103,7 @@ async def _create_facebook_posts_parallel_unstaged(
         security_abort = asyncio.Event()  # If any worker hits security, abort all
         results_lock = asyncio.Lock()
         progress_lock = asyncio.Lock()
+        actor_switch_lock = asyncio.Lock()
         results: List[Optional[Dict[str, Any]]] = [None] * total
 
         async def _emit_progress(event: Dict[str, Any]) -> None:
@@ -10113,8 +10180,14 @@ async def _create_facebook_posts_parallel_unstaged(
 
                     # Inject cookies into this isolated context
                     cookies = json.loads(cookies_json)
-                    cookies = normalize_facebook_cookies(cookies)
+                    target_actor_id = _target_page_actor_id_from_post(post)
+                    cookies = _cookies_with_page_actor(cookies, target_actor_id)
                     await worker_context.add_cookies(cast(Any, cookies))
+                    if target_actor_id:
+                        logger.info(
+                            f'PARALLEL_BATCH stage="worker_actor_cookie" index={idx + 1}/{total} '
+                            f'page="{page_label}" actor_suffix={target_actor_id[-4:]}'
+                        )
 
                     active_worker_page: Page = await worker_context.new_page()
                     worker_page = active_worker_page
@@ -10141,8 +10214,8 @@ async def _create_facebook_posts_parallel_unstaged(
                     )
 
                     # Post to this page using the fast direct-URL approach with bounded batch fallback.
-                    try:
-                        success, result = await asyncio.wait_for(
+                    async def _run_direct_worker_post() -> Tuple[bool, str]:
+                        return await asyncio.wait_for(
                             _create_facebook_post_direct(
                                 active_worker_page,
                                 str(post.get('page_id_or_url') or ''),
@@ -10156,6 +10229,21 @@ async def _create_facebook_posts_parallel_unstaged(
                             ),
                             timeout=page_timeout,
                         )
+
+                    try:
+                        if target_actor_id or not POST_PARALLEL_SAME_COOKIE_ACTOR_LOCK_ENABLED:
+                            success, result = await _run_direct_worker_post()
+                        else:
+                            logger.info(
+                                f'PARALLEL_BATCH stage="actor_lock_wait" index={idx + 1}/{total} '
+                                f'page="{page_label}" reason="missing_target_actor_id"'
+                            )
+                            async with actor_switch_lock:
+                                logger.info(
+                                    f'PARALLEL_BATCH stage="actor_lock_acquired" index={idx + 1}/{total} '
+                                    f'page="{page_label}"'
+                                )
+                                success, result = await _run_direct_worker_post()
                     except asyncio.TimeoutError:
                         diagnostic_path = await _save_diagnostics(active_worker_page, f'parallel_worker_{idx}_timeout')
                         success = False

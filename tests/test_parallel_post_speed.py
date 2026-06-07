@@ -29,3 +29,37 @@ def test_parallel_effective_concurrency_caps_to_render_context_budget(monkeypatc
     assert engine._parallel_batch_effective_concurrency(total=2) == 2
     assert engine._parallel_batch_effective_concurrency(total=4) == 3
     assert engine._parallel_batch_effective_concurrency(total=4, max_parallel=2) == 2
+
+
+def test_parallel_worker_cookies_replace_page_actor_cookie():
+    cookies = [
+        {
+            "name": "c_user",
+            "value": "111",
+            "domain": ".facebook.com",
+            "path": "/",
+            "expires": 1780000000,
+            "sameSite": "Lax",
+        },
+        {"name": "i_user", "value": "old-page", "domain": ".facebook.com", "path": "/"},
+        {"name": "xs", "value": "session", "domain": ".facebook.com", "path": "/"},
+    ]
+
+    scoped = engine._cookies_with_page_actor(cookies, "222")
+    actor_cookies = [cookie for cookie in scoped if cookie["name"] == "i_user"]
+
+    assert len(actor_cookies) == 1
+    assert actor_cookies[0]["value"] == "222"
+    assert actor_cookies[0]["domain"] == ".facebook.com"
+    assert actor_cookies[0]["path"] == "/"
+    assert actor_cookies[0]["sameSite"] == "Lax"
+
+
+def test_target_page_actor_id_comes_from_profile_url():
+    assert (
+        engine._target_page_actor_id_from_post(
+            {"page_id_or_url": "https://www.facebook.com/profile.php?id=61590567386488"}
+        )
+        == "61590567386488"
+    )
+    assert engine._target_page_actor_id_from_post({"page_id_or_url": "https://www.facebook.com/some-page"}) == ""

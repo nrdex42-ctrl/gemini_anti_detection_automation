@@ -42,6 +42,7 @@ from telegram_dashboard import (
     done_cancel_markup,
     inline_button,
     inline_markup,
+    is_reserved_dashboard_label,
     language_selection_markup,
     page_display_name,
     page_selection_card,
@@ -88,6 +89,22 @@ def format_elapsed_seconds(seconds: float) -> str:
         return f"{minutes}m {remaining_seconds:02d}s"
     hours, remaining_minutes = divmod(minutes, 60)
     return f"{hours}h {remaining_minutes:02d}m"
+
+
+def format_display_datetime(value: Any) -> str:
+    if not value:
+        return "never"
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return str(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    display_tz = timezone(timedelta(hours=3))
+    return dt.astimezone(display_tz).strftime("%Y-%m-%d %I:%M %p")
 
 
 def compact_text(value: Any, limit: int = 220) -> str:
@@ -154,12 +171,16 @@ def posting_result_card(
     title: str = "",
     debug_id: str = "",
     elapsed_seconds: Optional[float] = None,
+    completed_at: Optional[Any] = None,
     max_length: int = 3800,
 ) -> str:
     total = max(1, len(results))
     success_count = sum(1 for item in results if bool(item.get("success")))
+    failed_count = len(results) - success_count
     header = title or f"Posting complete: {success_count}/{len(results)} succeeded"
     lines = [header, f"{progress_bar(success_count, total)} {success_count}/{len(results)} succeeded"]
+    if completed_at is not None:
+        lines.append(f"Completed: {format_display_datetime(completed_at)}")
     if elapsed_seconds is not None:
         lines.append(f"Total time: {format_elapsed_seconds(elapsed_seconds)}")
     if debug_id:
@@ -167,22 +188,39 @@ def posting_result_card(
     lines.append("")
 
     omitted = 0
-    for index, item in enumerate(results):
-        success = bool(item.get("success"))
-        page = compact_text(item.get("page") or "Unknown page", 42)
-        prefix = "✅" if success else "❌"
-        status = "success" if success else "failed"
-        line = f"{prefix} {page} {page_status_bar(status)}"
-        projected = "\n".join([*lines, line])
-        reserve = 80 if index < len(results) - 1 else 0
-        if len(projected) + reserve > max_length:
-            omitted = len(results) - index
+    grouped_results: List[Tuple[str, List[Dict[str, Any]], str]] = [
+        (f"Succeeded pages: {success_count}", [item for item in results if bool(item.get("success"))], "success"),
+        (f"Failed pages: {failed_count}", [item for item in results if not bool(item.get("success"))], "failed"),
+    ]
+    for heading, group, status in grouped_results:
+        projected_heading = "\n".join([*lines, heading])
+        if len(projected_heading) + 80 > max_length:
+            omitted += len(group)
             break
-        lines.append(line)
+        lines.append(heading)
+        if not group:
+            lines.append("- none")
+            lines.append("")
+            continue
+        for index, item in enumerate(group):
+            success = status == "success"
+            page = compact_text(item.get("page") or "Unknown page", 52)
+            prefix = "✅" if success else "❌"
+            line = f"{prefix} {page} {page_status_bar(status)}"
+            projected = "\n".join([*lines, line])
+            reserve = 120
+            if len(projected) + reserve > max_length:
+                omitted += 1
+                omitted += max(0, len(group) - index - 1)
+                break
+            lines.append(line)
+        lines.append("")
+        if omitted:
+            break
 
     if omitted:
         lines.append(f"… {omitted} more result(s) omitted to keep the Telegram message deliverable.")
-    return "\n".join(lines)
+    return "\n".join(lines).rstrip()
 
 
 def posting_live_status_card(
@@ -638,6 +676,7 @@ class TelegramBotApp:
                 logger.info("Restart dashboard broadcast skipped; no known users")
                 return
             sent = 0
+            failed = 0
             for target in targets:
                 user_id = int(target.get("telegram_user_id") or 0)
                 chat_id = int(target.get("chat_id") or user_id or 0)
@@ -657,7 +696,7 @@ class TelegramBotApp:
                     prefix="🔄 تم تحديث البوت بعد Deploy جديد. تم تحديث لوحة التحكم." if lang == "ar" else "🔄 Bot updated after a new deploy. Dashboard refreshed.",
                     lang=lang,
                 )
-                await self.send_message(
+                result = await self.send_message(
                     chat_id,
                     text,
                     reply_markup=dashboard_markup(
@@ -668,9 +707,12 @@ class TelegramBotApp:
                         lang=lang,
                     ),
                 )
-                sent += 1
+                if result.get("ok"):
+                    sent += 1
+                else:
+                    failed += 1
             await asyncio.to_thread(self.storage.set_meta, marker_key, revision)
-            logger.info("Restart dashboard broadcast sent to %d user(s)", sent)
+            logger.info("Restart dashboard broadcast sent to %d user(s), failed=%d", sent, failed)
         except Exception:
             logger.exception("Restart dashboard broadcast failed")
 
@@ -1171,7 +1213,13 @@ class TelegramBotApp:
         label = str(account.get("label") or "").strip()
         if not account_id:
             return False
-        return not label or label == account_id or label == "Facebook Account" or label == f"Facebook Account {account_id}"
+        return (
+            not label
+            or label == account_id
+            or label == "Facebook Account"
+            or label == f"Facebook Account {account_id}"
+            or is_reserved_dashboard_label(label)
+        )
 
     def schedule_account_name_refresh(self, user_id: int, accounts: List[Dict[str, Any]], chat_id: int = 0, edit_message_id: int = 0) -> None:
         owner_scope = self.account_owner_scope(user_id)
@@ -1351,34 +1399,10 @@ class TelegramBotApp:
         return "\n".join(lines)
 
     def _format_dt(self, value: Any) -> str:
-        if not value:
-            return "never"
-        if isinstance(value, datetime):
-            dt = value
-        else:
-            try:
-                dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-            except ValueError:
-                return str(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        display_tz = timezone(timedelta(hours=3))
-        return dt.astimezone(display_tz).strftime("%I:%M %p")
+        return format_display_datetime(value)
 
     def _format_time(self, value: Any) -> str:
-        if not value:
-            return "never"
-        if isinstance(value, datetime):
-            dt = value
-        else:
-            try:
-                dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-            except ValueError:
-                return str(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        display_tz = timezone(timedelta(hours=3))
-        return dt.astimezone(display_tz).strftime("%I:%M %p")
+        return format_display_datetime(value)
 
     def _telegram_profile_name(self, row: Dict[str, Any]) -> str:
         first_name = str(row.get("first_name") or "").strip()
@@ -1904,7 +1928,64 @@ class TelegramBotApp:
                 reply_markup=admin_dashboard_markup(lang=lang),
             )
 
-    async def prompt_for_account(self, chat_id: int, message_id: int, prompt: str, user_id: int = 0) -> bool:
+    def account_picker_card(
+        self,
+        prompt: str,
+        accounts: List[Dict[str, Any]],
+        active_account: str,
+        *,
+        lang: str = "en",
+    ) -> str:
+        title = prompt or ("اختار الحساب اللي هيبقى نشط." if lang == "ar" else "Select the account to make active.")
+        lines = [title, "━━━━━━━━━━━━━━━━━━"]
+        if active_account:
+            active = next((item for item in accounts if str(item.get("account_id") or "") == active_account), None)
+            active_name = account_display_name(active or {}, active_account)
+            lines.append(f"الحساب النشط: {active_name}" if lang == "ar" else f"Active account: {active_name}")
+        lines.extend(["", "الحسابات:" if lang == "ar" else "Accounts:"])
+        for index, item in enumerate(accounts, start=1):
+            account_id = str(item.get("account_id") or "")
+            marker = "✅" if active_account and account_id == active_account else "👤"
+            display = account_display_name(item, account_id)
+            cookie_status = str(item.get("cookie_status") or "unverified").strip().lower()
+            if lang == "ar":
+                status = {"valid": "كوكيز صالحة", "invalid": "كوكيز غير صالحة"}.get(cookie_status, "كوكيز غير مؤكدة")
+            else:
+                status = {"valid": "cookies valid", "invalid": "cookies invalid"}.get(cookie_status, "cookies unverified")
+            lines.append(status_detail_line(marker, f"{index}. {display}", status))
+        lines.extend(
+            [
+                "",
+                "اضغط الحساب لتفعيله. استخدم حذف للحسابات اللي مش محتاجها."
+                if lang == "ar"
+                else "Tap an account to make it active. Use Delete for accounts you no longer need.",
+            ]
+        )
+        return "\n".join(lines)
+
+    def account_picker_markup(
+        self,
+        accounts: List[Dict[str, Any]],
+        active_account: str,
+        *,
+        lang: str = "en",
+    ) -> Dict[str, Any]:
+        rows: List[List[Dict[str, str]]] = []
+        for index, item in enumerate(accounts):
+            account_id = str(item.get("account_id") or "")
+            display = account_display_name(item, account_id)
+            marker = "✅" if active_account and account_id == active_account else "👤"
+            rows.append([inline_button(f"{marker} {display}", f"acctsel:{index}")])
+            rows.append(
+                [
+                    inline_button("✏️ تسمية" if lang == "ar" else "✏️ Rename", f"acctren:{index}"),
+                    inline_button("🗑 حذف" if lang == "ar" else "🗑 Delete", f"acctdel:{index}"),
+                ]
+            )
+        rows.append([inline_button("⬅️ رجوع" if lang == "ar" else "⬅️ Back", "dash:back")])
+        return inline_markup(rows)
+
+    async def prompt_for_account(self, chat_id: int, message_id: int, prompt: str, user_id: int = 0, *, edit: bool = False) -> bool:
         lang = await self.user_language(user_id)
         accounts = await self.dashboard_accounts(user_id)
         if not accounts:
@@ -1918,33 +1999,24 @@ class TelegramBotApp:
         active_account = ""
         if user_id:
             active_account = await self.active_account_id(user_id)
-        choice_labels: List[str] = []
         choice_map: Dict[str, str] = {}
-        seen_labels: Dict[str, int] = {}
-        for item in accounts:
-            base_label = account_choice_label(item, active_account)
-            count = seen_labels.get(base_label, 0) + 1
-            seen_labels[base_label] = count
-            label = base_label if count == 1 else f"{base_label} ({count})"
-            choice_labels.append(label)
-            choice_map[label] = str(item.get("account_id") or "")
+        for index, item in enumerate(accounts):
+            account_id = str(item.get("account_id") or "")
+            choice_map[str(index)] = account_id
+            choice_map[account_choice_label(item, active_account)] = account_id
         session = self.get_dashboard_session(chat_id, user_id)
         if session:
             session["account_choices"] = choice_map
             self.set_dashboard_session(chat_id, user_id, session)
-        await self.send_message(
-            chat_id,
-            prompt,
-            message_id,
-            reply_markup=choices_markup(
-                choice_labels,
-                placeholder="اختار حساب" if lang == "ar" else "Choose account",
-                lang=lang,
-            ),
-        )
+        text = self.account_picker_card(prompt, accounts, active_account, lang=lang)
+        markup = self.account_picker_markup(accounts, active_account, lang=lang)
+        if edit:
+            await self.edit_or_send_message(chat_id, message_id, text, reply_markup=markup)
+        else:
+            await self.send_message(chat_id, text, message_id, reply_markup=markup)
         return True
 
-    async def prompt_for_page(self, chat_id: int, message_id: int, account_id: str, user_id: int = 0) -> None:
+    async def prompt_for_page(self, chat_id: int, message_id: int, account_id: str, user_id: int = 0, *, edit: bool = False) -> None:
         lang = await self.user_language(user_id)
         pages = await asyncio.to_thread(self.storage.list_pages, account_id, self.account_owner_scope(user_id))
         account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
@@ -1960,32 +2032,32 @@ class TelegramBotApp:
             session["account_name"] = account_name
             self.set_dashboard_session(chat_id, user_id, session)
         if pages:
-            sent = await self.send_message(
-                chat_id,
-                page_selection_card(account_name=account_name, pages=pages, selected_indexes=selected_pages, lang=lang),
-                message_id,
-                reply_markup=page_selection_markup(pages, selected_pages, lang=lang),
-            )
-            selection_message_id = int((sent.get("result") or {}).get("message_id") or 0)
+            card = page_selection_card(account_name=account_name, pages=pages, selected_indexes=selected_pages, lang=lang)
+            markup = page_selection_markup(pages, selected_pages, lang=lang)
+            if edit:
+                selection_message_id = await self.edit_or_send_message(chat_id, message_id, card, reply_markup=markup)
+            else:
+                sent = await self.send_message(chat_id, card, message_id, reply_markup=markup)
+                selection_message_id = int((sent.get("result") or {}).get("message_id") or 0)
             if selection_message_id:
                 session = self.get_dashboard_session(chat_id, user_id)
                 if session:
                     session["page_selection_message_id"] = selection_message_id
                     self.set_dashboard_session(chat_id, user_id, session)
             return
-        sent = await self.send_message(
-            chat_id,
-            page_selection_card(
-                account_name=account_name,
-                pages=[],
-                selected_indexes=[],
-                prefix="لا توجد صفحات محفوظة لهذا الحساب بعد." if lang == "ar" else "No stored pages for this account yet.",
-                lang=lang,
-            ),
-            message_id,
-            reply_markup=page_selection_markup([], [], lang=lang),
+        card = page_selection_card(
+            account_name=account_name,
+            pages=[],
+            selected_indexes=[],
+            prefix="لا توجد صفحات محفوظة لهذا الحساب بعد." if lang == "ar" else "No stored pages for this account yet.",
+            lang=lang,
         )
-        selection_message_id = int((sent.get("result") or {}).get("message_id") or 0)
+        markup = page_selection_markup([], [], lang=lang)
+        if edit:
+            selection_message_id = await self.edit_or_send_message(chat_id, message_id, card, reply_markup=markup)
+        else:
+            sent = await self.send_message(chat_id, card, message_id, reply_markup=markup)
+            selection_message_id = int((sent.get("result") or {}).get("message_id") or 0)
         if selection_message_id:
             session = self.get_dashboard_session(chat_id, user_id)
             if session:
@@ -2393,7 +2465,7 @@ class TelegramBotApp:
         if action in {"dashboard", "cancel"}:
             self.clear_dashboard_session(chat_id, user_id)
             prefix = "تم إلغاء العملية الحالية." if action == "cancel" and lang == "ar" else ("Current operation cancelled." if action == "cancel" else "")
-            await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
+            await self.show_dashboard(chat_id, 0, prefix=prefix, user_id=user_id)
             return
         if action == "language":
             session = self.get_dashboard_session(chat_id, user_id)
@@ -2401,11 +2473,11 @@ class TelegramBotApp:
                 self.set_dashboard_session(chat_id, user_id, {"action": "admin_language", "step": "select", "lang": lang})
             else:
                 self.clear_dashboard_session(chat_id, user_id)
-            await self.show_language_card(chat_id, message_id, user_id=user_id)
+            await self.show_language_card(chat_id, 0, user_id=user_id)
             return
         if action == "user_dashboard":
             self.clear_dashboard_session(chat_id, user_id)
-            await self.show_dashboard(chat_id, message_id, user_id=user_id)
+            await self.show_dashboard(chat_id, 0, user_id=user_id)
             return
         if action in {
             "admin_dashboard",
@@ -2444,15 +2516,15 @@ class TelegramBotApp:
             return
         if action in {"accounts", "manage_accounts"}:
             self.clear_dashboard_session(chat_id, user_id)
-            await self.command_accounts(chat_id, message_id, user_id)
+            await self.command_accounts(chat_id, 0, user_id)
             return
         if action == "status":
             self.clear_dashboard_session(chat_id, user_id)
-            await self.show_dashboard(chat_id, message_id, user_id=user_id)
+            await self.show_dashboard(chat_id, 0, user_id=user_id)
             return
         if action == "post_history":
             self.clear_dashboard_session(chat_id, user_id)
-            await self.command_post_history(chat_id, message_id, user_id)
+            await self.command_post_history(chat_id, 0, user_id)
             return
         if action == "check_cookies":
             self.clear_dashboard_session(chat_id, user_id)
@@ -2546,7 +2618,7 @@ class TelegramBotApp:
             if not await self.prompt_for_account(chat_id, message_id, f"{post_type_label} post: {prompt_text('post', 'account', lang=lang)}", user_id):
                 self.clear_dashboard_session(chat_id, user_id)
             return
-        await self.show_dashboard(chat_id, message_id, user_id=user_id)
+        await self.show_dashboard(chat_id, 0, user_id=user_id)
 
     async def discover_pages_during_account_add(
         self,
@@ -2958,6 +3030,14 @@ class TelegramBotApp:
                     reply_markup=cancel_markup(lang=lang),
                 )
                 return True
+            if is_reserved_dashboard_label(new_label):
+                await self.send_message(
+                    chat_id,
+                    "ده زر من لوحة التحكم، ابعت اسم الحساب فقط." if lang == "ar" else "That is a dashboard button. Send the account name only.",
+                    message_id,
+                    reply_markup=cancel_markup(lang=lang),
+                )
+                return True
             changed = await asyncio.to_thread(
                 self.storage.update_account_label,
                 account_id,
@@ -2969,7 +3049,7 @@ class TelegramBotApp:
                 prefix = f"تم تحديث اسم الحساب إلى: {new_label}" if lang == "ar" else f"Account name updated to: {new_label}"
             else:
                 prefix = "لم يتم العثور على الحساب." if lang == "ar" else "Account not found."
-            await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
+            await self.show_dashboard(chat_id, 0, prefix=prefix, user_id=user_id)
             return True
 
         if step == "account":
@@ -2987,29 +3067,7 @@ class TelegramBotApp:
                     reply_markup=await self.dashboard_reply_markup(user_id),
                 )
                 return True
-            session["account_id"] = account_id
-            if action == "switch_account":
-                await asyncio.to_thread(self.storage.set_active_account, user_id, account_id)
-                account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
-                display = account_display_name(account or {}, account_id)
-                self.clear_dashboard_session(chat_id, user_id)
-                await self.show_dashboard(chat_id, message_id, prefix=f"Active account switched to {display}.", user_id=user_id)
-                return True
-            if action == "discover_pages":
-                self.clear_dashboard_session(chat_id, user_id)
-                await self.command_discover_pages(chat_id, message_id, [account_id], user_id)
-                return True
-            if action == "refresh_pages":
-                self.clear_dashboard_session(chat_id, user_id)
-                await self.command_discover_pages(chat_id, message_id, [account_id], user_id, refresh=True)
-                return True
-            if action == "list_pages":
-                self.clear_dashboard_session(chat_id, user_id)
-                await self.command_list_pages(chat_id, message_id, [account_id], user_id)
-                return True
-            session["step"] = "page_select"
-            self.set_dashboard_session(chat_id, user_id, session)
-            await self.prompt_for_page(chat_id, message_id, account_id, user_id)
+            await self.handle_account_selected(chat_id, user_id, message_id, session, account_id, edit=False)
             return True
 
         if step == "post_type":
@@ -3506,7 +3564,7 @@ class TelegramBotApp:
         self.clear_dashboard_session(chat_id, user_id)
         await self.show_dashboard(
             chat_id,
-            message_id,
+            0,
             prefix="انتهت صلاحية الخطوات السابقة." if lang == "ar" else "The previous dashboard flow expired.",
             user_id=user_id,
         )
@@ -3789,6 +3847,54 @@ class TelegramBotApp:
             reply_markup=admin_dashboard_markup(lang=lang),
         )
 
+    async def handle_account_selected(
+        self,
+        chat_id: int,
+        user_id: int,
+        message_id: int,
+        session: Dict[str, Any],
+        account_id: str,
+        *,
+        edit: bool = False,
+    ) -> None:
+        lang = str(session.get("lang") or await self.user_language(user_id))
+        action = str(session.get("action") or "")
+        owner_scope = self.account_owner_scope(user_id)
+        if not await asyncio.to_thread(self.storage.account_exists, account_id, True, owner_scope):
+            text = f"الحساب غير موجود أو غير نشط: {account_id}" if lang == "ar" else f"Account not found or inactive: {account_id}"
+            await self.edit_or_send_message(
+                chat_id,
+                message_id if edit else 0,
+                text,
+                reply_to_message_id=0 if edit else message_id,
+                reply_markup=await self.dashboard_reply_markup(user_id),
+            )
+            return
+        session["account_id"] = account_id
+        if action in {"switch_account", "manage_accounts"}:
+            await asyncio.to_thread(self.storage.set_active_account, user_id, account_id)
+            account = await asyncio.to_thread(self.storage.get_account, account_id, owner_scope)
+            display = account_display_name(account or {}, account_id)
+            self.clear_dashboard_session(chat_id, user_id)
+            prefix = f"تم تغيير الحساب النشط إلى {display}." if lang == "ar" else f"Active account switched to {display}."
+            await self.show_dashboard(chat_id, message_id if edit else 0, prefix=prefix, user_id=user_id)
+            return
+        if action == "discover_pages":
+            self.clear_dashboard_session(chat_id, user_id)
+            await self.command_discover_pages(chat_id, message_id if edit else 0, [account_id], user_id)
+            return
+        if action == "refresh_pages":
+            self.clear_dashboard_session(chat_id, user_id)
+            await self.command_discover_pages(chat_id, message_id if edit else 0, [account_id], user_id, refresh=True)
+            return
+        if action == "list_pages":
+            self.clear_dashboard_session(chat_id, user_id)
+            await self.command_list_pages(chat_id, message_id if edit else 0, [account_id], user_id)
+            return
+        session["step"] = "page_select"
+        self.set_dashboard_session(chat_id, user_id, session)
+        await self.prompt_for_page(chat_id, message_id, account_id, user_id, edit=edit)
+
     async def handle_callback_query(self, update: Dict[str, Any]) -> None:
         query = update.get("callback_query") or {}
         callback_query_id = str(query.get("id") or "")
@@ -3841,19 +3947,33 @@ class TelegramBotApp:
         session["lang"] = lang
 
         if data == "acctdel:back":
-            await self.command_accounts(chat_id, message_id, user_id)
+            await self.command_accounts(chat_id, message_id, user_id, edit=True)
+            return
+
+        if data.startswith("acctsel:"):
+            choice_key = data.split(":", 1)[1]
+            choices = session.get("account_choices") if isinstance(session.get("account_choices"), dict) else {}
+            if not choices and isinstance(session.get("account_manage_choices"), dict):
+                choices = session.get("account_manage_choices") or {}
+            account_id = str(choices.get(choice_key) or "")
+            if not account_id:
+                await self.command_accounts(chat_id, message_id, user_id, edit=True)
+                return
+            await self.handle_account_selected(chat_id, user_id, message_id, session, account_id, edit=True)
             return
 
         if data.startswith("acctren:"):
             choice_key = data.split(":", 1)[1]
-            choices = session.get("account_manage_choices") if isinstance(session.get("account_manage_choices"), dict) else {}
+            choices = session.get("account_choices") if isinstance(session.get("account_choices"), dict) else {}
+            if not choices and isinstance(session.get("account_manage_choices"), dict):
+                choices = session.get("account_manage_choices") or {}
             account_id = str(choices.get(choice_key) or "")
             if not account_id:
-                await self.command_accounts(chat_id, message_id, user_id)
+                await self.command_accounts(chat_id, message_id, user_id, edit=True)
                 return
             account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
             if not account:
-                await self.command_accounts(chat_id, message_id, user_id)
+                await self.command_accounts(chat_id, message_id, user_id, edit=True)
                 return
             session["step"] = "rename_input"
             session["rename_account_id"] = account_id
@@ -3888,7 +4008,7 @@ class TelegramBotApp:
         if data == "acctdel:confirm":
             account_id = str(session.get("delete_account_id") or "")
             if not account_id:
-                await self.command_accounts(chat_id, message_id, user_id)
+                await self.command_accounts(chat_id, message_id, user_id, edit=True)
                 return
             changed = await asyncio.to_thread(self.storage.deactivate_account, account_id, self.account_owner_scope(user_id))
             if changed and user_id:
@@ -3908,14 +4028,16 @@ class TelegramBotApp:
 
         if data.startswith("acctdel:"):
             choice_key = data.split(":", 1)[1]
-            choices = session.get("account_manage_choices") if isinstance(session.get("account_manage_choices"), dict) else {}
+            choices = session.get("account_choices") if isinstance(session.get("account_choices"), dict) else {}
+            if not choices and isinstance(session.get("account_manage_choices"), dict):
+                choices = session.get("account_manage_choices") or {}
             account_id = str(choices.get(choice_key) or "")
             if not account_id:
-                await self.command_accounts(chat_id, message_id, user_id)
+                await self.command_accounts(chat_id, message_id, user_id, edit=True)
                 return
             account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
             if not account:
-                await self.command_accounts(chat_id, message_id, user_id)
+                await self.command_accounts(chat_id, message_id, user_id, edit=True)
                 return
             session["step"] = "delete_confirm"
             session["delete_account_id"] = account_id
@@ -4243,7 +4365,7 @@ class TelegramBotApp:
 
         if command == "/start":
             self.clear_dashboard_session(chat_id, user_id)
-            await self.show_dashboard(chat_id, message_id, user_id=user_id)
+            await self.show_dashboard(chat_id, 0, user_id=user_id)
             return
         session = self.get_dashboard_session(chat_id, user_id)
         explicit_escape_actions = {
@@ -4251,6 +4373,20 @@ class TelegramBotApp:
             "cancel",
             "language",
             "user_dashboard",
+            "add_account",
+            "switch_account",
+            "manage_accounts",
+            "accounts",
+            "post_active",
+            "select_account",
+            "continue_active_account",
+            "check_active_account",
+            "check_cookies",
+            "post_history",
+            "status",
+            "refresh_pages",
+            "discover_pages",
+            "list_pages",
             "admin_dashboard",
             "admin_system_stats",
             "admin_users",
@@ -4325,7 +4461,7 @@ class TelegramBotApp:
             cookie_message_ids=cookie_message_ids,
         )
 
-    async def command_accounts(self, chat_id: int, message_id: int, user_id: int = 0) -> None:
+    async def command_accounts(self, chat_id: int, message_id: int, user_id: int = 0, *, edit: bool = False) -> None:
         lang = await self.user_language(user_id)
         accounts = await asyncio.to_thread(self.storage.list_accounts, self.account_owner_scope(user_id))
         if not accounts:
@@ -4337,37 +4473,32 @@ class TelegramBotApp:
         active_account = ""
         if user_id:
             active_account = await self.active_account_id(user_id)
-        lines = ["👤 حساباتي" if lang == "ar" else "👤 My Accounts", "━━━━━━━━━━━━━━━━━━"]
         account_choices: Dict[str, str] = {}
-        account_rows: List[List[Dict[str, str]]] = []
         for index, item in enumerate(accounts):
-            status = (
-                ("نشط" if item.get("active") else "غير نشط")
-                if lang == "ar"
-                else ("active" if item.get("active") else "inactive")
-            )
-            marker = "✅" if item["account_id"] == active_account else "-"
-            unresolved = self.account_label_needs_refresh(item)
-            display = account_display_name(item, str(item.get("account_id") or ""), include_id=unresolved)
-            lines.append(f"{marker} {display} ({status})")
             choice_key = str(index)
             account_choices[choice_key] = str(item.get("account_id") or "")
-            rename_label = f"✏️ تسمية {display}" if lang == "ar" else f"✏️ Rename {display}"
-            delete_label = f"🗑 حذف {display}" if lang == "ar" else f"🗑 Delete {display}"
-            account_rows.append([inline_button(rename_label, f"acctren:{choice_key}")])
-            account_rows.append([inline_button(delete_label, f"acctdel:{choice_key}")])
-        account_rows.append([inline_button("⬅️ رجوع" if lang == "ar" else "⬅️ Back", "dash:back")])
         self.set_dashboard_session(
             chat_id,
             user_id,
             {
                 "action": "manage_accounts",
-                "step": "account_manage_select",
+                "step": "account",
+                "account_choices": account_choices,
                 "account_manage_choices": account_choices,
                 "lang": lang,
             },
         )
-        await self.edit_or_send_message(chat_id, message_id, "\n".join(lines), reply_markup=inline_markup(account_rows))
+        prompt = (
+            "👤 حساباتي\nاختار الحساب اللي هيبقى نشط."
+            if lang == "ar"
+            else "👤 My Accounts\nSelect the account to make active."
+        )
+        text = self.account_picker_card(prompt, accounts, active_account, lang=lang)
+        markup = self.account_picker_markup(accounts, active_account, lang=lang)
+        if edit:
+            await self.edit_or_send_message(chat_id, message_id, text, reply_markup=markup)
+        else:
+            await self.send_message(chat_id, text, message_id, reply_markup=markup)
 
     async def command_check_cookies(self, chat_id: int, message_id: int, user_id: int = 0) -> None:
         lang = await self.user_language(user_id)
@@ -5461,6 +5592,7 @@ class TelegramBotApp:
                     context="single_post_result",
                 )
             self.debug_event("post_job_complete", trace_id, job_id=job_id, success=success, error=error[:300])
+            completed_at = datetime.now(timezone.utc)
             progress_message_id = await self.send_posting_complete_card(
                 chat_id,
                 user_id,
@@ -5474,6 +5606,7 @@ class TelegramBotApp:
                     ],
                     debug_id=trace_id,
                     elapsed_seconds=time.monotonic() - started,
+                    completed_at=completed_at,
                 ),
                 progress_message_id=progress_message_id,
             )
@@ -5488,6 +5621,7 @@ class TelegramBotApp:
                 context="single_post_exception",
             )
             await asyncio.to_thread(self.storage.mark_job_completed, job_id, False, {"exception": str(exc)}, str(exc))
+            completed_at = datetime.now(timezone.utc)
             progress_message_id = await self.send_posting_complete_card(
                 chat_id,
                 user_id,
@@ -5496,6 +5630,7 @@ class TelegramBotApp:
                     title="Posting complete: 0/1 succeeded",
                     debug_id=trace_id,
                     elapsed_seconds=time.monotonic() - started,
+                    completed_at=completed_at,
                 ),
                 progress_message_id=progress_message_id,
             )
@@ -5785,10 +5920,16 @@ class TelegramBotApp:
                     trace_id=trace_id,
                     context="batch_post_result",
                 )
+            completed_at = datetime.now(timezone.utc)
             progress_message_id = await self.send_posting_complete_card(
                 chat_id,
                 user_id,
-                posting_result_card(result_items, debug_id=trace_id, elapsed_seconds=time.monotonic() - started),
+                posting_result_card(
+                    result_items,
+                    debug_id=trace_id,
+                    elapsed_seconds=time.monotonic() - started,
+                    completed_at=completed_at,
+                ),
                 progress_message_id=progress_message_id,
             )
             self.debug_event(
@@ -5837,6 +5978,7 @@ class TelegramBotApp:
                     }
                     for job in jobs
                 ]
+                completed_at = datetime.now(timezone.utc)
                 await self.send_posting_complete_card(
                     chat_id,
                     user_id,
@@ -5845,6 +5987,7 @@ class TelegramBotApp:
                         title=f"Posting complete: 0/{len(jobs)} succeeded",
                         debug_id=trace_id,
                         elapsed_seconds=time.monotonic() - started,
+                        completed_at=completed_at,
                     ),
                     progress_message_id=progress_message_id,
                 )
