@@ -179,6 +179,40 @@ def test_admin_broadcast_sends_to_selected_targets_with_result_card():
     asyncio.run(run())
 
 
+def test_admin_delete_confirmation_lists_selected_users():
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.storage = AdminStorage()
+        app.dashboard_sessions = {}
+        edited = []
+
+        async def user_language(user_id):
+            return "en"
+
+        async def edit_or_send_message(chat_id, message_id, text, *, reply_to_message_id=0, reply_markup=None, parse_mode=""):
+            edited.append({"text": text, "reply_markup": reply_markup})
+            return message_id
+
+        app.user_language = user_language
+        app.edit_or_send_message = edit_or_send_message
+
+        await app.handle_admin_callback(
+            123,
+            99,
+            456,
+            "adm:del:confirm",
+            {"selected_user_ids": [111, 222], "page": 0},
+        )
+
+        text = edited[0]["text"]
+        assert "Selected users:" in text
+        assert "One | id=111" in text
+        assert "Two | id=222" in text
+        assert "Delete Now" in str(edited[0]["reply_markup"])
+
+    asyncio.run(run())
+
+
 def test_admin_reply_button_bypasses_existing_admin_card_session():
     async def run():
         app = TelegramBotApp.__new__(TelegramBotApp)

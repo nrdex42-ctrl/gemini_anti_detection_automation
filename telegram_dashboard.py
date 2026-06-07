@@ -343,44 +343,26 @@ def dashboard_markup(
 
     if posting_blocked and has_accounts and active_account:
         rows.append([tr(lang, "⏳ Posting cooldown active", "⏳ مهلة النشر مفعلة")])
-        rows.append([button_text("switch_account", lang), button_text("refresh_pages", lang)])
+        rows.append([button_text("switch_account", lang)])
     elif not has_accounts:
         rows.append([button_text("add_account", lang)])
     elif active_account:
-        # Row 1: Quick Posting Actions (3 buttons side-by-side)
-        rows.append([
-            button_text("quick_text", lang),
-            button_text("quick_image", lang),
-            button_text("quick_video", lang)
-        ])
-        # Row 2: Advanced Posting Flows
-        rows.append([
-            button_text("post_active", lang),
-            button_text("post_all_pages", lang)
-        ])
-        # Row 3: Account & Session Management
+        rows.append([button_text("post_active", lang)])
         rows.append([
             button_text("my_accounts", lang),
             button_text("switch_account", lang),
             button_text("add_account", lang)
         ])
-        # Row 4: Page Management
-        rows.append([
-            button_text("refresh_pages", lang),
-            button_text("list_pages", lang)
-        ])
-        # Row 5: Utilities & Verification
         rows.append([
             button_text("check_cookies", lang),
             button_text("post_history", lang)
         ])
     else:
-        # No active account, but has accounts
         rows.append([button_text("select_account", lang), button_text("add_account", lang)])
         rows.append([button_text("my_accounts", lang), button_text("check_cookies", lang)])
-        rows.append([button_text("discover_pages", lang), button_text("list_pages", lang)])
+        rows.append([button_text("discover_pages", lang)])
 
-    rows.append([button_text("status", lang), button_text("language", lang)])
+    rows.append([button_text("language", lang)])
     if is_admin:
         rows.append([button_text("admin", lang)])
     return reply_keyboard(rows, placeholder=tr(lang, "Choose a dashboard action...", "اختر إجراء لوحة التحكم..."))
@@ -391,7 +373,6 @@ def admin_dashboard_markup(lang: str = "en") -> Dict[str, Any]:
         [
             [button_text("users", lang), button_text("delete_users", lang)],
             [button_text("broadcast", lang), button_text("language", lang)],
-            [button_text("system_stats", lang), button_text("post_stats", lang)],
             [button_text("user_dashboard", lang)],
         ],
         placeholder=tr(lang, "Choose an admin action...", "اختر إجراء للأدمن..."),

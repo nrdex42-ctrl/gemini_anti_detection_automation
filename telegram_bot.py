@@ -3339,6 +3339,7 @@ class TelegramBotApp:
                     reply_markup=inline_markup([[inline_button("⬅️ رجوع" if lang == "ar" else "⬅️ Back", f"adm:del:page:{page}")]]),
                 )
                 return
+            selected_users = await asyncio.to_thread(self.storage.admin_broadcast_targets, selected)
             lines = [
                 "🗑 تأكيد حذف المستخدمين" if lang == "ar" else "🗑 Confirm User Deletion",
                 "━━━━━━━━━━━━━━━━━━",
@@ -3348,8 +3349,20 @@ class TelegramBotApp:
                     else f"This will delete {len(selected)} user(s), their Facebook accounts, and related jobs."
                 ),
                 "",
-                "هذا الإجراء لا يمكن التراجع عنه من البوت." if lang == "ar" else "This cannot be undone from the bot.",
+                "المستخدمون المحددون:" if lang == "ar" else "Selected users:",
             ]
+            selected_user_ids = {int(row.get("telegram_user_id") or 0) for row in selected_users}
+            for row in selected_users[:12]:
+                lines.append(f"- {self._admin_user_label(row)}")
+            missing_slots = max(0, 12 - min(12, len(selected_users)))
+            for missing_user_id in [item for item in selected if item not in selected_user_ids][:missing_slots]:
+                lines.append(f"- id={missing_user_id}")
+            if len(selected) > 12:
+                lines.append(f"... +{len(selected) - 12}")
+            lines.extend([
+                "",
+                "هذا الإجراء لا يمكن التراجع عنه من البوت." if lang == "ar" else "This cannot be undone from the bot.",
+            ])
             await self.edit_or_send_message(
                 chat_id,
                 message_id,

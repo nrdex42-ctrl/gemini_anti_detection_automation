@@ -25,6 +25,13 @@ def test_arabic_dashboard_keyboard_actions_and_prompts():
 
     assert "⚡ النشر في الصفحات" in labels
     assert "🌐 اللغة" in labels
+    assert "📝 منشور نصي" not in labels
+    assert "📸 منشور صورة" not in labels
+    assert "🎬 منشور فيديو" not in labels
+    assert "📋 انشر لكل الصفحات" not in labels
+    assert "📄 الصفحات المحفوظة" not in labels
+    assert "🔄 تحديث الصفحات" not in labels
+    assert "⚡ حالة البوت" not in labels
     assert dashboard_action("🌐 اللغة") == "language"
     assert dashboard_action("📝 منشور نصي") == "quick_text"
     assert dashboard_action("📄 الصفحات المحفوظة") == "list_pages"
@@ -47,6 +54,8 @@ def test_admin_dashboard_keyboard_has_language_button():
     assert "🌐 Language" in labels
     assert "🗑 Delete Users" in labels
     assert "📣 Broadcast" in labels
+    assert "📊 System Stats" not in labels
+    assert "📈 Post Stats" not in labels
     assert "⚙️ System Config" not in labels
     assert "🧰 Debug Snapshot" not in labels
     assert "🔐 Runtime Locks" not in labels
@@ -63,6 +72,8 @@ def test_arabic_admin_dashboard_keyboard_is_translated():
     assert "👥 المستخدمين" in labels
     assert "🗑 حذف مستخدمين" in labels
     assert "📣 إرسال تنبيه" in labels
+    assert "📊 إحصائيات النظام" not in labels
+    assert "📈 إحصائيات المنشورات" not in labels
     assert "⚙️ إعدادات النظام" not in labels
     assert "🧰 لقطة تصحيح" not in labels
     assert "🔐 أقفال التشغيل" not in labels
