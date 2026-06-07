@@ -97,6 +97,46 @@ def compact_text(value: Any, limit: int = 220) -> str:
     return f"{text[:max(0, limit - 1)].rstrip()}…"
 
 
+def account_add_page_summary_lines(
+    pages: List[Dict[str, Any]],
+    status: str,
+    detail: str = "",
+    *,
+    lang: str = "en",
+    max_pages: int = 12,
+) -> List[str]:
+    normalized = str(status or "").strip().lower()
+    lines: List[str] = [""]
+    if normalized in {"cached", "discovered"}:
+        count = len(pages)
+        suffix = "تم حفظها" if normalized == "cached" else "تم اكتشافها"
+        english_suffix = "cached" if normalized == "cached" else "discovered"
+        lines.append(
+            f"📄 الصفحات المتاحة: {count} ({suffix})"
+            if lang == "ar"
+            else f"📄 Available pages: {count} ({english_suffix})"
+        )
+        for index, page in enumerate(pages[:max_pages]):
+            lines.append(f"- {compact_text(page_display_name(page, index), 58)}")
+        if count > max_pages:
+            remaining = count - max_pages
+            lines.append(f"- +{remaining} صفحات إضافية" if lang == "ar" else f"- +{remaining} more page(s)")
+        return lines
+    if normalized == "empty":
+        lines.append("📄 الصفحات المتاحة: 0" if lang == "ar" else "📄 Available pages: 0")
+        lines.append("لم يتم العثور على صفحات مُدارة لهذا الحساب." if lang == "ar" else "No managed pages were discovered for this account.")
+        return lines
+    if normalized == "failed":
+        lines.append("📄 الصفحات المتاحة: فشل الجلب" if lang == "ar" else "📄 Available pages: fetch failed")
+        if detail:
+            lines.append(compact_text(detail, 220))
+        return lines
+    lines.append("📄 الصفحات المتاحة: لم يتم الجلب" if lang == "ar" else "📄 Available pages: not fetched")
+    if detail:
+        lines.append(compact_text(detail, 220))
+    return lines
+
+
 def page_status_bar(status: str, width: int = 5) -> str:
     normalized = str(status or "pending").lower()
     if normalized in {"success", "failed", "skipped"}:
@@ -130,11 +170,9 @@ def posting_result_card(
     for index, item in enumerate(results):
         success = bool(item.get("success"))
         page = compact_text(item.get("page") or "Unknown page", 42)
-        detail = compact_text(item.get("result") or item.get("error") or "", 260)
         prefix = "✅" if success else "❌"
-        label = "Result" if success else "Error"
         status = "success" if success else "failed"
-        line = f"{prefix} {page} {page_status_bar(status)} {label}: {detail}"
+        line = f"{prefix} {page} {page_status_bar(status)}"
         projected = "\n".join([*lines, line])
         reserve = 80 if index < len(results) - 1 else 0
         if len(projected) + reserve > max_length:
@@ -1305,8 +1343,8 @@ class TelegramBotApp:
                 return str(value)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        display_tz = timezone(timedelta(hours=3), "UTC+3")
-        return dt.astimezone(display_tz).strftime("%Y-%m-%d %H:%M UTC+3")
+        display_tz = timezone(timedelta(hours=3))
+        return dt.astimezone(display_tz).strftime("%I:%M %p")
 
     def _format_time(self, value: Any) -> str:
         if not value:
@@ -1320,7 +1358,7 @@ class TelegramBotApp:
                 return str(value)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        display_tz = timezone(timedelta(hours=3), "UTC+3")
+        display_tz = timezone(timedelta(hours=3))
         return dt.astimezone(display_tz).strftime("%I:%M %p")
 
     def _telegram_profile_name(self, row: Dict[str, Any]) -> str:
@@ -2487,6 +2525,117 @@ class TelegramBotApp:
             return
         await self.show_dashboard(chat_id, message_id, user_id=user_id)
 
+    async def discover_pages_during_account_add(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        progress_message_id: int,
+        progress_title: str,
+        account_id: str,
+        *,
+        lang: str = "en",
+        total_steps: int = 5,
+    ) -> Tuple[List[Dict[str, Any]], str, str, int]:
+        trace_id = new_debug_id("addpages")
+        owner_scope = self.account_owner_scope(user_id)
+        timeout_default = _env_int("BOT_PAGE_DISCOVERY_TIMEOUT_SECONDS", 150, minimum=30)
+        discovery_timeout = _env_int("BOT_ACCOUNT_ADD_PAGE_DISCOVERY_TIMEOUT_SECONDS", timeout_default, minimum=30)
+        heartbeat_seconds = _env_int("BOT_PROGRESS_HEARTBEAT_SECONDS", 8, minimum=2)
+        started = time.monotonic()
+        self.debug_event(
+            "account_add_page_discovery_start",
+            trace_id,
+            account_id=account_id,
+            user_id=user_id,
+            timeout_seconds=discovery_timeout,
+        )
+
+        async def update_progress(detail: str) -> None:
+            nonlocal progress_message_id
+            progress_message_id = await self.edit_or_send_message(
+                chat_id,
+                progress_message_id,
+                progress_card(progress_title, 4, total_steps, detail),
+                reply_to_message_id=reply_to_message_id,
+            )
+
+        await update_progress("جاري اكتشاف الصفحات المتاحة..." if lang == "ar" else "Discovering available pages...")
+        pages_task = asyncio.create_task(self.discover_pages(account_id, owner_scope))
+        tick = 0
+        try:
+            while True:
+                remaining = discovery_timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    pages_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await pages_task
+                    raise TimeoutError(f"Page discovery timed out after {discovery_timeout}s while adding this account.")
+                try:
+                    pages = await asyncio.wait_for(
+                        asyncio.shield(pages_task),
+                        timeout=min(heartbeat_seconds, remaining),
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    tick += 1
+                    elapsed = int(time.monotonic() - started)
+                    if tick % 2 == 0:
+                        await update_progress(
+                            f"جاري اكتشاف الصفحات المتاحة... مر {elapsed} ثانية."
+                            if lang == "ar"
+                            else f"Discovering available pages... {elapsed}s elapsed."
+                        )
+            if pages:
+                await update_progress(
+                    f"جاري حفظ {len(pages)} صفحة متاحة..."
+                    if lang == "ar"
+                    else f"Saving {len(pages)} available page(s)..."
+                )
+                if hasattr(self.storage, "upsert_pages"):
+                    await asyncio.to_thread(self.storage.upsert_pages, account_id, pages)
+                    status = "cached"
+                else:
+                    status = "discovered"
+                self.debug_event(
+                    "account_add_page_discovery_complete",
+                    trace_id,
+                    account_id=account_id,
+                    user_id=user_id,
+                    page_count=len(pages),
+                    elapsed_seconds=round(time.monotonic() - started, 3),
+                    cached=status == "cached",
+                )
+                return list(pages), status, "", progress_message_id
+            self.debug_event(
+                "account_add_page_discovery_empty",
+                trace_id,
+                account_id=account_id,
+                user_id=user_id,
+                elapsed_seconds=round(time.monotonic() - started, 3),
+            )
+            return [], "empty", "", progress_message_id
+        except Exception as exc:
+            detail = compact_error(exc, 500)
+            logger.warning("Page discovery during account add failed for %s: %s", account_id, detail)
+            with suppress(Exception):
+                await self.maybe_quarantine_account_cookie(
+                    account_id,
+                    user_id,
+                    detail,
+                    trace_id=trace_id,
+                    context="account_add_page_discovery",
+                )
+            self.debug_event(
+                "account_add_page_discovery_failed",
+                trace_id,
+                account_id=account_id,
+                user_id=user_id,
+                error=detail,
+                elapsed_seconds=round(time.monotonic() - started, 3),
+            )
+            return [], "failed", detail, progress_message_id
+
     async def save_account_cookie_payload(
         self,
         chat_id: int,
@@ -2506,9 +2655,10 @@ class TelegramBotApp:
             return False
 
         progress_title = "إضافة حساب فيسبوك..." if lang == "ar" else "Adding Facebook account..."
+        progress_total = 5
         progress = await self.send_message(
             chat_id,
-            progress_card(progress_title, 1, 3, "تمت قراءة الكوكيز." if lang == "ar" else "Cookies parsed."),
+            progress_card(progress_title, 1, progress_total, "تمت قراءة الكوكيز." if lang == "ar" else "Cookies parsed."),
             message_id,
         )
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
@@ -2522,7 +2672,7 @@ class TelegramBotApp:
             progress_card(
                 progress_title,
                 2,
-                3,
+                progress_total,
                 "جاري قراءة اسم الحساب من فيسبوك..."
                 if lang == "ar"
                 else "Reading the Facebook account name...",
@@ -2536,6 +2686,9 @@ class TelegramBotApp:
         cookie_ok = False
         status_desc = "Not verified yet"
         status_desc_ar = "لم يتم التحقق بعد"
+        discovered_pages: List[Dict[str, Any]] = []
+        page_discovery_status = "skipped"
+        page_discovery_detail = "Cookie validation did not pass yet."
         try:
             await asyncio.to_thread(
                 self.storage.upsert_account,
@@ -2547,6 +2700,19 @@ class TelegramBotApp:
             await asyncio.to_thread(self.storage.set_active_account, user_id, parsed.account_id)
 
             # Perform inline cookie verification immediately
+            progress_message_id = await self.edit_or_send_message(
+                chat_id,
+                progress_message_id,
+                progress_card(
+                    progress_title,
+                    3,
+                    progress_total,
+                    "جاري حفظ الحساب وفحص الكوكيز..."
+                    if lang == "ar"
+                    else "Saving the account and validating cookies...",
+                ),
+                reply_to_message_id=message_id,
+            )
             from playwright_engine import validate_facebook_session
             try:
                 session_ok, detail = await validate_facebook_session(cookies_json(parse_cookies(parsed.cookie_header)))
@@ -2564,14 +2730,35 @@ class TelegramBotApp:
                 status_desc_ar = "الكوكيز صالحة" if session_ok else status_text
             except Exception as val_exc:
                 logger.error(f"Failed to validate cookies inline on account add: {val_exc}")
+                page_discovery_detail = compact_error(val_exc, 220)
+            if cookie_ok:
+                discovered_pages, page_discovery_status, page_discovery_detail, progress_message_id = (
+                    await self.discover_pages_during_account_add(
+                        chat_id,
+                        user_id,
+                        message_id,
+                        progress_message_id,
+                        progress_title,
+                        parsed.account_id,
+                        lang=lang,
+                        total_steps=progress_total,
+                    )
+                )
+            else:
+                page_discovery_status = "skipped"
+                page_discovery_detail = (
+                    "تخطيت جلب الصفحات لأن فحص الكوكيز لم ينجح."
+                    if lang == "ar"
+                    else "Skipped page fetch because cookie validation did not pass."
+                )
         except Exception as exc:
             await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,
                 progress_card(
                     progress_title,
-                    3,
-                    3,
+                    progress_total,
+                    progress_total,
                     f"لم يتم حفظ الحساب: {str(exc)[:500]}" if lang == "ar" else f"Account was not saved: {str(exc)[:500]}",
                 ),
                 reply_to_message_id=message_id,
@@ -2596,6 +2783,12 @@ class TelegramBotApp:
                     f"📋 {name_source_ar}",
                     "🟢 المحدد: نشط",
                     cookie_status,
+                    *account_add_page_summary_lines(
+                        discovered_pages,
+                        page_discovery_status,
+                        page_discovery_detail,
+                        lang=lang,
+                    ),
                 ]
             )
         else:
@@ -2610,6 +2803,12 @@ class TelegramBotApp:
                     f"📋 {name_source_en}",
                     "🟢 Selected: Active",
                     cookie_status,
+                    *account_add_page_summary_lines(
+                        discovered_pages,
+                        page_discovery_status,
+                        page_discovery_detail,
+                        lang=lang,
+                    ),
                 ]
             )
         if progress_message_id:
@@ -4191,13 +4390,12 @@ class TelegramBotApp:
                 )
                 if session_ok:
                     valid_count += 1
-                lines.append(status_detail_line(icon, display, status_text))
+                if lang == "ar":
+                    display_status = "صالحة" if session_ok else "غير صالحة"
+                else:
+                    display_status = "valid" if session_ok else "invalid"
+                lines.append(status_detail_line(icon, display, display_status))
             except Exception as exc:
-                error_text = (
-                    self.encryption_key_recovery_text(lang)
-                    if is_encryption_key_error(exc)
-                    else compact_error(exc, 500)
-                )
                 await asyncio.to_thread(
                     self.storage.update_account_cookie_validation,
                     account_id,
@@ -4205,7 +4403,8 @@ class TelegramBotApp:
                     compact_error(exc, 500),
                     owner_scope,
                 )
-                lines.append(status_detail_line("🔴", display, error_text[:900]))
+                display_status = "غير صالحة" if lang == "ar" else "invalid"
+                lines.append(status_detail_line("🔴", display, display_status))
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
                 progress_message_id,

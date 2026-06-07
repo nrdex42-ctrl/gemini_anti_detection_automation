@@ -135,7 +135,10 @@ def test_admin_user_detail_card_includes_accounts_pages_and_last_posting_status(
 
     text = app.admin_user_detail_card(detail)
 
-    assert "First used: 2026-06-01" in text
+    assert "First used: 12:00 PM" in text
+    assert "Last seen: 05:15 PM" in text
+    assert "2026-06-01" not in text
+    assert "UTC+3" not in text
     assert "Last posting status:" in text
     assert "success video -> Insan" in text
     assert "Omar Mohamed" in text

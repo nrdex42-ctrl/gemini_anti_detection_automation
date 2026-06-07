@@ -45,6 +45,11 @@ def test_posting_result_card_includes_overall_elapsed_time():
     assert "Caption page" in card
     assert "Image page" in card
     assert "Video page" in card
+    assert "Result:" not in card
+    assert "Error:" not in card
+    assert "caption accepted" not in card
+    assert "image accepted" not in card
+    assert "video accepted" not in card
 
 
 def test_posting_live_status_card_uses_page_sync_text_instead_of_debug_id():

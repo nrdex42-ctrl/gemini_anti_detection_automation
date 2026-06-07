@@ -18,6 +18,7 @@ class AccountStorage:
         self.upserted = []
         self.active = []
         self.validation = []
+        self.pages = []
 
     def upsert_account(self, account_id, cookie_header, label, user_id):
         self.upserted.append((account_id, cookie_header, label, user_id))
@@ -27,6 +28,9 @@ class AccountStorage:
 
     def update_account_cookie_validation(self, account_id, status, detail, owner_scope):
         self.validation.append((account_id, status, detail, owner_scope))
+
+    def upsert_pages(self, account_id, pages):
+        self.pages.append((account_id, pages))
 
 
 def test_account_add_success_sends_fresh_dashboard_to_replace_cookie_keyboard(monkeypatch):
@@ -56,6 +60,7 @@ def test_account_add_success_sends_fresh_dashboard_to_replace_cookie_keyboard(mo
 
         sent_messages = []
         dashboard_message_ids = []
+        edited_texts = []
         deleted_messages = []
 
         async def send_message(chat_id, text, reply_to_message_id=0, *, reply_markup=None, parse_mode=""):
@@ -73,6 +78,7 @@ def test_account_add_success_sends_fresh_dashboard_to_replace_cookie_keyboard(mo
             timeout_seconds=12,
         ):
             dashboard_message_ids.append(message_id)
+            edited_texts.append(text)
             return message_id or 777
 
         async def delete_message(chat_id, message_id):
@@ -86,6 +92,9 @@ def test_account_add_success_sends_fresh_dashboard_to_replace_cookie_keyboard(mo
         async def validate_facebook_session(cookies):
             return True, "Facebook session is valid"
 
+        async def discover_pages(account_id, owner_id=None):
+            return [{"page_name": "Huawei"}, {"page_name": "Oppo"}]
+
         monkeypatch.setattr(telegram_bot, "parse_account_cookie_payload", lambda payload, hint="auto": parsed)
         import playwright_engine
 
@@ -94,6 +103,7 @@ def test_account_add_success_sends_fresh_dashboard_to_replace_cookie_keyboard(mo
         app.user_language = user_language
         app.resolve_account_label_from_cookie_header = resolve_account_label
         app.dashboard_state = dashboard_state
+        app.discover_pages = discover_pages
         app.send_message = send_message
         app.edit_or_send_message = edit_or_send_message
         app.delete_message = delete_message
@@ -113,5 +123,12 @@ def test_account_add_success_sends_fresh_dashboard_to_replace_cookie_keyboard(mo
         assert app.storage.upserted == [
             ("61576466101916", "c_user=61576466101916; xs=session", "Omar Mohamed", 99)
         ]
+        assert app.storage.pages == [
+            ("61576466101916", [{"page_name": "Huawei"}, {"page_name": "Oppo"}])
+        ]
+        final_text = edited_texts[-1]
+        assert "📄 Available pages: 2 (cached)" in final_text
+        assert "- Huawei" in final_text
+        assert "- Oppo" in final_text
 
     asyncio.run(run())

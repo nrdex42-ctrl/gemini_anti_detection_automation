@@ -693,8 +693,8 @@ def _format_dt(value: Any) -> str:
             return str(value)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    display_tz = timezone(timedelta(hours=3), "UTC+3")
-    return dt.astimezone(display_tz).strftime("%Y-%m-%d %H:%M UTC+3")
+    display_tz = timezone(timedelta(hours=3))
+    return dt.astimezone(display_tz).strftime("%I:%M %p")
 
 
 def _account_health_icon(account: Dict[str, Any], active_account: str) -> str:
