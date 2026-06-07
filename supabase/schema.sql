@@ -43,6 +43,9 @@ create table if not exists telegram_user_state (
     telegram_user_id bigint primary key,
     active_account_id text references fb_accounts(account_id) on delete set null,
     last_chat_id bigint,
+    first_name text not null default '',
+    last_name text not null default '',
+    username text not null default '',
     lang text not null default 'en',
     created_at timestamptz not null default now(),
     last_seen_at timestamptz,
@@ -50,6 +53,9 @@ create table if not exists telegram_user_state (
 );
 
 alter table telegram_user_state add column if not exists last_chat_id bigint;
+alter table telegram_user_state add column if not exists first_name text not null default '';
+alter table telegram_user_state add column if not exists last_name text not null default '';
+alter table telegram_user_state add column if not exists username text not null default '';
 alter table telegram_user_state add column if not exists last_seen_at timestamptz;
 alter table telegram_user_state add column if not exists lang text not null default 'en';
 

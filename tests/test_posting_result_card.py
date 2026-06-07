@@ -14,6 +14,7 @@ from telegram_bot import LTR_MARK, POP_DIRECTIONAL_ISOLATE, format_elapsed_secon
 def test_format_elapsed_seconds_is_compact():
     assert format_elapsed_seconds(42.2) == "42s"
     assert format_elapsed_seconds(192.4) == "3m 12s"
+    assert format_elapsed_seconds(336) == "5m 36s"
     assert format_elapsed_seconds(3900) == "1h 05m"
 
 

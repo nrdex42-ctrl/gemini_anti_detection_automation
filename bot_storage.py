@@ -249,21 +249,45 @@ class BotStorage:
         lang = str((row or {}).get("lang") or "en").strip().lower()
         return lang if lang in {"ar", "en"} else "en"
 
-    def touch_user(self, telegram_user_id: int, chat_id: int) -> None:
+    def touch_user(
+        self,
+        telegram_user_id: int,
+        chat_id: int,
+        first_name: str = "",
+        last_name: str = "",
+        username: str = "",
+    ) -> None:
         if not telegram_user_id:
             return
         with self.connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    insert into telegram_user_state (telegram_user_id, last_chat_id, updated_at, last_seen_at)
-                    values (%s, %s, now(), now())
+                    insert into telegram_user_state (
+                        telegram_user_id,
+                        last_chat_id,
+                        first_name,
+                        last_name,
+                        username,
+                        updated_at,
+                        last_seen_at
+                    )
+                    values (%s, %s, %s, %s, %s, now(), now())
                     on conflict (telegram_user_id) do update set
                         last_chat_id = excluded.last_chat_id,
+                        first_name = coalesce(nullif(excluded.first_name, ''), telegram_user_state.first_name),
+                        last_name = coalesce(nullif(excluded.last_name, ''), telegram_user_state.last_name),
+                        username = coalesce(nullif(excluded.username, ''), telegram_user_state.username),
                         updated_at = now(),
                         last_seen_at = now()
                     """,
-                    (int(telegram_user_id), int(chat_id or telegram_user_id)),
+                    (
+                        int(telegram_user_id),
+                        int(chat_id or telegram_user_id),
+                        str(first_name or "")[:120],
+                        str(last_name or "")[:120],
+                        str(username or "")[:120].lstrip("@"),
+                    ),
                 )
             conn.commit()
 
@@ -674,6 +698,9 @@ class BotStorage:
                     select
                         u.telegram_user_id,
                         s.active_account_id,
+                        s.first_name,
+                        s.last_name,
+                        s.username,
                         count(distinct a.account_id)::int as account_count,
                         count(distinct j.id)::int as job_count,
                         max(greatest(
@@ -685,7 +712,7 @@ class BotStorage:
                     left join telegram_user_state s on s.telegram_user_id = u.telegram_user_id
                     left join fb_accounts a on a.created_by = u.telegram_user_id
                     left join fb_post_jobs j on j.telegram_user_id = u.telegram_user_id
-                    group by u.telegram_user_id, s.active_account_id
+                    group by u.telegram_user_id, s.active_account_id, s.first_name, s.last_name, s.username
                     order by last_seen desc nulls last
                     limit %s
                     """,

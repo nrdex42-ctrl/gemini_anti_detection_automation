@@ -1045,9 +1045,17 @@ class TelegramBotApp:
             locks[key] = lock
         return lock
 
-    async def touch_user_seen(self, user_id: int, chat_id: int) -> None:
+    async def touch_user_seen(self, user_id: int, chat_id: int, profile: Optional[Dict[str, Any]] = None) -> None:
         try:
-            await asyncio.to_thread(self.storage.touch_user, user_id, chat_id)
+            profile = profile or {}
+            await asyncio.to_thread(
+                self.storage.touch_user,
+                user_id,
+                chat_id,
+                str(profile.get("first_name") or ""),
+                str(profile.get("last_name") or ""),
+                str(profile.get("username") or ""),
+            )
         except Exception:
             logger.warning("Could not update Telegram user state", exc_info=True)
 
@@ -1261,6 +1269,34 @@ class TelegramBotApp:
         display_tz = timezone(timedelta(hours=3), "UTC+3")
         return dt.astimezone(display_tz).strftime("%Y-%m-%d %H:%M UTC+3")
 
+    def _format_time(self, value: Any) -> str:
+        if not value:
+            return "never"
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            try:
+                dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            except ValueError:
+                return str(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        display_tz = timezone(timedelta(hours=3), "UTC+3")
+        return dt.astimezone(display_tz).strftime("%I:%M %p")
+
+    def _telegram_profile_name(self, row: Dict[str, Any]) -> str:
+        first_name = str(row.get("first_name") or "").strip()
+        last_name = str(row.get("last_name") or "").strip()
+        username = str(row.get("username") or "").strip().lstrip("@")
+        full_name = " ".join(part for part in [first_name, last_name] if part).strip()
+        if full_name and username:
+            return f"{full_name} (@{username})"
+        if full_name:
+            return full_name
+        if username:
+            return f"@{username}"
+        return "unknown profile"
+
     async def show_admin_dashboard(self, chat_id: int, message_id: int, user_id: int, prefix: str = "") -> None:
         if not self.is_admin_user(user_id):
             await self.send_message(chat_id, "Admin dashboard is restricted.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
@@ -1275,9 +1311,10 @@ class TelegramBotApp:
             lines.append("No users recorded yet.")
         for row in rows:
             lines.append(
-                f"- {row.get('telegram_user_id')} | active={row.get('active_account_id') or 'none'} | "
+                f"- {self._telegram_profile_name(row)} | id={row.get('telegram_user_id')} | "
+                f"active={row.get('active_account_id') or 'none'} | "
                 f"accounts={row.get('account_count', 0)} | jobs={row.get('job_count', 0)} | "
-                f"last={self._format_dt(row.get('last_seen'))}"
+                f"last={self._format_time(row.get('last_seen'))}"
             )
         await self.send_message(chat_id, "\n".join(lines), message_id, reply_markup=admin_dashboard_markup())
 
@@ -2815,7 +2852,7 @@ class TelegramBotApp:
         if callback_query_id:
             await self.answer_callback_query(callback_query_id)
         if user_id and chat_id:
-            self.start_background_task(self.touch_user_seen(user_id, chat_id), f"touch user {user_id}")
+            self.start_background_task(self.touch_user_seen(user_id, chat_id, user), f"touch user {user_id}")
         lang = await self.user_language(user_id)
 
         if data == "dash:back":
@@ -3241,7 +3278,7 @@ class TelegramBotApp:
         command, args = split_command(text)
         action = dashboard_action(text)
         if user_id and chat_id:
-            self.start_background_task(self.touch_user_seen(user_id, chat_id), f"touch user {user_id}")
+            self.start_background_task(self.touch_user_seen(user_id, chat_id, user), f"touch user {user_id}")
 
         if command == "/start":
             self.clear_dashboard_session(chat_id, user_id)
@@ -4831,7 +4868,7 @@ class TelegramBotApp:
                 if remaining > 0:
                     while remaining > 0:
                         await notify(
-                            f"Account slot acquired. Cookie cooldown active: {remaining}s before browser posting starts."
+                            f"Account slot acquired. Cookie cooldown active: {format_elapsed_seconds(remaining)} before browser posting starts."
                         )
                         sleep_for = min(max(1, poll_seconds), remaining)
                         await asyncio.sleep(sleep_for)

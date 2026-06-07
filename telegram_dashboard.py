@@ -149,6 +149,19 @@ def tr(lang: str, en: str, ar: str) -> str:
     return ar if normalize_lang(lang) == "ar" else en
 
 
+LTR_MARK = "\u200e"
+FIRST_STRONG_ISOLATE = "\u2068"
+POP_DIRECTIONAL_ISOLATE = "\u2069"
+
+
+def bidi_isolate(value: Any) -> str:
+    return f"{FIRST_STRONG_ISOLATE}{str(value or '')}{POP_DIRECTIONAL_ISOLATE}"
+
+
+def status_detail_line(icon: str, name: Any, detail: Any) -> str:
+    return f"{LTR_MARK}{icon} {bidi_isolate(name)} | {bidi_isolate(detail)}"
+
+
 def button_text(key: str, lang: str = "en") -> str:
     table = _BUTTONS_AR if normalize_lang(lang) == "ar" else _BUTTONS_EN
     return table.get(key, _BUTTONS_EN.get(key, key))
@@ -368,6 +381,7 @@ def admin_dashboard_markup(lang: str = "en") -> Dict[str, Any]:
             [button_text("users", lang), button_text("admin_accounts", lang)],
             [button_text("runtime_locks", lang), button_text("system_config", lang)],
             [button_text("debug_snapshot", lang)],
+            [button_text("language", lang)],
             [button_text("user_dashboard", lang)],
         ],
         placeholder=tr(lang, "Choose an admin action...", "اختر إجراء للأدمن..."),
@@ -775,11 +789,17 @@ def dashboard_text(
             account_id = str(account.get("account_id") or "")
             icon = _account_health_icon(account, active_account)
             pages = int(page_counts.get(account_id, 0))
+            display = account_display_name(account)
+            cookie_status = _account_cookie_status_label(account, lang)
             lines.append(
-                tr(
-                    lang,
-                    f"{icon} {account_display_name(account)} | pages: {pages} | cookies: {_account_cookie_status_label(account, lang)}",
-                    f"{icon} {account_display_name(account)} | صفحات: {pages} | الكوكيز: {_account_cookie_status_label(account, lang)}",
+                (
+                    f"{icon} {display} | pages: {pages} | cookies: {cookie_status}"
+                    if normalize_lang(lang) == "en"
+                    else status_detail_line(
+                        icon,
+                        display,
+                        f"صفحات: {pages} | الكوكيز: {cookie_status}",
+                    )
                 )
             )
         if len(accounts) > 6:
