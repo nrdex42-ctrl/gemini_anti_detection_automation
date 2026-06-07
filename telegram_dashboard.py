@@ -298,8 +298,7 @@ def dashboard_markup(
 ) -> Dict[str, Any]:
     rows: List[List[str]] = []
 
-    if active_jobs:
-        rows.append([tr(lang, "⏳ Posting in progress...", "⏳ النشر قيد التنفيذ...")])
+
 
     if posting_blocked and has_accounts and active_account:
         rows.append([tr(lang, "⏳ Posting cooldown active", "⏳ مهلة النشر مفعلة")])
