@@ -127,9 +127,22 @@ POST_COMPOSER_ENTRY_MODE = os.getenv('POST_COMPOSER_ENTRY_MODE', 'target').strip
 POST_COMPOSER_BUTTON_TIMEOUT_MS = _env_int('POST_COMPOSER_BUTTON_TIMEOUT_MS', 3500, minimum=800)
 POST_COMPOSER_DIALOG_TIMEOUT_MS = _env_int('POST_COMPOSER_DIALOG_TIMEOUT_MS', 4000, minimum=1000)
 POST_NAVIGATION_FATAL_CHECK_TIMEOUT_MS = _env_int('POST_NAVIGATION_FATAL_CHECK_TIMEOUT_MS', 2000, minimum=500)
+POST_BATCH_HOME_WAIT_UNTIL = os.getenv('POST_BATCH_HOME_WAIT_UNTIL', 'commit').strip() or 'commit'
+POST_BATCH_HOME_READY_TIMEOUT_MS = _env_int('POST_BATCH_HOME_READY_TIMEOUT_MS', 2000, minimum=250)
+POST_BATCH_HOME_NETWORK_IDLE_TIMEOUT_MS = _env_int('POST_BATCH_HOME_NETWORK_IDLE_TIMEOUT_MS', 0, minimum=0)
 POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS = _env_float(
     'POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS',
     2.0,
+    minimum=0.0,
+)
+POST_PROFILE_SWITCH_FAST_SETTLE_TIMEOUT_MS = _env_int(
+    'POST_PROFILE_SWITCH_FAST_SETTLE_TIMEOUT_MS',
+    2500,
+    minimum=500,
+)
+POST_PROFILE_SWITCH_FAST_SETTLE_GRACE_SECONDS = _env_float(
+    'POST_PROFILE_SWITCH_FAST_SETTLE_GRACE_SECONDS',
+    1.0,
     minimum=0.0,
 )
 REDIS_URL = os.getenv('REDIS_URL', '').strip()
@@ -1968,7 +1981,7 @@ async def _await_initial_publish_confirmation(
             caption=caption,
             post_type=post_type,
             timeout_ms=POST_INITIAL_UI_CONFIRMATION_TIMEOUT_MS,
-            accept_publish_click=False,
+            accept_publish_click=post_type == 'video' and POST_ACCEPT_VIDEO_PUBLISH_CLICK_AS_SUCCESS,
         )
     )
 
@@ -7004,10 +7017,10 @@ async def _switch_to_page_profile(page: Page, page_name: str = '') -> bool:
             timeout_ms=1000,
             check_interval_ms=150,
         )
-    settled = await _wait_for_switch_to_settle(
+    settled = await _wait_for_profile_switch_to_settle(
         page,
-        timeout_seconds=10,
-        initial_grace_seconds=POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS,
+        timeout_ms=POST_PROFILE_SWITCH_FAST_SETTLE_TIMEOUT_MS,
+        initial_grace_seconds=POST_PROFILE_SWITCH_FAST_SETTLE_GRACE_SECONDS,
     )
     if not settled:
         settled = await _click_onscreen_switch_button(page, page_name)
@@ -9516,12 +9529,23 @@ async def _create_facebook_posts_unstaged(
     try:
         logger.info(f'BATCH_STEP stage="started" total_pages={len(posts)}')
         await _enable_fast_posting_mode(context, page)
-        await page.goto("https://www.facebook.com/", wait_until='domcontentloaded', timeout=45000)
+        home_started_at = time.time()
+        await page.goto("https://www.facebook.com/", wait_until=POST_BATCH_HOME_WAIT_UNTIL, timeout=45000)
         await _resume_facebook_cookie_session(page)
-        try:
-            await page.wait_for_load_state("networkidle", timeout=8000)
-        except Exception:
-            logger.debug('Facebook home did not reach networkidle; continuing after domcontentloaded.')
+        await _smart_wait(
+            lambda: page.locator('body, div[role="main"], h1').count(),
+            timeout_ms=POST_BATCH_HOME_READY_TIMEOUT_MS,
+            check_interval_ms=150,
+        )
+        if POST_BATCH_HOME_NETWORK_IDLE_TIMEOUT_MS > 0:
+            try:
+                await page.wait_for_load_state("networkidle", timeout=POST_BATCH_HOME_NETWORK_IDLE_TIMEOUT_MS)
+            except Exception:
+                logger.debug('Facebook home did not reach networkidle; continuing after fast readiness check.')
+        logger.info(
+            f'BATCH_STEP stage="home_ready" elapsed={time.time() - home_started_at:.1f}s '
+            f'wait_until={POST_BATCH_HOME_WAIT_UNTIL} networkidle_ms={POST_BATCH_HOME_NETWORK_IDLE_TIMEOUT_MS}'
+        )
 
         security_detail = await _facebook_security_block_detail(page)
         if security_detail:
@@ -9890,12 +9914,23 @@ async def _create_facebook_posts_parallel_unstaged(
     try:
         # Validate login once (avoid N login checks)
         await _enable_fast_posting_mode(check_context, check_page)
-        await check_page.goto("https://www.facebook.com/", wait_until='domcontentloaded', timeout=45000)
+        home_started_at = time.time()
+        await check_page.goto("https://www.facebook.com/", wait_until=POST_BATCH_HOME_WAIT_UNTIL, timeout=45000)
         await _resume_facebook_cookie_session(check_page)
-        try:
-            await check_page.wait_for_load_state("networkidle", timeout=8000)
-        except Exception:
-            pass
+        await _smart_wait(
+            lambda: check_page.locator('body, div[role="main"], h1').count(),
+            timeout_ms=POST_BATCH_HOME_READY_TIMEOUT_MS,
+            check_interval_ms=150,
+        )
+        if POST_BATCH_HOME_NETWORK_IDLE_TIMEOUT_MS > 0:
+            try:
+                await check_page.wait_for_load_state("networkidle", timeout=POST_BATCH_HOME_NETWORK_IDLE_TIMEOUT_MS)
+            except Exception:
+                logger.debug('Parallel login check did not reach networkidle; continuing after fast readiness check.')
+        logger.info(
+            f'PARALLEL_BATCH stage="home_ready" elapsed={time.time() - home_started_at:.1f}s '
+            f'wait_until={POST_BATCH_HOME_WAIT_UNTIL} networkidle_ms={POST_BATCH_HOME_NETWORK_IDLE_TIMEOUT_MS}'
+        )
 
         security_detail = await _facebook_security_block_detail(check_page)
         if security_detail:

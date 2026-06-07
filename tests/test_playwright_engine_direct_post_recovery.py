@@ -61,3 +61,46 @@ def test_switch_dialog_selection_is_confirmed_before_waiting(monkeypatch):
         ]
 
     asyncio.run(run())
+
+
+def test_initial_video_confirmation_uses_fast_publish_click_acceptance(monkeypatch):
+    async def run():
+        calls = []
+
+        async def slow_network_confirmation(network_monitor):
+            calls.append(("network", network_monitor))
+            await asyncio.sleep(30)
+            return None, "late network confirmation"
+
+        async def verify_publish(
+            page,
+            *,
+            caption="",
+            post_type="post",
+            timeout_ms=0,
+            accept_publish_click=False,
+        ):
+            calls.append(("verify", page, post_type, timeout_ms, accept_publish_click))
+            return True, "video publish accepted after final publish click"
+
+        monkeypatch.setattr(engine, "_await_post_network_confirmation", slow_network_confirmation)
+        monkeypatch.setattr(engine, "_verify_post_published", verify_publish)
+        monkeypatch.setattr(engine, "POST_ACCEPT_VIDEO_PUBLISH_CLICK_AS_SUCCESS", True)
+
+        fake_page = object()
+        fake_monitor = object()
+        result = await engine._await_initial_publish_confirmation(
+            fake_page,
+            fake_monitor,
+            caption="caption",
+            post_type="video",
+        )
+
+        assert result == (
+            True,
+            "quick UI publish confirmation: video publish accepted after final publish click",
+        )
+        assert ("network", fake_monitor) in calls
+        assert ("verify", fake_page, "video", engine.POST_INITIAL_UI_CONFIRMATION_TIMEOUT_MS, True) in calls
+
+    asyncio.run(run())

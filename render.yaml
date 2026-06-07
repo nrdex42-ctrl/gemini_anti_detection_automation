@@ -75,6 +75,12 @@ services:
         value: "300"
       - key: POST_DIRECT_COMPOSER_TIMEOUT_SECONDS
         value: "45"
+      - key: POST_BATCH_HOME_WAIT_UNTIL
+        value: "commit"
+      - key: POST_BATCH_HOME_READY_TIMEOUT_MS
+        value: "2000"
+      - key: POST_BATCH_HOME_NETWORK_IDLE_TIMEOUT_MS
+        value: "0"
       - key: POST_PAGES_PORTAL_TEXT_TIMEOUT_SECONDS
         value: "120"
       - key: POST_PAGES_PORTAL_IMAGE_TIMEOUT_SECONDS
@@ -85,6 +91,12 @@ services:
         value: "45000"
       - key: POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS
         value: "3"
+      - key: POST_PROFILE_SWITCH_FAST_SETTLE_TIMEOUT_MS
+        value: "2500"
+      - key: POST_PROFILE_SWITCH_FAST_SETTLE_GRACE_SECONDS
+        value: "1"
+      - key: POST_INITIAL_UI_CONFIRMATION_TIMEOUT_MS
+        value: "3500"
       - key: POST_COMPOSER_BUTTON_TIMEOUT_MS
         value: "5000"
       - key: POST_COMPOSER_DIALOG_TIMEOUT_MS
