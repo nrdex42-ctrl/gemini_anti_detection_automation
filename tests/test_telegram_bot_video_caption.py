@@ -362,6 +362,80 @@ def test_video_mode_reply_keyboard_button_moves_to_matching_upload_stage():
     asyncio.run(run())
 
 
+def test_image_mode_reply_keyboard_button_moves_to_matching_upload_stage():
+    async def run():
+        app, sent = build_session_app(
+            {
+                "action": "post",
+                "step": "image_mode",
+                "lang": "en",
+                "account_id": "acct_1",
+                "pages": [{"page_name": "Huawei"}, {"page_name": "Oppo"}],
+                "selected_pages": [0, 1],
+                "post_type": "image",
+            }
+        )
+
+        handled = await app.handle_dashboard_session(
+            123,
+            99,
+            456,
+            "📚 Multi Image Upload",
+            {"text": "📚 Multi Image Upload"},
+        )
+
+        assert handled is True
+        assert len(sent) == 1
+        assert "Multi Image Upload" in sent[0]["text"]
+        assert sent[0]["reply_markup"]["keyboard"][0] == ["⬅️ Back to Dashboard", "❌ Cancel"]
+        session = app.get_dashboard_session(123, 99)
+        assert session["step"] == "multi_image_upload"
+        assert session["image_mode"] == "multi_upload"
+
+    asyncio.run(run())
+
+
+def test_final_multi_image_upload_sends_image_caption_cards():
+    async def run():
+        app, sent = build_session_app(
+            {
+                "action": "post",
+                "step": "multi_image_upload",
+                "lang": "en",
+                "account_id": "acct_1",
+                "pages": [{"page_name": "Huawei"}, {"page_name": "Oppo"}],
+                "selected_pages": [0, 1],
+                "post_type": "image",
+                "multi_media_paths": ["/tmp/one.jpg"],
+            }
+        )
+
+        async def download_file(file_id, account_id):
+            return "/tmp/two.jpg"
+
+        app.download_file = download_file
+
+        handled = await app.handle_dashboard_session(
+            123,
+            99,
+            456,
+            "",
+            {"photo": [{"file_id": "image_small"}, {"file_id": "image_2"}]},
+        )
+
+        assert handled is True
+        assert len(sent) == 2
+        assert "✅ All 2 images received." in sent[0]["text"]
+        assert "Images received: 2/2" in sent[0]["text"]
+        assert "Send one shared caption for all images." in sent[1]["text"]
+        session = app.get_dashboard_session(123, 99)
+        assert session["step"] == "multi_caption"
+        assert session["post_type"] == "image"
+        assert session["multi_media_paths"] == ["/tmp/one.jpg", "/tmp/two.jpg"]
+
+    asyncio.run(run())
+
+
 def test_free_text_without_active_session_does_not_send_dashboard_card():
     async def run():
         app, sent = build_session_app({})
@@ -488,14 +562,12 @@ def test_done_button_review_card_sends_new_message_instead_of_editing_user_messa
 
         await app.show_post_review(123, 456, 99, app.get_dashboard_session(123, 99))
 
-        assert len(sent) == 2
+        assert len(sent) == 1
         assert sent[0]["reply_to_message_id"] == 456
         assert "Review Post" in sent[0]["text"]
         keyboard = sent[0]["reply_markup"]["inline_keyboard"]
         callback_data = [button["callback_data"] for row in keyboard for button in row]
         assert "post:confirm" in callback_data
-        assert "Review Controls" in sent[1]["text"]
-        assert sent[1]["reply_markup"]["keyboard"][0] == ["⬅️ Back to Dashboard", "❌ Cancel"]
         assert app.get_dashboard_session(123, 99)["step"] == "review"
 
     asyncio.run(run())

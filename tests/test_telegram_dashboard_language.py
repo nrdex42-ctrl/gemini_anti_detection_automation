@@ -5,9 +5,9 @@ from telegram_dashboard import (
     dashboard_markup,
     dashboard_text,
     language_selection_markup,
+    parse_image_mode_choice,
     parse_post_type_choice,
     parse_video_mode_choice,
-    post_stage_control_card,
     post_stage_reply_markup,
     post_type_choices,
     prompt_text,
@@ -148,8 +148,18 @@ def test_post_stage_keyboards_match_current_card_stage():
     assert "🔗 رابط ريلز واحد" in video_labels
     assert "🔗 روابط ريلز متعددة" in video_labels
 
+    image_markup = post_stage_reply_markup("image_mode", "ar")
+    image_labels = _reply_labels(image_markup)
+    assert "📄 رفع صورة واحدة" in image_labels
+    assert "📚 رفع صور متعددة" in image_labels
+    assert "🔗 رابط صورة واحد" in image_labels
+    assert "🔗 روابط صور متعددة" in image_labels
+
     assert parse_video_mode_choice("📄 Single Video Upload") == "single_upload"
     assert parse_video_mode_choice("📚 رفع ريلز متعددة") == "multi_upload"
     assert parse_video_mode_choice("🔗 رابط ريلز واحد") == "single_url"
     assert parse_video_mode_choice("🔗 روابط ريلز متعددة") == "multi_url"
-    assert "أزرار الريلز" in post_stage_control_card("video_mode", "ar")
+    assert parse_image_mode_choice("📄 Single Image Upload") == "single_upload"
+    assert parse_image_mode_choice("📚 رفع صور متعددة") == "multi_upload"
+    assert parse_image_mode_choice("🔗 رابط صورة واحد") == "single_url"
+    assert parse_image_mode_choice("🔗 روابط صور متعددة") == "multi_url"

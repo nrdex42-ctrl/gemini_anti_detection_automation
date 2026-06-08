@@ -17,8 +17,11 @@ from telegram_bot import (
     POSTING_STATUS_SYNC_TEXT,
     TelegramBotApp,
     format_elapsed_seconds,
+    page_status_bar,
     posting_live_status_card,
+    posting_result_bar,
     posting_result_card,
+    progress_bar,
     status_detail_line,
 )
 
@@ -28,6 +31,16 @@ def test_format_elapsed_seconds_is_compact():
     assert format_elapsed_seconds(192.4) == "3m 12s"
     assert format_elapsed_seconds(336) == "5m 36s"
     assert format_elapsed_seconds(3900) == "1h 05m"
+
+
+def test_progress_bars_use_colored_status_blocks():
+    assert progress_bar(5, 10) == "🟩🟩🟩🟩🟩⬜⬜⬜⬜⬜"
+    assert posting_result_bar(10, 0, 10) == "🟩" * 10
+    assert posting_result_bar(0, 10, 10) == "🟥" * 10
+    assert posting_result_bar(5, 5, 10) == ("🟩" * 5) + ("🟥" * 5)
+    assert page_status_bar("running") == "🟩🟩⬜⬜⬜"
+    assert page_status_bar("success") == "🟩" * 5
+    assert page_status_bar("failed") == "🟥" * 5
 
 
 def test_posting_result_card_includes_overall_elapsed_time():
@@ -43,6 +56,9 @@ def test_posting_result_card_includes_overall_elapsed_time():
     )
 
     assert "Posting complete: 2/3 succeeded" in card
+    assert "🟩" in card
+    assert "🟥" in card
+    assert "████" not in card
     assert "Completed: 2026-06-07 08:54 PM" in card
     assert "Total time: 2m 05s" in card
     assert POSTING_STATUS_SYNC_TEXT in card
