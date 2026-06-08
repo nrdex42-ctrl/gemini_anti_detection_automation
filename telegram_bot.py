@@ -547,6 +547,7 @@ class TelegramBotApp:
         self.session: Optional[ClientSession] = None
         self.api_base = f"https://api.telegram.org/bot{self.token}"
         self.dashboard_sessions: Dict[str, Dict[str, Any]] = {}
+        self.dashboard_collapsed_by_user: Dict[int, bool] = {}
         self.update_locks: Dict[str, asyncio.Lock] = {}
         self.account_name_lookup_tasks: set[str] = set()
         self.background_tasks: set[asyncio.Task[Any]] = set()
@@ -734,6 +735,7 @@ class TelegramBotApp:
                         active_account=active_account,
                         active_jobs=active_jobs,
                         is_admin=self.is_admin_user(user_id),
+                        collapsed=self.dashboard_is_collapsed(user_id),
                         lang=lang,
                     ),
                 )
@@ -1405,8 +1407,23 @@ class TelegramBotApp:
             active_account=active_account,
             active_jobs=active_jobs,
             is_admin=self.is_admin_user(user_id),
+            collapsed=self.dashboard_is_collapsed(user_id),
             lang=lang,
         )
+
+    def dashboard_is_collapsed(self, user_id: int = 0) -> bool:
+        view_state = getattr(self, "dashboard_collapsed_by_user", None)
+        if view_state is None:
+            self.dashboard_collapsed_by_user = {}
+            view_state = self.dashboard_collapsed_by_user
+        return bool(view_state.get(int(user_id or 0), False))
+
+    def set_dashboard_collapsed(self, user_id: int, collapsed: bool) -> None:
+        view_state = getattr(self, "dashboard_collapsed_by_user", None)
+        if view_state is None:
+            self.dashboard_collapsed_by_user = {}
+            view_state = self.dashboard_collapsed_by_user
+        view_state[int(user_id or 0)] = bool(collapsed)
 
     async def show_dashboard(
         self,
@@ -1421,7 +1438,8 @@ class TelegramBotApp:
             lang = await self.user_language(user_id)
             if user_id:
                 self.schedule_account_name_refresh(user_id, accounts, chat_id, edit_message_id=edit_message_id or message_id)
-            text = dashboard_text(accounts=accounts, summary=summary, active_account=active_account, prefix=prefix, lang=lang)
+            collapsed = self.dashboard_is_collapsed(user_id)
+            text = dashboard_text(accounts=accounts, summary=summary, active_account=active_account, prefix=prefix, collapsed=collapsed, lang=lang)
             status_counts = summary.get("job_status_counts") or {}
             active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
             reply_markup = dashboard_markup(
@@ -1429,6 +1447,7 @@ class TelegramBotApp:
                 active_account=active_account,
                 active_jobs=active_jobs,
                 is_admin=self.is_admin_user(user_id),
+                collapsed=collapsed,
                 lang=lang,
             )
         except Exception as exc:
@@ -2759,6 +2778,17 @@ class TelegramBotApp:
         if action == "user_dashboard":
             self.clear_dashboard_session(chat_id, user_id)
             await self.show_dashboard(chat_id, 0, user_id=user_id)
+            return
+        if action in {"collapse_dashboard", "expand_dashboard"}:
+            self.clear_dashboard_session(chat_id, user_id)
+            collapsed = action == "collapse_dashboard"
+            self.set_dashboard_collapsed(user_id, collapsed)
+            prefix = (
+                ("تم اختصار لوحة التحكم." if collapsed else "تم عرض تفاصيل لوحة التحكم.")
+                if lang == "ar"
+                else ("Dashboard collapsed." if collapsed else "Dashboard expanded.")
+            )
+            await self.show_dashboard(chat_id, 0, prefix=prefix, user_id=user_id)
             return
         if action in {
             "admin_dashboard",
@@ -4678,6 +4708,8 @@ class TelegramBotApp:
         explicit_escape_actions = {
             "dashboard",
             "cancel",
+            "collapse_dashboard",
+            "expand_dashboard",
             "language",
             "user_dashboard",
             "add_account",
