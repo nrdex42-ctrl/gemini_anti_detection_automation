@@ -30,8 +30,6 @@ BUTTON_CHECK_THIS_ACCOUNT = "🧪 Check Account"
 BUTTON_CONTINUE_TO_PAGES = "➡️ Continue to pages"
 BUTTON_DONE = "✅ Done"
 BUTTON_CANCEL = "❌ Cancel"
-BUTTON_COLLAPSE_DASHBOARD = "🔼 Collapse Dashboard"
-BUTTON_EXPAND_DASHBOARD = "🔽 Expand Dashboard"
 BUTTON_ADMIN = "🔒 Admin Dashboard"
 BUTTON_USER_DASHBOARD = "🔁 User Dashboard"
 BUTTON_SYSTEM_STATS = "📊 System Stats"
@@ -66,8 +64,6 @@ AR_BUTTON_CHECK_THIS_ACCOUNT = "🧪 فحص الحساب ده"
 AR_BUTTON_CONTINUE_TO_PAGES = "➡️ كمل للصفحات"
 AR_BUTTON_DONE = "✅ تم"
 AR_BUTTON_CANCEL = "❌ إلغاء"
-AR_BUTTON_COLLAPSE_DASHBOARD = "🔼 إخفاء التفاصيل"
-AR_BUTTON_EXPAND_DASHBOARD = "🔽 عرض التفاصيل"
 AR_BUTTON_ADMIN = "🔒 لوحة الأدمن"
 AR_BUTTON_USER_DASHBOARD = "🔁 لوحة المستخدم"
 AR_BUTTON_SYSTEM_STATS = "📊 إحصائيات النظام"
@@ -103,8 +99,6 @@ _BUTTONS_EN = {
     "continue_to_pages": BUTTON_CONTINUE_TO_PAGES,
     "done": BUTTON_DONE,
     "cancel": BUTTON_CANCEL,
-    "collapse_dashboard": BUTTON_COLLAPSE_DASHBOARD,
-    "expand_dashboard": BUTTON_EXPAND_DASHBOARD,
     "admin": BUTTON_ADMIN,
     "user_dashboard": BUTTON_USER_DASHBOARD,
     "system_stats": BUTTON_SYSTEM_STATS,
@@ -141,8 +135,6 @@ _BUTTONS_AR = {
     "continue_to_pages": AR_BUTTON_CONTINUE_TO_PAGES,
     "done": AR_BUTTON_DONE,
     "cancel": AR_BUTTON_CANCEL,
-    "collapse_dashboard": AR_BUTTON_COLLAPSE_DASHBOARD,
-    "expand_dashboard": AR_BUTTON_EXPAND_DASHBOARD,
     "admin": AR_BUTTON_ADMIN,
     "user_dashboard": AR_BUTTON_USER_DASHBOARD,
     "system_stats": AR_BUTTON_SYSTEM_STATS,
@@ -210,8 +202,6 @@ DASHBOARD_ACTIONS = {
     BUTTON_CHECK_THIS_ACCOUNT: "check_active_account",
     BUTTON_CONTINUE_TO_PAGES: "continue_active_account",
     BUTTON_CANCEL: "cancel",
-    BUTTON_COLLAPSE_DASHBOARD: "collapse_dashboard",
-    BUTTON_EXPAND_DASHBOARD: "expand_dashboard",
     BUTTON_ADMIN: "admin_dashboard",
     BUTTON_USER_DASHBOARD: "user_dashboard",
     BUTTON_SYSTEM_STATS: "admin_system_stats",
@@ -247,10 +237,6 @@ DASHBOARD_ACTIONS = {
     "🔁 غيّر الحساب النشط": "switch_account",
     "🧪 افحص كل الكوكيز": "check_cookies",
     "📊 حالة البوت": "status",
-    "Collapse Dashboard": "collapse_dashboard",
-    "Expand Dashboard": "expand_dashboard",
-    "إخفاء التفاصيل": "collapse_dashboard",
-    "عرض التفاصيل": "expand_dashboard",
 }
 
 DASHBOARD_ACTIONS.update(
@@ -276,8 +262,6 @@ DASHBOARD_ACTIONS.update(
         AR_BUTTON_CHECK_THIS_ACCOUNT: "check_active_account",
         AR_BUTTON_CONTINUE_TO_PAGES: "continue_active_account",
         AR_BUTTON_CANCEL: "cancel",
-        AR_BUTTON_COLLAPSE_DASHBOARD: "collapse_dashboard",
-        AR_BUTTON_EXPAND_DASHBOARD: "expand_dashboard",
         AR_BUTTON_ADMIN: "admin_dashboard",
         AR_BUTTON_USER_DASHBOARD: "user_dashboard",
         AR_BUTTON_SYSTEM_STATS: "admin_system_stats",
@@ -399,7 +383,6 @@ def dashboard_markup(
     active_jobs: int = 0,
     posting_blocked: bool = False,
     is_admin: bool = False,
-    collapsed: bool = False,
     lang: str = "en",
 ) -> Dict[str, Any]:
     rows: List[List[str]] = []
@@ -412,7 +395,6 @@ def dashboard_markup(
         rows.append([button_text("language", lang), button_text("admin", lang)])
     else:
         rows.append([button_text("language", lang)])
-    rows.append([button_text("expand_dashboard" if collapsed else "collapse_dashboard", lang)])
     return reply_keyboard(rows, placeholder=tr(lang, "Choose a dashboard action...", "اختر إجراء لوحة التحكم..."))
 
 
@@ -859,7 +841,6 @@ def dashboard_text(
     summary: Optional[Dict[str, Any]] = None,
     active_account: str = "",
     prefix: str = "",
-    collapsed: bool = False,
     lang: str = "en",
 ) -> str:
     summary = summary or {}
@@ -893,47 +874,6 @@ def dashboard_text(
             ),
         ]
     )
-
-    if collapsed:
-        if not accounts:
-            lines.extend(
-                [
-                    "",
-                    tr(
-                        lang,
-                        "No accounts yet. Tap Add Account to connect Facebook cookies.",
-                        "لا توجد حسابات بعد. اضغط إضافة حساب لتوصيل كوكيز فيسبوك.",
-                    ),
-                ]
-            )
-        elif not active_account:
-            lines.extend(
-                [
-                    "",
-                    tr(
-                        lang,
-                        "No active account selected. Tap Switch Account.",
-                        "لا يوجد حساب نشط. اضغط تغيير الحساب.",
-                    ),
-                ]
-            )
-        lines.extend(
-            [
-                "",
-                tr(
-                    lang,
-                    "Dashboard is collapsed. Tap Expand Dashboard to show accounts and recent posts.",
-                    "لوحة التحكم مختصرة. اضغط عرض التفاصيل لعرض الحسابات وآخر المنشورات.",
-                ),
-                "",
-                tr(
-                    lang,
-                    "Use the keyboard buttons below. /start refreshes this dashboard.",
-                    "استخدم أزرار لوحة الكتابة بالأسفل. /start يحدّث لوحة التحكم.",
-                ),
-            ]
-        )
-        return "\n".join(lines)
 
     if not accounts:
         lines.extend(

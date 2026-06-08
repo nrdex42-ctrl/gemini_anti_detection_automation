@@ -29,7 +29,6 @@ def test_arabic_dashboard_keyboard_actions_and_prompts():
     assert markup["keyboard"][0] == ["➕ إضافة حساب", "🔁 تغيير الحساب", "👤 حساباتي"]
     assert markup["keyboard"][1] == ["⚡ الصفحات", "🧪 فحص الكوكيز", "📊 سجل المنشورات"]
     assert markup["keyboard"][2] == ["🌐 اللغة"]
-    assert markup["keyboard"][3] == ["🔼 إخفاء التفاصيل"]
     assert "⚡ الصفحات" in labels
     assert "🌐 اللغة" in labels
     assert "📝 منشور نصي" not in labels
@@ -40,8 +39,6 @@ def test_arabic_dashboard_keyboard_actions_and_prompts():
     assert "🔄 تحديث الصفحات" not in labels
     assert "⚡ حالة البوت" not in labels
     assert dashboard_action("🌐 اللغة") == "language"
-    assert dashboard_action("🔼 إخفاء التفاصيل") == "collapse_dashboard"
-    assert dashboard_action("🔽 عرض التفاصيل") == "expand_dashboard"
     assert dashboard_action("📝 منشور نصي") == "quick_text"
     assert dashboard_action("📄 الصفحات المحفوظة") == "list_pages"
 
@@ -81,31 +78,6 @@ def test_user_dashboard_admin_row_includes_language_and_admin_dashboard():
     assert markup["keyboard"][0] == ["➕ Add Account", "🔁 Switch Account", "👤 My Accounts"]
     assert markup["keyboard"][1] == ["⚡ Post to Pages", "🧪 Check Cookies", "📊 Post History"]
     assert markup["keyboard"][2] == ["🌐 Language", "🔒 Admin Dashboard"]
-    assert markup["keyboard"][3] == ["🔼 Collapse Dashboard"]
-
-
-def test_collapsed_dashboard_hides_detail_sections_and_shows_expand_button():
-    markup = dashboard_markup(has_accounts=True, active_account="acct_1", collapsed=True, lang="en")
-    assert markup["keyboard"][3] == ["🔽 Expand Dashboard"]
-    assert dashboard_action("🔽 Expand Dashboard") == "expand_dashboard"
-
-    text = dashboard_text(
-        accounts=[{"account_id": "acct_1", "label": "Omar Mohamed", "active": True, "cookie_status": "valid"}],
-        summary={
-            "page_count": 2,
-            "page_counts_by_account": {"acct_1": 2},
-            "job_status_counts": {"queued": 1, "success": 3, "failed": 1},
-            "recent_jobs": [{"status": "success", "post_type": "video", "page_name": "Insan"}],
-        },
-        active_account="acct_1",
-        collapsed=True,
-        lang="en",
-    )
-
-    assert "Accounts: 1 total" in text
-    assert "Dashboard is collapsed" in text
-    assert "Available accounts:" not in text
-    assert "Recent posts:" not in text
 
 
 def test_arabic_admin_dashboard_keyboard_is_translated():
