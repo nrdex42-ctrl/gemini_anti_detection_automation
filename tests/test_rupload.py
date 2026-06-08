@@ -88,6 +88,32 @@ def test_rupload_json_loader_handles_facebook_prefix():
     assert HardenedRupload._loads_json('for(;;);{"upload_session_id":"1"}')['upload_session_id'] == '1'
 
 
+def test_rupload_mutates_grayscale_image(tmp_path: Path):
+    image_path = tmp_path / 'gray.png'
+    image_module = Image  # type: Any
+    image_module.new('L', (180, 180), 128).save(image_path)
+    redis = FakeRedis()
+    identity = IdentityContext(account_id='acct-1', proxy_url='http://proxy-1')
+    uploader = HardenedRupload(
+        TokenVault(redis),
+        identity,
+        redis,
+        ProxyManager([], redis),
+        AppConfig(enable_private_facebook_http=False),
+    )
+
+    mutated_path, image_bytes = uploader._mutate_and_encode(str(image_path))
+    try:
+        assert mutated_path != str(image_path)
+        assert image_bytes.startswith(b'\xff\xd8')
+        assert len(image_bytes) > 0
+        with image_module.open(mutated_path) as mutated:
+            assert mutated.mode == 'RGB'
+            assert mutated.format == 'JPEG'
+    finally:
+        Path(mutated_path).unlink(missing_ok=True)
+
+
 def test_rupload_mocked_success_uploads_mutated_image(tmp_path: Path):
     async def run():
         image_path = tmp_path / 'image.jpg'

@@ -11,11 +11,12 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
 import os
 import random
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, cast
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -27,6 +28,9 @@ from .header_forge import AdvancedHeaderForge
 from .timing import StochasticTimer
 from .tokens import TokenVault
 from .utils import classify_error, generate_client_id
+
+
+logger = logging.getLogger(__name__)
 
 
 class PrivateEndpointDisabled(RuntimeError):
@@ -140,7 +144,8 @@ class HardenedRupload:
             raise RuntimeError(f'Pillow is required for image mutation: {exc}') from exc
 
         with Image.open(path) as original:
-            image = ImageOps.exif_transpose(original)
+            transposed = ImageOps.exif_transpose(original)
+            image = cast(Any, transposed if transposed is not None else original).copy()
             if image.mode in {'RGBA', 'LA'} or (image.mode == 'P' and 'transparency' in image.info):
                 rgba = image.convert('RGBA')
                 flattened = Image.new('RGB', rgba.size, (255, 255, 255))
@@ -158,10 +163,17 @@ class HardenedRupload:
         if (new_width, new_height) != image.size:
             image = image.resize((new_width, new_height), resampling)
 
-        pixels = image.load()
+        pixels = cast(Any, image.load())
+        if pixels is None:
+            raise RuntimeError('Mutated JPEG pixel access is unavailable.')
         x = random.randint(0, max(0, image.width - 1))
         y = random.randint(0, max(0, image.height - 1))
-        red, green, blue = pixels[x, y]
+        pixel = pixels[x, y]
+        if isinstance(pixel, tuple):
+            channels = list(pixel) + [0, 0, 0]
+            red, green, blue = int(channels[0]), int(channels[1]), int(channels[2])
+        else:
+            red = green = blue = int(pixel)
         pixels[x, y] = (
             max(0, min(255, red + random.randint(-2, 2))),
             max(0, min(255, green + random.randint(-2, 2))),
@@ -351,8 +363,11 @@ class HardenedRupload:
                 def _do_post() -> Tuple[int, str]:
                     post_data = data
                     req_headers = {str(k): str(v) for k, v in headers.items()}
-                    response = session.post(url, data=post_data, headers=req_headers, timeout=timeout_seconds)
-                    return int(response.status_code), response.text
+                    response = cast(
+                        Any,
+                        session.post(url, data=post_data, headers=req_headers, timeout=timeout_seconds),
+                    )
+                    return int(response.status_code), str(response.text)
 
                 loop = asyncio.get_running_loop()
                 return await loop.run_in_executor(None, _do_post)

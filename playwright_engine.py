@@ -2792,10 +2792,11 @@ async def _ensure_cookie_session_can_run(
 ) -> None:
     if not POST_COOKIE_SESSION_TRACKING_ENABLED:
         return
+    min_interval_seconds = POST_COOKIE_MIN_INTERVAL_SECONDS if enforce_min_interval else 0
     can_use, reason = await asyncio.to_thread(
         session_manager.can_use_session,
         cookies_json,
-        min_interval_seconds=0,
+        min_interval_seconds=min_interval_seconds,
         security_cooldown_seconds=POST_COOKIE_SECURITY_COOLDOWN_SECONDS,
     )
     if can_use:
