@@ -49,6 +49,9 @@ from telegram_dashboard import (
     page_selection_markup,
     parse_choice_id,
     parse_post_type_choice,
+    parse_video_mode_choice,
+    post_stage_control_card,
+    post_stage_reply_markup,
     post_type_choices,
     post_confirm_inline_markup,
     post_input_card,
@@ -922,6 +925,41 @@ class TelegramBotApp:
             reply_markup=await self.dashboard_reply_markup(user_id),
         )
         return int((sent.get("result") or {}).get("message_id") or 0)
+
+    async def send_post_stage_controls(
+        self,
+        chat_id: int,
+        user_id: int,
+        reply_to_message_id: int,
+        session: Dict[str, Any],
+        stage: str,
+    ) -> None:
+        if not chat_id or not _env_bool("BOT_POST_STAGE_CONTROL_CARDS", True):
+            return
+        active_session = self.get_dashboard_session(chat_id, user_id) or session
+        if not active_session:
+            return
+        lang = str(active_session.get("lang") or await self.user_language(user_id))
+        control_key = f"{stage}:{lang}"
+        existing_key = str(active_session.get("post_stage_controls_key") or "")
+        existing_message_id = int(active_session.get("post_stage_controls_message_id") or 0)
+        if existing_key == control_key and existing_message_id:
+            return
+        if existing_message_id:
+            with suppress(Exception):
+                await self.delete_message(chat_id, existing_message_id)
+        sent = await self.send_message(
+            chat_id,
+            post_stage_control_card(stage, lang=lang),
+            reply_to_message_id,
+            reply_markup=post_stage_reply_markup(stage, lang=lang),
+        )
+        new_message_id = int((sent.get("result") or {}).get("message_id") or 0)
+        if new_message_id:
+            active_session["post_stage_controls_message_id"] = new_message_id
+            active_session["post_stage_controls_key"] = control_key
+            active_session["lang"] = lang
+            self.set_dashboard_session(chat_id, user_id, active_session)
 
     def refresh_pages_inline_markup(self, lang: str = "en") -> Dict[str, Any]:
         dashboard_label = "🏠 لوحة التحكم" if lang == "ar" else "🏠 Dashboard"
@@ -2146,6 +2184,7 @@ class TelegramBotApp:
                 if session:
                     session["page_selection_message_id"] = selection_message_id
                     self.set_dashboard_session(chat_id, user_id, session)
+                    await self.send_post_stage_controls(chat_id, user_id, message_id, session, "page_select")
             return
         card = page_selection_card(
             account_name=account_name,
@@ -2165,6 +2204,7 @@ class TelegramBotApp:
             if session:
                 session["page_selection_message_id"] = selection_message_id
                 self.set_dashboard_session(chat_id, user_id, session)
+                await self.send_post_stage_controls(chat_id, user_id, message_id, session, "page_select")
 
     def selected_pages_from_session(self, session: Dict[str, Any]) -> List[Dict[str, Any]]:
         pages = session.get("pages") if isinstance(session.get("pages"), list) else []
@@ -2282,14 +2322,14 @@ class TelegramBotApp:
     async def validate_video_url_or_reply(self, chat_id: int, message_id: int, text: str, lang: str = "en") -> str:
         ok, value = parse_video_media_url(text)
         if not ok:
-            await self.send_message(chat_id, value, message_id, reply_markup=cancel_markup(lang=lang))
+            await self.send_message(chat_id, value, message_id, reply_markup=post_stage_reply_markup("media_video_url", lang=lang))
             return ""
         title = "فحص رابط الريلز..." if lang == "ar" else "Checking video URL..."
         progress = await self.send_message(
             chat_id,
             progress_card(title, 0, 1, "جاري التحقق من الرابط المباشر..." if lang == "ar" else "Validating direct URL..."),
             message_id,
-            reply_markup=cancel_markup(lang=lang),
+            reply_markup=post_stage_reply_markup("media_video_url", lang=lang),
         )
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
         reachable, error, size = await asyncio.to_thread(probe_video_media_url, value)
@@ -2299,7 +2339,7 @@ class TelegramBotApp:
                 progress_message_id,
                 progress_card(title, 1, 1, error or ("رابط الريلز غير متاح." if lang == "ar" else "Video URL is not reachable.")),
                 reply_to_message_id=message_id,
-                reply_markup=cancel_markup(lang=lang),
+                reply_markup=post_stage_reply_markup("media_video_url", lang=lang),
             )
             return ""
         size_detail = (
@@ -2312,7 +2352,7 @@ class TelegramBotApp:
             progress_message_id,
             progress_card(title, 1, 1, size_detail),
             reply_to_message_id=message_id,
-            reply_markup=cancel_markup(lang=lang),
+            reply_markup=post_stage_reply_markup("media_video_url", lang=lang),
         )
         return value
 
@@ -2360,7 +2400,7 @@ class TelegramBotApp:
                 else "Use the open page selection card, then tap Confirm."
             ),
             fallback_message_id,
-            reply_markup=await self.dashboard_reply_markup(user_id),
+            reply_markup=post_stage_reply_markup("page_select", lang=lang),
         )
 
     async def show_post_type_card(
@@ -2385,6 +2425,7 @@ class TelegramBotApp:
             post_type_card(account_name=account_name, pages=pages, selected_indexes=selected, lang=lang),
             reply_markup=post_type_inline_markup(lang=lang),
         )
+        await self.send_post_stage_controls(chat_id, user_id, message_id, session, "post_type")
 
     async def show_video_mode_card(
         self,
@@ -2411,6 +2452,102 @@ class TelegramBotApp:
             video_mode_card(account_name=account_name, pages=pages, selected_indexes=selected, lang=lang),
             reply_markup=video_mode_inline_markup(lang=lang),
         )
+        await self.send_post_stage_controls(chat_id, user_id, message_id, session, "video_mode")
+
+    def single_video_url_input_card(self, lang: str = "en") -> str:
+        return "\n".join(
+            (
+                [
+                    "🔗 رابط ريلز واحد",
+                    "━━━━━━━━━━━━━━━━━━",
+                    "الصق رابط ريلز مباشر http(s).",
+                    "نفس الريلز هيتنشر على كل الصفحات المحددة.",
+                    "",
+                    "بعد كده هاعرضلك كارت المراجعة النهائي.",
+                ]
+                if lang == "ar"
+                else [
+                    "🔗 Single Video URL",
+                    "━━━━━━━━━━━━━━━━━━",
+                    "Paste a direct http(s) video file URL.",
+                    "The same video will be posted to all selected pages.",
+                    "",
+                    "After that, I will show a final review card.",
+                ]
+            )
+        )
+
+    async def apply_video_mode(
+        self,
+        chat_id: int,
+        message_id: int,
+        user_id: int,
+        session: Dict[str, Any],
+        mode: str,
+        *,
+        lang: str = "",
+        edit: bool = True,
+    ) -> None:
+        lang = lang or str(session.get("lang") or await self.user_language(user_id))
+        selected_pages = self.selected_pages_from_session(session)
+        if not selected_pages:
+            prefix = "اختار صفحة واحدة على الأقل الأول." if lang == "ar" else "Select at least one page first."
+            await self.edit_page_selection_card(chat_id, message_id, user_id, session, prefix=prefix)
+            return
+        session["post_type"] = "video"
+        session["video_mode"] = mode
+        session["caption"] = ""
+        session["lang"] = lang
+        session.pop("media_path", None)
+        session.pop("multi_media_paths", None)
+
+        if mode == "single_upload":
+            session["step"] = "media_video"
+            self.set_dashboard_session(chat_id, user_id, session)
+            text = post_input_card("video", lang=lang)
+            if edit:
+                await self.edit_message(chat_id, message_id, text, reply_markup={"inline_keyboard": []})
+                await self.send_post_stage_controls(chat_id, user_id, message_id, session, "media_video")
+            else:
+                await self.send_message(chat_id, text, message_id, reply_markup=post_stage_reply_markup("media_video", lang=lang))
+            return
+
+        if mode == "single_url":
+            session["step"] = "media_video_url"
+            self.set_dashboard_session(chat_id, user_id, session)
+            text = self.single_video_url_input_card(lang=lang)
+            if edit:
+                await self.edit_message(chat_id, message_id, text, reply_markup={"inline_keyboard": []})
+                await self.send_post_stage_controls(chat_id, user_id, message_id, session, "media_video_url")
+            else:
+                await self.send_message(chat_id, text, message_id, reply_markup=post_stage_reply_markup("media_video_url", lang=lang))
+            return
+
+        if mode == "multi_upload":
+            session["step"] = "multi_video_upload"
+            session["multi_media_paths"] = []
+            self.set_dashboard_session(chat_id, user_id, session)
+            text = self.multi_video_prompt(session)
+            if edit:
+                await self.edit_message(chat_id, message_id, text, reply_markup={"inline_keyboard": []})
+                await self.send_post_stage_controls(chat_id, user_id, message_id, session, "multi_video_upload")
+            else:
+                await self.send_message(chat_id, text, message_id, reply_markup=post_stage_reply_markup("multi_video_upload", lang=lang))
+            return
+
+        if mode == "multi_url":
+            session["step"] = "multi_video_url"
+            session["multi_media_paths"] = []
+            self.set_dashboard_session(chat_id, user_id, session)
+            text = self.multi_video_url_prompt(session)
+            if edit:
+                await self.edit_message(chat_id, message_id, text, reply_markup={"inline_keyboard": []})
+                await self.send_post_stage_controls(chat_id, user_id, message_id, session, "multi_video_url")
+            else:
+                await self.send_message(chat_id, text, message_id, reply_markup=post_stage_reply_markup("multi_video_url", lang=lang))
+            return
+
+        await self.show_video_mode_card(chat_id, message_id, user_id, session)
 
     async def show_post_input_card(
         self,
@@ -2428,6 +2565,7 @@ class TelegramBotApp:
         session["lang"] = lang
         self.set_dashboard_session(chat_id, user_id, session)
         await self.edit_message(chat_id, message_id, post_input_card(post_type, lang=lang), reply_markup={"inline_keyboard": []})
+        await self.send_post_stage_controls(chat_id, user_id, message_id, session, str(session.get("step") or "caption"))
 
     async def show_post_review(
         self,
@@ -2462,6 +2600,7 @@ class TelegramBotApp:
             await self.edit_or_send_message(chat_id, message_id, text, reply_markup=markup)
         else:
             await self.send_message(chat_id, text, message_id, reply_markup=markup)
+        await self.send_post_stage_controls(chat_id, user_id, message_id, session, "review")
 
     async def queue_reviewed_post(self, chat_id: int, user_id: int, session: Dict[str, Any]) -> None:
         account_id = str(session.get("account_id") or "")
@@ -3292,7 +3431,7 @@ class TelegramBotApp:
                     else "Use the page buttons on the selection card, then tap Confirm."
                 ),
                 message_id,
-                reply_markup=await self.dashboard_reply_markup(user_id),
+                reply_markup=post_stage_reply_markup("page_select", lang=lang),
             )
             return True
 
@@ -3305,7 +3444,7 @@ class TelegramBotApp:
                     if lang == "ar"
                     else "Use the post-type buttons, or type text, image, or video.",
                     message_id,
-                    reply_markup=await self.dashboard_reply_markup(user_id),
+                    reply_markup=post_stage_reply_markup("post_type", lang=lang),
                 )
                 return True
             session["post_type"] = post_type
@@ -3324,10 +3463,29 @@ class TelegramBotApp:
                     message_id,
                     reply_markup=video_mode_inline_markup(lang=lang),
                 )
+                await self.send_post_stage_controls(chat_id, user_id, message_id, session, "video_mode")
                 return True
             session["step"] = "caption" if post_type == "text" else f"media_{post_type}"
             self.set_dashboard_session(chat_id, user_id, session)
-            await self.send_message(chat_id, post_input_card(post_type, lang=lang), message_id, reply_markup=cancel_markup(lang=lang))
+            await self.send_message(
+                chat_id,
+                post_input_card(post_type, lang=lang),
+                message_id,
+                reply_markup=post_stage_reply_markup(str(session["step"]), lang=lang),
+            )
+            return True
+
+        if action == "post" and step == "video_mode":
+            mode = parse_video_mode_choice(text)
+            if not mode:
+                await self.send_message(
+                    chat_id,
+                    "استخدم أزرار طريقة الريلز." if lang == "ar" else "Use the video mode buttons.",
+                    message_id,
+                    reply_markup=post_stage_reply_markup("video_mode", lang=lang),
+                )
+                return True
+            await self.apply_video_mode(chat_id, message_id, user_id, session, mode, lang=lang, edit=False)
             return True
 
         if action == "post" and step == "page_then_type":
@@ -3369,10 +3527,16 @@ class TelegramBotApp:
                     message_id,
                     reply_markup=video_mode_inline_markup(lang=lang),
                 )
+                await self.send_post_stage_controls(chat_id, user_id, message_id, session, "video_mode")
                 return True
             session["step"] = "caption" if post_type == "text" else f"media_{post_type}"
             self.set_dashboard_session(chat_id, user_id, session)
-            await self.send_message(chat_id, prompt_text("post", session["step"], lang=lang), message_id, reply_markup=cancel_markup(lang=lang))
+            await self.send_message(
+                chat_id,
+                prompt_text("post", session["step"], lang=lang),
+                message_id,
+                reply_markup=post_stage_reply_markup(str(session["step"]), lang=lang),
+            )
             return True
 
         if action == "post" and step == "page":
@@ -3393,10 +3557,16 @@ class TelegramBotApp:
                     message_id,
                     reply_markup=video_mode_inline_markup(lang=lang),
                 )
+                await self.send_post_stage_controls(chat_id, user_id, message_id, session, "video_mode")
                 return True
             session["step"] = "caption" if post_type == "text" else f"media_{post_type}"
             self.set_dashboard_session(chat_id, user_id, session)
-            await self.send_message(chat_id, prompt_text("post", session["step"], lang=lang), message_id, reply_markup=cancel_markup(lang=lang))
+            await self.send_message(
+                chat_id,
+                prompt_text("post", session["step"], lang=lang),
+                message_id,
+                reply_markup=post_stage_reply_markup(str(session["step"]), lang=lang),
+            )
             return True
 
         if action == "post" and step == "caption":
@@ -3405,7 +3575,7 @@ class TelegramBotApp:
                     chat_id,
                     "الكابشن لا يمكن يكون فارغ. ابعت نص المنشور." if lang == "ar" else "Caption cannot be empty. Send the post text.",
                     message_id,
-                    reply_markup=cancel_markup(lang=lang),
+                    reply_markup=post_stage_reply_markup("caption", lang=lang),
                 )
                 return True
             session["post_type"] = "text"
@@ -3439,7 +3609,7 @@ class TelegramBotApp:
                     chat_id,
                     "الكابشن لا يمكن يكون فارغ. ابعت نص المنشور." if lang == "ar" else "Caption cannot be empty. Send the post text.",
                     message_id,
-                    reply_markup=cancel_markup(lang=lang),
+                    reply_markup=post_stage_reply_markup("caption", lang=lang),
                 )
                 return True
             pages = await asyncio.to_thread(
@@ -3474,7 +3644,7 @@ class TelegramBotApp:
             post_type = str(session.get("post_type") or "").strip()
             file_id = self.extract_media_file_id(message, post_type)
             if not file_id:
-                await self.send_message(chat_id, prompt_text("post", step, lang=lang), message_id, reply_markup=cancel_markup(lang=lang))
+                await self.send_message(chat_id, prompt_text("post", step, lang=lang), message_id, reply_markup=post_stage_reply_markup(step, lang=lang))
                 return True
             pages = await asyncio.to_thread(
                 self.storage.list_pages,
@@ -3519,7 +3689,7 @@ class TelegramBotApp:
         if action == "post" and step == "multi_video_upload":
             file_id = self.extract_media_file_id(message, "video")
             if not file_id:
-                await self.send_message(chat_id, self.multi_video_prompt(session), message_id, reply_markup=cancel_markup(lang=lang))
+                await self.send_message(chat_id, self.multi_video_prompt(session), message_id, reply_markup=post_stage_reply_markup("multi_video_upload", lang=lang))
                 return True
             selected_pages = self.selected_pages_from_session(session)
             if not selected_pages:
@@ -3547,7 +3717,7 @@ class TelegramBotApp:
                     chat_id,
                     "\n".join([warning, "", self.multi_video_prompt(session)]),
                     message_id,
-                    reply_markup=cancel_markup(lang=lang),
+                    reply_markup=post_stage_reply_markup("multi_video_upload", lang=lang),
                 )
                 return True
             paths = list(session.get("multi_media_paths") or [])
@@ -3567,7 +3737,7 @@ class TelegramBotApp:
                     chat_id,
                     "\n".join([received_line, "", self.multi_video_prompt(session)]),
                     message_id,
-                    reply_markup=cancel_markup(lang=lang),
+                    reply_markup=post_stage_reply_markup("multi_video_upload", lang=lang),
                 )
                 return True
             session["step"] = "multi_caption"
@@ -3614,7 +3784,7 @@ class TelegramBotApp:
                     chat_id,
                     "\n".join([saved_line, "", self.multi_video_url_prompt(session)]),
                     message_id,
-                    reply_markup=cancel_markup(lang=lang),
+                    reply_markup=post_stage_reply_markup("multi_video_url", lang=lang),
                 )
                 return True
             session["step"] = "multi_caption"
@@ -3653,7 +3823,7 @@ class TelegramBotApp:
             post_type = str(session.get("post_type") or "").strip()
             file_id = self.extract_media_file_id(message, post_type)
             if not file_id:
-                await self.send_message(chat_id, prompt_text("post", step, lang=lang), message_id, reply_markup=cancel_markup(lang=lang))
+                await self.send_message(chat_id, prompt_text("post", step, lang=lang), message_id, reply_markup=post_stage_reply_markup(step, lang=lang))
                 return True
             media_path = await self.download_file(file_id, str(session.get("account_id") or ""))
             session["post_type"] = post_type
@@ -3674,7 +3844,7 @@ class TelegramBotApp:
                     if lang == "ar"
                     else "Send the caption/text for this post now, or tap Skip to leave it empty."
                 )
-                await self.send_message(chat_id, prompt, message_id, reply_markup=skip_cancel_markup(lang=lang))
+                await self.send_message(chat_id, prompt, message_id, reply_markup=post_stage_reply_markup("caption_after_media", lang=lang))
             return True
 
         self.clear_dashboard_session(chat_id, user_id)
@@ -4274,6 +4444,7 @@ class TelegramBotApp:
             session["step"] = "page_select"
             self.set_dashboard_session(chat_id, user_id, session)
             await self.edit_page_selection_card(chat_id, message_id, user_id, session)
+            await self.send_post_stage_controls(chat_id, user_id, message_id, session, "page_select")
             return
 
         if data.startswith("post:type:"):
@@ -4287,74 +4458,7 @@ class TelegramBotApp:
 
         if data.startswith("video:"):
             mode = data.split(":", 1)[1]
-            selected_pages = self.selected_pages_from_session(session)
-            if not selected_pages:
-                prefix = "اختار صفحة واحدة على الأقل الأول." if lang == "ar" else "Select at least one page first."
-                await self.edit_page_selection_card(chat_id, message_id, user_id, session, prefix=prefix)
-                return
-            session["post_type"] = "video"
-            session["video_mode"] = mode
-            session["caption"] = ""
-            session.pop("media_path", None)
-            session.pop("multi_media_paths", None)
-            if mode == "single_upload":
-                session["step"] = "media_video"
-                self.set_dashboard_session(chat_id, user_id, session)
-                await self.edit_message(chat_id, message_id, post_input_card("video", lang=lang), reply_markup={"inline_keyboard": []})
-                return
-            if mode == "single_url":
-                session["step"] = "media_video_url"
-                self.set_dashboard_session(chat_id, user_id, session)
-                await self.edit_message(
-                    chat_id,
-                    message_id,
-                    "\n".join(
-                        (
-                            [
-                                "🔗 رابط ريلز واحد",
-                                "━━━━━━━━━━━━━━━━━━",
-                                "الصق رابط ريلز مباشر http(s).",
-                                "نفس الريلز هيتنشر على كل الصفحات المحددة.",
-                                "",
-                                "بعد كده هاعرضلك كارت المراجعة النهائي.",
-                            ]
-                            if lang == "ar"
-                            else [
-                                "🔗 Single Video URL",
-                                "━━━━━━━━━━━━━━━━━━",
-                                "Paste a direct http(s) video file URL.",
-                                "The same video will be posted to all selected pages.",
-                                "",
-                                "After that, I will show a final review card.",
-                            ]
-                        )
-                    ),
-                    reply_markup={"inline_keyboard": []},
-                )
-                return
-            if mode == "multi_upload":
-                session["step"] = "multi_video_upload"
-                session["multi_media_paths"] = []
-                self.set_dashboard_session(chat_id, user_id, session)
-                await self.edit_message(
-                    chat_id,
-                    message_id,
-                    self.multi_video_prompt(session),
-                    reply_markup={"inline_keyboard": []},
-                )
-                return
-            if mode == "multi_url":
-                session["step"] = "multi_video_url"
-                session["multi_media_paths"] = []
-                self.set_dashboard_session(chat_id, user_id, session)
-                await self.edit_message(
-                    chat_id,
-                    message_id,
-                    self.multi_video_url_prompt(session),
-                    reply_markup={"inline_keyboard": []},
-                )
-                return
-            await self.show_video_mode_card(chat_id, message_id, user_id, session)
+            await self.apply_video_mode(chat_id, message_id, user_id, session, mode, lang=lang, edit=True)
             return
 
         if data == "post:edit_caption":
@@ -4370,6 +4474,7 @@ class TelegramBotApp:
                 ),
                 reply_markup={"inline_keyboard": []},
             )
+            await self.send_post_stage_controls(chat_id, user_id, message_id, session, "caption_edit")
             return
 
         if data == "post:confirm":

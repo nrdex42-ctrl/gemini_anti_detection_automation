@@ -6,6 +6,9 @@ from telegram_dashboard import (
     dashboard_text,
     language_selection_markup,
     parse_post_type_choice,
+    parse_video_mode_choice,
+    post_stage_control_card,
+    post_stage_reply_markup,
     post_type_choices,
     prompt_text,
 )
@@ -126,3 +129,23 @@ def test_arabic_dashboard_account_status_icons_are_left_aligned():
     assert status_lines[1].startswith(f"{LTR_MARK}🔴 ")
     assert "اسماء ضياء" in status_lines[0]
     assert "Mohammed Mohammed" in status_lines[1]
+
+
+def test_post_stage_keyboards_match_current_card_stage():
+    page_markup = post_stage_reply_markup("page_select", "ar")
+    assert page_markup["keyboard"][0] == ["📝 منشور نصي", "📸 منشور صورة", "🎬 منشور ريلز"]
+    assert page_markup["keyboard"][1] == ["📋 انشر لكل الصفحات"]
+    assert page_markup["keyboard"][2] == ["⬅️ ارجع للوحة التحكم", "❌ إلغاء"]
+
+    video_markup = post_stage_reply_markup("video_mode", "ar")
+    video_labels = _reply_labels(video_markup)
+    assert "📄 رفع ريلز واحد" in video_labels
+    assert "📚 رفع ريلز متعددة" in video_labels
+    assert "🔗 رابط ريلز واحد" in video_labels
+    assert "🔗 روابط ريلز متعددة" in video_labels
+
+    assert parse_video_mode_choice("📄 Single Video Upload") == "single_upload"
+    assert parse_video_mode_choice("📚 رفع ريلز متعددة") == "multi_upload"
+    assert parse_video_mode_choice("🔗 رابط ريلز واحد") == "single_url"
+    assert parse_video_mode_choice("🔗 روابط ريلز متعددة") == "multi_url"
+    assert "أزرار الريلز" in post_stage_control_card("video_mode", "ar")

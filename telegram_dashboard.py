@@ -287,6 +287,20 @@ POST_ACTION_TYPES = {
 
 POST_TYPE_CHOICES = ("Text", "Image", "Video")
 
+VIDEO_MODE_LABELS_EN = {
+    "single_upload": "📄 Single Video Upload",
+    "multi_upload": "📚 Multi Video Upload",
+    "single_url": "🔗 Single Video URL",
+    "multi_url": "🔗 Multi Video URLs",
+}
+
+VIDEO_MODE_LABELS_AR = {
+    "single_upload": "📄 رفع ريلز واحد",
+    "multi_upload": "📚 رفع ريلز متعددة",
+    "single_url": "🔗 رابط ريلز واحد",
+    "multi_url": "🔗 روابط ريلز متعددة",
+}
+
 
 def dashboard_action(text: str) -> str:
     return DASHBOARD_ACTIONS.get((text or "").strip(), "")
@@ -318,6 +332,33 @@ def post_type_choices(lang: str = "en") -> Sequence[str]:
     if normalize_lang(lang) == "ar":
         return ("نص", "صورة", "ريلز")
     return POST_TYPE_CHOICES
+
+
+def video_mode_label(mode: str, lang: str = "en") -> str:
+    labels = VIDEO_MODE_LABELS_AR if normalize_lang(lang) == "ar" else VIDEO_MODE_LABELS_EN
+    return labels.get(mode, mode)
+
+
+def parse_video_mode_choice(text: str) -> str:
+    normalized = " ".join(str(text or "").strip().lower().split())
+    if not normalized:
+        return ""
+    for mode, label in {**VIDEO_MODE_LABELS_EN, **VIDEO_MODE_LABELS_AR}.items():
+        if normalized == " ".join(label.lower().split()):
+            return mode
+    if "multi" in normalized and ("url" in normalized or "link" in normalized):
+        return "multi_url"
+    if ("روابط" in normalized or "رابط لكل" in normalized) and "ريلز" in normalized:
+        return "multi_url"
+    if ("url" in normalized or "link" in normalized or "رابط" in normalized) and (
+        "single" in normalized or "واحد" in normalized
+    ):
+        return "single_url"
+    if "multi" in normalized or "multiple" in normalized or "متعددة" in normalized or "لكل صفحة" in normalized:
+        return "multi_upload"
+    if "upload" in normalized or "رفع" in normalized or "single" in normalized or "واحد" in normalized:
+        return "single_upload"
+    return ""
 
 
 def reply_keyboard(
@@ -406,6 +447,97 @@ def account_post_action_markup(lang: str = "en") -> Dict[str, Any]:
         ],
         placeholder=tr(lang, "Choose account action", "اختار إجراء الحساب"),
         persistent=False,
+    )
+
+
+def post_stage_reply_markup(stage: str, lang: str = "en") -> Dict[str, Any]:
+    normalized_stage = str(stage or "").strip()
+    if normalized_stage == "post_type_inline":
+        normalized_stage = "post_type"
+    if normalized_stage == "page":
+        normalized_stage = "page_select"
+
+    if normalized_stage == "page_select":
+        return reply_keyboard(
+            [
+                [button_text("quick_text", lang), button_text("quick_image", lang), button_text("quick_video", lang)],
+                [button_text("post_all_pages", lang)],
+                [button_text("back", lang), button_text("cancel", lang)],
+            ],
+            placeholder=tr(lang, "Select pages, or choose post type", "حدد الصفحات أو اختار نوع المنشور"),
+            persistent=False,
+        )
+    if normalized_stage == "post_type":
+        return reply_keyboard(
+            [
+                [button_text("quick_text", lang), button_text("quick_image", lang), button_text("quick_video", lang)],
+                [button_text("back", lang), button_text("cancel", lang)],
+            ],
+            placeholder=tr(lang, "Choose post type", "اختار نوع المنشور"),
+            persistent=False,
+        )
+    if normalized_stage == "video_mode":
+        return reply_keyboard(
+            [
+                [video_mode_label("single_upload", lang), video_mode_label("multi_upload", lang)],
+                [video_mode_label("single_url", lang), video_mode_label("multi_url", lang)],
+                [button_text("back", lang), button_text("cancel", lang)],
+            ],
+            placeholder=tr(lang, "Choose video mode", "اختار طريقة الريلز"),
+            persistent=False,
+        )
+    if normalized_stage == "multi_caption":
+        return done_cancel_markup(
+            lang=lang,
+            placeholder=tr(lang, "Type caption, then tap Done", "اكتب الكابشن ثم اضغط تم"),
+        )
+    if normalized_stage == "caption_after_media":
+        return skip_cancel_markup(lang=lang)
+    return cancel_markup(lang=lang)
+
+
+def post_stage_control_card(stage: str, lang: str = "en") -> str:
+    normalized_stage = str(stage or "").strip()
+    if normalized_stage == "post_type_inline":
+        normalized_stage = "post_type"
+    if normalized_stage == "page":
+        normalized_stage = "page_select"
+    titles = {
+        "page_select": tr(lang, "🎛️ Page Controls", "🎛️ أزرار الصفحات"),
+        "post_type": tr(lang, "🎛️ Post Type Controls", "🎛️ أزرار نوع المنشور"),
+        "video_mode": tr(lang, "🎛️ Reels Controls", "🎛️ أزرار الريلز"),
+        "caption": tr(lang, "🎛️ Text Controls", "🎛️ أزرار النص"),
+        "media_image": tr(lang, "🎛️ Image Controls", "🎛️ أزرار الصورة"),
+        "media_video": tr(lang, "🎛️ Reels Upload Controls", "🎛️ أزرار رفع الريلز"),
+        "media_video_url": tr(lang, "🎛️ Video URL Controls", "🎛️ أزرار رابط الريلز"),
+        "multi_video_upload": tr(lang, "🎛️ Multi Reels Controls", "🎛️ أزرار الريلز المتعددة"),
+        "multi_video_url": tr(lang, "🎛️ Multi URL Controls", "🎛️ أزرار الروابط المتعددة"),
+        "caption_after_media": tr(lang, "🎛️ Caption Controls", "🎛️ أزرار الكابشن"),
+        "caption_edit": tr(lang, "🎛️ Edit Caption Controls", "🎛️ أزرار تعديل الكابشن"),
+        "multi_caption": tr(lang, "🎛️ Shared Caption Controls", "🎛️ أزرار الكابشن المشترك"),
+        "review": tr(lang, "🎛️ Review Controls", "🎛️ أزرار المراجعة"),
+    }
+    hints = {
+        "page_select": tr(lang, "Use these buttons with the page-selection card.", "استخدم الأزرار دي مع كارت اختيار الصفحات."),
+        "post_type": tr(lang, "Choose the content type for the selected pages.", "اختار نوع المحتوى للصفحات المحددة."),
+        "video_mode": tr(lang, "Choose how the Reels/video will be attached.", "اختار طريقة إرفاق الريلز."),
+        "caption": tr(lang, "Send the caption/text for this post.", "ابعت النص أو الكابشن للمنشور ده."),
+        "media_image": tr(lang, "Send the image for this post.", "ابعت الصورة للمنشور ده."),
+        "media_video": tr(lang, "Send the Reels/video for this post.", "ابعت الريلز للمنشور ده."),
+        "media_video_url": tr(lang, "Paste the direct video URL.", "الصق رابط الريلز المباشر."),
+        "multi_video_upload": tr(lang, "Send each Reels/video in page order.", "ابعت كل ريلز بالترتيب حسب الصفحات."),
+        "multi_video_url": tr(lang, "Paste each direct video URL in page order.", "الصق كل رابط ريلز بالترتيب حسب الصفحات."),
+        "caption_after_media": tr(lang, "Send a caption, tap Skip, or cancel.", "ابعت كابشن، اضغط تخطي، أو إلغي."),
+        "caption_edit": tr(lang, "Send the new caption/text.", "ابعت النص أو الكابشن الجديد."),
+        "multi_caption": tr(lang, "Send one shared caption, then tap Done.", "ابعت كابشن واحد مشترك، وبعدها اضغط تم."),
+        "review": tr(lang, "Use the review card to post, edit, or go back to pages.", "استخدم كارت المراجعة للنشر، التعديل، أو الرجوع للصفحات."),
+    }
+    return "\n".join(
+        [
+            titles.get(normalized_stage, tr(lang, "🎛️ Stage Controls", "🎛️ أزرار المرحلة")),
+            "━━━━━━━━━━━━━━━━━━",
+            hints.get(normalized_stage, tr(lang, "Use the buttons below for this stage.", "استخدم الأزرار بالأسفل للمرحلة دي.")),
+        ]
     )
 
 
