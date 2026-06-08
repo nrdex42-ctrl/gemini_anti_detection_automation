@@ -46,7 +46,7 @@ The schema creates:
 - `fb_accounts` for encrypted account cookies.
 - `fb_pages` for discovered managed pages.
 - `fb_post_jobs` for Telegram queued posts.
-- `fb_account_runtime` for account lock leases and cookie cooldown state.
+- `fb_account_runtime` for account lock leases.
 - `telegram_user_state` for each Telegram user's active Facebook account selection.
 
 ## 3. Telegram Bot
@@ -106,7 +106,7 @@ AUTO_SET_TELEGRAM_WEBHOOK=true
 TELEGRAM_DROP_PENDING_UPDATES=false
 DELETE_COOKIE_MESSAGES=true
 SUPPRESS_HEALTHZ_ACCESS_LOGS=true
-BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS=900
+BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS=0
 BOT_ALLOW_ACCOUNT_OWNERSHIP_TRANSFER=true
 BOT_PROGRESS_EDIT_MIN_SECONDS=1.5
 BOT_ACCOUNT_NAME_LOOKUP_TIMEOUT_SECONDS=45
@@ -114,7 +114,7 @@ BOT_PAGE_DISCOVERY_TIMEOUT_SECONDS=150
 BOT_ACCOUNT_ADD_PAGE_DISCOVERY_TIMEOUT_SECONDS=150
 BOT_BATCH_POSTING_ENGINE_TIMEOUT_SECONDS=3600
 FACEBOOK_BROWSER_ACCOUNT_LOOKUP_FALLBACK_ENABLED=true
-POST_COOKIE_MIN_INTERVAL_SECONDS=900
+POST_COOKIE_MIN_INTERVAL_SECONDS=0
 POST_COOKIE_SECURITY_COOLDOWN_SECONDS=86400
 POST_BATCH_PAGE_TIMEOUT_SECONDS=180
 POST_BATCH_PAGE_TIMEOUT_MAX_SECONDS=300
@@ -202,6 +202,6 @@ Set `RESTART_BROADCAST_ENABLED=true` to let the bot send known users a refreshed
 
 - Different accounts can process concurrently.
 - The same account is protected by a Supabase lock lease.
-- After a posting attempt uses a cookie, the bot records `last_cookie_used_at`.
-- `BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS` should match or exceed `POST_COOKIE_MIN_INTERVAL_SECONDS`; the bot uses the stricter value so posting waits before Playwright starts instead of failing every page during engine cooldown.
+- After a posting attempt uses a cookie, the bot records `last_cookie_used_at` for diagnostics only.
+- Normal posting has no account cookie cooldown; the same account is protected only by the runtime lock lease.
 - `BOT_ACCOUNT_LOCK_HEARTBEAT_SECONDS` refreshes long-running job leases.

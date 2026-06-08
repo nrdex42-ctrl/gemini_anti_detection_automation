@@ -10,7 +10,7 @@ This repository is intended for accounts and pages you own or are explicitly aut
 - Telegram webhook bot in `telegram_bot.py`.
 - Supabase/Postgres schema in `supabase/schema.sql`.
 - Render Blueprint in `render.yaml`.
-- Account isolation and cookie-use cooldown stored in Supabase.
+- Account isolation locks stored in Supabase.
 - Local live-test scripts for controlled manual validation.
 
 ## Local Setup
@@ -102,4 +102,4 @@ See `DEPLOYMENT.md` for the Render, Supabase, Telegram webhook, and GitHub push 
 - Set `BOT_ADMIN_IDS` in production to restrict the Admin Dashboard. With `BOT_REQUIRE_USER_APPROVAL=true`, new Telegram users are pending until an admin approves them from the Users card.
 - Set `ENCRYPTION_KEY` before storing cookies. If this key changes, previously encrypted cookies cannot be decrypted.
 - Rotate any account cookie that was pasted into logs, chat history, screenshots, or committed files.
-- `BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS` defaults to `360` seconds to avoid overlapping account sessions.
+- Normal posting has no cookie cooldown by default; account overlap is controlled by the runtime lock.

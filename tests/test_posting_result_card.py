@@ -123,7 +123,7 @@ def test_posting_complete_card_restores_dashboard_reply_keyboard():
     asyncio.run(run())
 
 
-def test_account_slot_wait_uses_engine_cookie_min_interval(monkeypatch):
+def test_account_slot_wait_ignores_cookie_cooldown_env(monkeypatch):
     async def run():
         app = TelegramBotApp.__new__(TelegramBotApp)
         app.debug_event = lambda *args, **kwargs: None
@@ -142,25 +142,19 @@ def test_account_slot_wait_uses_engine_cookie_min_interval(monkeypatch):
         async def progress_update(detail):
             updates.append(detail)
 
-        seconds_values = iter([0, 5])
-
-        def fake_seconds_since(value):
-            return next(seconds_values)
-
         async def fake_sleep(seconds):
             sleeps.append(seconds)
 
         app.storage = Storage()
-        monkeypatch.setenv("BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS", "0")
-        monkeypatch.setenv("POST_COOKIE_MIN_INTERVAL_SECONDS", "5")
+        monkeypatch.setenv("BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS", "900")
+        monkeypatch.setenv("POST_COOKIE_MIN_INTERVAL_SECONDS", "900")
         monkeypatch.setenv("BOT_ACCOUNT_LOCK_POLL_SECONDS", "1")
-        monkeypatch.setattr(telegram_bot, "seconds_since", fake_seconds_since)
         monkeypatch.setattr(telegram_bot.asyncio, "sleep", fake_sleep)
 
         acquired = await app.wait_for_account_slot("acct_1", "owner_1", 123, progress_update)
 
         assert acquired is True
-        assert sleeps == [1]
-        assert any("Facebook account cooldown active. Posting will start in 5s." in item for item in updates)
+        assert sleeps == []
+        assert not any("cooldown" in item.lower() for item in updates)
 
     asyncio.run(run())

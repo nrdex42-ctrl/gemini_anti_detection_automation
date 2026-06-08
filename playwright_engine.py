@@ -286,7 +286,7 @@ POST_COOKIE_SESSION_LOCK_TTL_SECONDS = max(
     60,
     _env_int('POST_COOKIE_SESSION_LOCK_TTL_SECONDS', max(POST_ACCOUNT_LOCK_TTL_SECONDS, 3600)),
 )
-POST_COOKIE_MIN_INTERVAL_SECONDS = _env_int('POST_COOKIE_MIN_INTERVAL_SECONDS', 600, minimum=0)
+POST_COOKIE_MIN_INTERVAL_SECONDS = _env_int('POST_COOKIE_MIN_INTERVAL_SECONDS', 0, minimum=0)
 POST_COOKIE_SECURITY_COOLDOWN_SECONDS = _env_int('POST_COOKIE_SECURITY_COOLDOWN_SECONDS', 21600, minimum=0)
 POST_ALLOW_PARALLEL_SAME_COOKIE = os.getenv('POST_ALLOW_PARALLEL_SAME_COOKIE', 'true').lower() == 'true'
 POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS = _env_int('POST_PARALLEL_SAME_COOKIE_MAX_CONTEXTS', 4, minimum=1)
@@ -2795,7 +2795,7 @@ async def _ensure_cookie_session_can_run(
     can_use, reason = await asyncio.to_thread(
         session_manager.can_use_session,
         cookies_json,
-        min_interval_seconds=POST_COOKIE_MIN_INTERVAL_SECONDS if enforce_min_interval else 0,
+        min_interval_seconds=0,
         security_cooldown_seconds=POST_COOKIE_SECURITY_COOLDOWN_SECONDS,
     )
     if can_use:

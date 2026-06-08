@@ -1870,7 +1870,6 @@ class TelegramBotApp:
             "AUTO_SET_TELEGRAM_WEBHOOK",
             "HEADLESS",
             "DELETE_COOKIE_MESSAGES",
-            "BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS",
             "BOT_ACCOUNT_LOCK_LEASE_SECONDS",
             "BOT_ACCOUNT_LOCK_HEARTBEAT_SECONDS",
             "BOT_DASHBOARD_SESSION_TTL_SECONDS",
@@ -1917,7 +1916,6 @@ class TelegramBotApp:
                 "HEADLESS",
                 "PLAYWRIGHT_BROWSERS_PATH",
                 "FACEBOOK_BROWSER_EXECUTABLE",
-                "BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS",
                 "BOT_PROGRESS_HEARTBEAT_SECONDS",
                 "BOT_POSTING_ENGINE_TIMEOUT_SECONDS",
                 "BOT_BATCH_POSTING_ENGINE_TIMEOUT_SECONDS",
@@ -6206,16 +6204,9 @@ class TelegramBotApp:
         *,
         trace_id: str = "",
     ) -> bool:
-        cooldown_seconds = _env_int(
-            "BOT_ACCOUNT_COOKIE_COOLDOWN_SECONDS",
-            _env_int("LIVE_MATRIX_COOKIE_COOLDOWN_SECONDS", 360, minimum=0),
-            minimum=0,
-        )
-        engine_min_interval_seconds = _env_int("POST_COOKIE_MIN_INTERVAL_SECONDS", 0, minimum=0)
-        cooldown_seconds = max(cooldown_seconds, engine_min_interval_seconds)
         lease_seconds = _env_int(
             "BOT_ACCOUNT_LOCK_LEASE_SECONDS",
-            max(1800, cooldown_seconds + 900),
+            1800,
             minimum=120,
         )
         poll_seconds = _env_int("BOT_ACCOUNT_LOCK_POLL_SECONDS", 10, minimum=1)
@@ -6256,15 +6247,6 @@ class TelegramBotApp:
                     "Check DATABASE_URL/Supabase network connectivity."
                 ) from exc
             if runtime:
-                remaining = int(max(0, cooldown_seconds - seconds_since(runtime.get("last_cookie_used_at"))))
-                if remaining > 0:
-                    while remaining > 0:
-                        await notify(
-                            f"Facebook account cooldown active. Posting will start in {format_elapsed_seconds(remaining)}."
-                        )
-                        sleep_for = min(max(1, poll_seconds), remaining)
-                        await asyncio.sleep(sleep_for)
-                        remaining = int(max(0, cooldown_seconds - seconds_since(runtime.get("last_cookie_used_at"))))
                 return True
 
             if time.monotonic() - started > max_wait_seconds:
