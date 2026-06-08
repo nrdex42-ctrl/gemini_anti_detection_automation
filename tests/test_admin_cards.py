@@ -242,6 +242,38 @@ def test_admin_broadcast_sends_to_selected_targets_with_result_card():
     asyncio.run(run())
 
 
+def test_admin_posting_mode_card_updates_persistent_setting():
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.storage = AdminStorage()
+        app.admin_ids = {99}
+        app.dashboard_sessions = {}
+        edits = []
+
+        async def edit_message(chat_id, message_id, text, *, reply_markup=None, parse_mode=""):
+            edits.append({"chat_id": chat_id, "message_id": message_id, "text": text, "reply_markup": reply_markup})
+            return message_id
+
+        app.edit_message = edit_message
+
+        await app.show_admin_posting_mode(123, 456, 99, edit=True)
+
+        assert "Current: Sequential" in edits[-1]["text"]
+        labels = [button["text"] for row in edits[-1]["reply_markup"]["inline_keyboard"] for button in row]
+        assert "✅ Sequential" in labels
+        assert "⬜ Parallel" in labels
+
+        await app.handle_admin_callback(123, 99, 456, "adm:posting_mode:parallel", {})
+
+        assert app.storage.meta["posting_mode"] == "parallel"
+        assert "Posting mode updated to Parallel." in edits[-1]["text"]
+        labels = [button["text"] for row in edits[-1]["reply_markup"]["inline_keyboard"] for button in row]
+        assert "⬜ Sequential" in labels
+        assert "✅ Parallel" in labels
+
+    asyncio.run(run())
+
+
 def test_restart_dashboard_broadcast_counts_only_successful_sends(caplog):
     async def run():
         storage = AdminStorage()

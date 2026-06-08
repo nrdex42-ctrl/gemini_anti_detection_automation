@@ -72,10 +72,27 @@ POST_TYPES = {"text", "image", "video"}
 UPLOAD_DIR = Path(os.getenv("TELEGRAM_UPLOAD_DIR", "artifacts/telegram_uploads"))
 POSTING_STATUS_SYNC_TEXT = "Page results are listed below."
 ADMIN_USER_PAGE_SIZE = 7
+POSTING_MODE_META_KEY = "posting_mode"
+POSTING_MODE_SEQUENTIAL = "sequential"
+POSTING_MODE_PARALLEL = "parallel"
 BAR_GREEN = "🟩"
 BAR_RED = "🟥"
 BAR_EMPTY = "⬜"
 BAR_YELLOW = "🟨"
+
+
+def normalize_posting_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"parallel", "concurrent", "multi", "multipage"}:
+        return POSTING_MODE_PARALLEL
+    return POSTING_MODE_SEQUENTIAL
+
+
+def posting_mode_label(mode: Any, lang: str = "en") -> str:
+    normalized = normalize_posting_mode(mode)
+    if lang == "ar":
+        return "متوازي" if normalized == POSTING_MODE_PARALLEL else "تتابعي"
+    return "Parallel" if normalized == POSTING_MODE_PARALLEL else "Sequential"
 
 
 def progress_bar(done: int, total: int, width: int = 10) -> str:
@@ -1321,6 +1338,19 @@ class TelegramBotApp:
     async def user_language(self, user_id: int = 0) -> str:
         return await asyncio.to_thread(self.storage.get_user_language, user_id) if user_id else "en"
 
+    async def get_posting_mode(self) -> str:
+        try:
+            value = await asyncio.to_thread(self.storage.get_meta, POSTING_MODE_META_KEY)
+        except Exception:
+            logger.warning("Could not load posting mode from bot_meta; using sequential.", exc_info=True)
+            value = ""
+        return normalize_posting_mode(value)
+
+    async def set_posting_mode(self, mode: Any) -> str:
+        normalized = normalize_posting_mode(mode)
+        await asyncio.to_thread(self.storage.set_meta, POSTING_MODE_META_KEY, normalized)
+        return normalized
+
     async def active_account_id(self, user_id: int) -> str:
         return await asyncio.to_thread(self.storage.get_active_account, user_id, self.account_owner_scope(user_id))
 
@@ -1492,11 +1522,12 @@ class TelegramBotApp:
         )
         await self.edit_or_send_message(chat_id, message_id, "\n".join(lines), reply_markup=language_selection_markup(lang=lang))
 
-    def admin_overview_text(self, summary: Dict[str, Any], prefix: str = "", lang: str = "en") -> str:
+    def admin_overview_text(self, summary: Dict[str, Any], prefix: str = "", lang: str = "en", posting_mode: str = "") -> str:
         status_counts = summary.get("job_status_counts") or {}
         approval_counts = summary.get("user_approval_counts") or {}
         pending_users = int(approval_counts.get("pending", 0))
         active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
+        mode_label = posting_mode_label(posting_mode, lang)
         lines: List[str] = []
         if prefix:
             lines.extend([prefix, ""])
@@ -1509,6 +1540,7 @@ class TelegramBotApp:
                     f"الحسابات: {summary.get('total_accounts', 0)} إجمالي، {summary.get('active_accounts', 0)} نشطة، {summary.get('inactive_accounts', 0)} غير نشطة",
                     f"الصفحات المحفوظة: {summary.get('page_count', 0)}",
                     f"المهام: {active_jobs} نشطة، {int(status_counts.get('success', 0))} ناجحة، {int(status_counts.get('failed', 0))} فاشلة",
+                    f"طريقة النشر: {mode_label}",
                     f"الأقفال النشطة: {len(summary.get('active_locks') or [])}",
                     "",
                     "استخدم أزرار الأدمن بالأسفل.",
@@ -1523,6 +1555,7 @@ class TelegramBotApp:
                     f"Accounts: {summary.get('total_accounts', 0)} total, {summary.get('active_accounts', 0)} active, {summary.get('inactive_accounts', 0)} inactive",
                     f"Stored pages: {summary.get('page_count', 0)}",
                     f"Jobs: {active_jobs} active, {int(status_counts.get('success', 0))} success, {int(status_counts.get('failed', 0))} failed",
+                    f"Posting mode: {mode_label}",
                     f"Active locks: {len(summary.get('active_locks') or [])}",
                     "",
                     "Use the admin keyboard below.",
@@ -1790,14 +1823,74 @@ class TelegramBotApp:
             ]
         )
 
+    def admin_posting_mode_card(self, mode: str, prefix: str = "", lang: str = "en") -> str:
+        normalized = normalize_posting_mode(mode)
+        current = posting_mode_label(normalized, lang)
+        lines: List[str] = []
+        if prefix:
+            lines.extend([prefix, ""])
+        if lang == "ar":
+            lines.extend(
+                [
+                    "⚙️ طريقة النشر",
+                    "━━━━━━━━━━━━━━━━━━",
+                    f"الحالي: {current}",
+                    "",
+                    "تتابعي: ينشر صفحة بعد صفحة، وده الوضع الافتراضي والأهدى على الحساب.",
+                    "متوازي: ينشر على أكثر من صفحة في نفس الوقت لما إعدادات الأمان تسمح.",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "⚙️ Posting Mode",
+                    "━━━━━━━━━━━━━━━━━━",
+                    f"Current: {current}",
+                    "",
+                    "Sequential: posts page by page. This is the default and is gentler on the account.",
+                    "Parallel: posts to multiple pages at once when the engine safety settings allow it.",
+                ]
+            )
+        return "\n".join(lines)
+
+    def admin_posting_mode_markup(self, mode: str, lang: str = "en") -> Dict[str, Any]:
+        normalized = normalize_posting_mode(mode)
+        sequential_marker = "✅" if normalized == POSTING_MODE_SEQUENTIAL else "⬜"
+        parallel_marker = "✅" if normalized == POSTING_MODE_PARALLEL else "⬜"
+        return inline_markup(
+            [
+                [
+                    inline_button(
+                        f"{sequential_marker} {'تتابعي' if lang == 'ar' else 'Sequential'}",
+                        "adm:posting_mode:sequential",
+                    )
+                ],
+                [
+                    inline_button(
+                        f"{parallel_marker} {'متوازي' if lang == 'ar' else 'Parallel'}",
+                        "adm:posting_mode:parallel",
+                    )
+                ],
+                [inline_button("🔒 لوحة الأدمن" if lang == "ar" else "🔒 Admin Dashboard", "adm:dash")],
+            ]
+        )
+
     async def show_admin_dashboard(self, chat_id: int, message_id: int, user_id: int, prefix: str = "") -> None:
         if not self.is_admin_user(user_id):
             await self.send_message(chat_id, "Admin dashboard is restricted.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
             return
         lang = await self.user_language(user_id)
-        summary = await asyncio.to_thread(self.storage.admin_summary)
+        summary, posting_mode = await asyncio.gather(
+            asyncio.to_thread(self.storage.admin_summary),
+            self.get_posting_mode(),
+        )
         self.set_dashboard_session(chat_id, user_id, {"action": "admin_dashboard", "step": "menu", "lang": lang})
-        await self.send_message(chat_id, self.admin_overview_text(summary, prefix, lang=lang), message_id, reply_markup=admin_dashboard_markup(lang=lang))
+        await self.send_message(
+            chat_id,
+            self.admin_overview_text(summary, prefix, lang=lang, posting_mode=posting_mode),
+            message_id,
+            reply_markup=admin_dashboard_markup(lang=lang),
+        )
 
     async def show_admin_users(self, chat_id: int, message_id: int, user_id: int, page: int = 0, *, edit: bool = False) -> None:
         lang = await self.user_language(user_id)
@@ -1862,6 +1955,20 @@ class TelegramBotApp:
             await self.edit_message(chat_id, message_id, self.admin_broadcast_menu_card(lang=lang), reply_markup=self.admin_broadcast_menu_markup(lang=lang))
         else:
             await self.send_message(chat_id, self.admin_broadcast_menu_card(lang=lang), message_id, reply_markup=self.admin_broadcast_menu_markup(lang=lang))
+
+    async def show_admin_posting_mode(self, chat_id: int, message_id: int, user_id: int, prefix: str = "", *, edit: bool = False) -> None:
+        if not self.is_admin_user(user_id):
+            await self.send_message(chat_id, "Admin dashboard is restricted.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+            return
+        lang = await self.user_language(user_id)
+        mode = await self.get_posting_mode()
+        self.set_dashboard_session(chat_id, user_id, {"action": "admin_posting_mode", "step": "select", "lang": lang})
+        text = self.admin_posting_mode_card(mode, prefix=prefix, lang=lang)
+        markup = self.admin_posting_mode_markup(mode, lang=lang)
+        if edit:
+            await self.edit_message(chat_id, message_id, text, reply_markup=markup)
+        else:
+            await self.send_message(chat_id, text, message_id, reply_markup=markup)
 
     async def show_admin_broadcast_users(self, chat_id: int, message_id: int, user_id: int, page: int = 0, *, edit: bool = True) -> None:
         lang = await self.user_language(user_id)
@@ -3018,6 +3125,7 @@ class TelegramBotApp:
             "admin_users",
             "admin_delete_users",
             "admin_broadcast",
+            "admin_posting_mode",
             "admin_accounts",
             "admin_post_stats",
             "admin_runtime_locks",
@@ -3036,6 +3144,8 @@ class TelegramBotApp:
                 await self.show_admin_delete_users(chat_id, message_id, user_id)
             elif action == "admin_broadcast":
                 await self.show_admin_broadcast_menu(chat_id, message_id, user_id)
+            elif action == "admin_posting_mode":
+                await self.show_admin_posting_mode(chat_id, message_id, user_id)
             elif action == "admin_accounts":
                 await self.show_admin_accounts(chat_id, message_id, user_id)
             elif action == "admin_post_stats":
@@ -4253,6 +4363,14 @@ class TelegramBotApp:
             await self.show_admin_dashboard(chat_id, message_id, user_id)
             return
 
+        if data.startswith("adm:posting_mode:"):
+            requested_mode = data.rsplit(":", 1)[-1]
+            mode = await self.set_posting_mode(requested_mode)
+            label = posting_mode_label(mode, lang)
+            prefix = f"تم تحديث طريقة النشر إلى {label}." if lang == "ar" else f"Posting mode updated to {label}."
+            await self.show_admin_posting_mode(chat_id, message_id, user_id, prefix=prefix, edit=True)
+            return
+
         if data.startswith("adm:users:"):
             try:
                 page = int(data.rsplit(":", 1)[-1])
@@ -5084,6 +5202,7 @@ class TelegramBotApp:
             "admin_users",
             "admin_delete_users",
             "admin_broadcast",
+            "admin_posting_mode",
             "admin_accounts",
             "admin_post_stats",
             "admin_runtime_locks",
@@ -6360,6 +6479,14 @@ class TelegramBotApp:
             for job in jobs
         }
         try:
+            posting_mode = await self.get_posting_mode()
+            lang = await self.user_language(user_id)
+            posting_mode_display = posting_mode_label(posting_mode, lang)
+            posting_mode_detail = (
+                f"طريقة النشر: {posting_mode_display}. تم تجهيز {len(jobs)} صفحة."
+                if lang == "ar"
+                else f"Posting mode: {posting_mode_display}. Queued {len(jobs)} page job(s)."
+            )
             self.debug_event(
                 "batch_post_start",
                 trace_id,
@@ -6367,6 +6494,7 @@ class TelegramBotApp:
                 account_id=account_id,
                 job_count=len(jobs),
                 post_types=sorted({str(job.get("post_type") or "") for job in jobs}),
+                posting_mode=posting_mode,
             )
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
@@ -6376,7 +6504,7 @@ class TelegramBotApp:
                     jobs,
                     page_statuses,
                     debug_id=trace_id,
-                    active_detail=f"Queued {len(jobs)} page job(s).",
+                    active_detail=posting_mode_detail,
                 ),
             )
             progress_message_id = await self.edit_or_send_message(
@@ -6539,9 +6667,21 @@ class TelegramBotApp:
                 )
 
             results_task = asyncio.create_task(
-                create_facebook_posts(cookies_json(parse_cookies(cookie_string)), posts, progress_callback=progress_callback)
+                create_facebook_posts(
+                    cookies_json(parse_cookies(cookie_string)),
+                    posts,
+                    progress_callback=progress_callback,
+                    posting_mode=posting_mode,
+                )
             )
-            self.debug_event("batch_post_engine_start", trace_id, batch_id=batch_id, timeout_seconds=engine_timeout, post_count=len(posts))
+            self.debug_event(
+                "batch_post_engine_start",
+                trace_id,
+                batch_id=batch_id,
+                timeout_seconds=engine_timeout,
+                post_count=len(posts),
+                posting_mode=posting_mode,
+            )
             results = await self.wait_for_task_with_heartbeat(
                 results_task,
                 timeout_seconds=engine_timeout,

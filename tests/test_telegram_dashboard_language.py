@@ -64,6 +64,7 @@ def test_admin_dashboard_keyboard_has_language_button():
     assert "🌐 Language" in labels
     assert "🗑 Delete Users" in labels
     assert "📣 Broadcast" in labels
+    assert "⚙️ Posting Mode" in labels
     assert markup["is_persistent"] is False
     assert "📊 System Stats" not in labels
     assert "📈 Post Stats" not in labels
@@ -74,6 +75,7 @@ def test_admin_dashboard_keyboard_has_language_button():
     assert dashboard_action("🌐 Language") == "language"
     assert dashboard_action("🗑 Delete Users") == "admin_delete_users"
     assert dashboard_action("📣 Broadcast") == "admin_broadcast"
+    assert dashboard_action("⚙️ Posting Mode") == "admin_posting_mode"
 
 
 def test_user_dashboard_admin_row_includes_language_and_admin_dashboard():
@@ -91,6 +93,7 @@ def test_arabic_admin_dashboard_keyboard_is_translated():
     assert "👥 المستخدمين" in labels
     assert "🗑 حذف مستخدمين" in labels
     assert "📣 إرسال تنبيه" in labels
+    assert "⚙️ طريقة النشر" in labels
     assert "📊 إحصائيات النظام" not in labels
     assert "📈 إحصائيات المنشورات" not in labels
     assert "⚙️ إعدادات النظام" not in labels
@@ -99,6 +102,7 @@ def test_arabic_admin_dashboard_keyboard_is_translated():
     assert "🔑 الحسابات" not in labels
     assert dashboard_action("🗑 حذف مستخدمين") == "admin_delete_users"
     assert dashboard_action("📣 إرسال تنبيه") == "admin_broadcast"
+    assert dashboard_action("⚙️ طريقة النشر") == "admin_posting_mode"
 
 
 def test_arabic_dashboard_account_status_icons_are_left_aligned():

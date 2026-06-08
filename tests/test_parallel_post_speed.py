@@ -1,4 +1,5 @@
 import importlib.util
+import asyncio
 from pathlib import Path
 
 
@@ -29,6 +30,40 @@ def test_parallel_effective_concurrency_caps_to_render_context_budget(monkeypatc
     assert engine._parallel_batch_effective_concurrency(total=2) == 2
     assert engine._parallel_batch_effective_concurrency(total=4) == 3
     assert engine._parallel_batch_effective_concurrency(total=4, max_parallel=2) == 2
+
+
+def test_batch_posting_mode_defaults_to_sequential_and_parallel_is_opt_in(monkeypatch):
+    calls = []
+
+    async def stage_posts(posts):
+        return list(posts), []
+
+    async def sequential_path(cookies_json, posts, progress_callback=None):
+        del cookies_json, progress_callback
+        calls.append(("sequential", len(posts)))
+        return [{"page": post.get("page_name"), "success": True, "result": "ok"} for post in posts]
+
+    async def parallel_path(cookies_json, posts, progress_callback=None, max_parallel=None):
+        del cookies_json, progress_callback
+        calls.append(("parallel", len(posts), max_parallel))
+        return [{"page": post.get("page_name"), "success": True, "result": "ok"} for post in posts]
+
+    monkeypatch.setattr(engine, "POST_PARALLEL_BATCH_ENABLED", True)
+    monkeypatch.setattr(engine, "MAX_PARALLEL_PAGES", 3)
+    monkeypatch.setattr(engine, "_stage_batch_media_sources", stage_posts)
+    monkeypatch.setattr(engine, "_cleanup_staged_batch_media", lambda paths: None)
+    monkeypatch.setattr(engine, "_create_facebook_posts_unstaged", sequential_path)
+    monkeypatch.setattr(engine, "_create_facebook_posts_parallel_unstaged", parallel_path)
+
+    posts = [
+        {"page_name": "Page A", "post_type": "text", "media_url": ""},
+        {"page_name": "Page B", "post_type": "text", "media_url": ""},
+    ]
+
+    asyncio.run(engine._create_facebook_posts_browser("[]", posts))
+    asyncio.run(engine._create_facebook_posts_browser("[]", posts, posting_mode="parallel"))
+
+    assert calls == [("sequential", 2), ("parallel", 2, 3)]
 
 
 def test_parallel_worker_cookies_replace_page_actor_cookie():

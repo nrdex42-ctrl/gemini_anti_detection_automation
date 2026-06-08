@@ -199,6 +199,15 @@ POST_PARALLEL_PAGES_PORTAL_VIDEO_TIMEOUT_SECONDS = _env_int(
     120,
     minimum=0,
 )
+
+
+def _normalize_batch_posting_mode(mode: str = '') -> str:
+    normalized = str(mode or '').strip().lower()
+    if normalized in {'parallel', 'concurrent', 'multi', 'multipage'}:
+        return 'parallel'
+    return 'sequential'
+
+
 POST_PREFER_DIRECT_POSTING = os.getenv('POST_PREFER_DIRECT_POSTING', 'true').lower() == 'true'
 POST_SKIP_DIRECT_AFTER_MEDIA_PORTAL_TIMEOUT = (
     os.getenv('POST_SKIP_DIRECT_AFTER_MEDIA_PORTAL_TIMEOUT', 'true').lower() == 'true'
@@ -10225,12 +10234,15 @@ async def _create_facebook_posts_browser(
     cookies_json: str,
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    posting_mode: str = 'sequential',
 ) -> List[Dict[str, Any]]:
     staged_paths: List[str] = []
     try:
         staged_posts, staged_paths = await _stage_batch_media_sources(posts)
+        mode = _normalize_batch_posting_mode(posting_mode)
         if (
-            POST_PARALLEL_BATCH_ENABLED
+            mode == 'parallel'
+            and POST_PARALLEL_BATCH_ENABLED
             and len(staged_posts) > 1
             and not _batch_has_mixed_media_modes(staged_posts)
         ):
@@ -10247,7 +10259,8 @@ async def _create_facebook_posts_browser(
         if len(staged_posts) > 1:
             logger.info(
                 f'Batch async adaptive mode: sequential pages={len(staged_posts)} '
-                f'parallel_enabled={POST_PARALLEL_BATCH_ENABLED} mixed_media={_batch_has_mixed_media_modes(staged_posts)}'
+                f'posting_mode={mode} parallel_enabled={POST_PARALLEL_BATCH_ENABLED} '
+                f'mixed_media={_batch_has_mixed_media_modes(staged_posts)}'
             )
         return await _create_facebook_posts_unstaged(cookies_json, staged_posts, progress_callback)
     finally:
@@ -10258,34 +10271,50 @@ async def _create_facebook_posts_legacy(
     cookies_json: str,
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    posting_mode: str = 'sequential',
 ) -> List[Dict[str, Any]]:
     fast_results = await _try_create_facebook_posts_fast_http(
         cookies_json,
         posts,
         progress_callback,
-        lambda fallback_posts: _create_facebook_posts_browser(cookies_json, fallback_posts, progress_callback),
+        lambda fallback_posts: _create_facebook_posts_browser(cookies_json, fallback_posts, progress_callback, posting_mode),
     )
     if fast_results is not None:
         return fast_results
-    return await _create_facebook_posts_browser(cookies_json, posts, progress_callback)
+    return await _create_facebook_posts_browser(cookies_json, posts, progress_callback, posting_mode)
 
 
 async def create_facebook_posts(
     cookies_json: str,
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    posting_mode: str = 'sequential',
 ) -> List[Dict[str, Any]]:
+    mode = _normalize_batch_posting_mode(posting_mode)
+
+    async def legacy_create_posts_for_mode(
+        legacy_cookies_json: str,
+        legacy_posts: List[Dict[str, Any]],
+        legacy_progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    ) -> List[Dict[str, Any]]:
+        return await _create_facebook_posts_legacy(
+            legacy_cookies_json,
+            legacy_posts,
+            legacy_progress_callback,
+            posting_mode=mode,
+        )
+
     try:
         from integration_adapter import IntegrationAdapter
 
-        return await IntegrationAdapter(legacy_create_posts=_create_facebook_posts_legacy).create_posts(
+        return await IntegrationAdapter(legacy_create_posts=legacy_create_posts_for_mode).create_posts(
             cookies_json,
             posts,
             progress_callback,
         )
     except Exception as exc:
         logger.warning(f'Integration adapter failed; using legacy batch path: {exc}')
-        return await _create_facebook_posts_legacy(cookies_json, posts, progress_callback)
+        return await _create_facebook_posts_legacy(cookies_json, posts, progress_callback, posting_mode=mode)
 
 
 async def _create_facebook_posts_parallel_unstaged(
@@ -10703,8 +10732,9 @@ def create_facebook_posts_sync(
     cookies_json: str,
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    posting_mode: str = 'sequential',
 ) -> List[Dict[str, Any]]:
-    return asyncio.run(create_facebook_posts(cookies_json, posts, progress_callback))
+    return asyncio.run(create_facebook_posts(cookies_json, posts, progress_callback, posting_mode=posting_mode))
 
 
 def _create_facebook_posts_unstaged_sync(
@@ -10743,13 +10773,16 @@ def _create_batch_posts_sync_browser_adaptive(
     cookies_json: str,
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    posting_mode: str = 'sequential',
 ) -> List[Dict[str, Any]]:
     staged_paths: List[str] = []
     try:
         staged_posts, staged_paths = _stage_batch_media_sources_sync(posts)
         timeout_result = _batch_operation_slot_timeout_results(staged_posts)
+        mode = _normalize_batch_posting_mode(posting_mode)
         if (
-            POST_PARALLEL_BATCH_ENABLED
+            mode == 'parallel'
+            and POST_PARALLEL_BATCH_ENABLED
             and len(staged_posts) > 1
             and not _batch_has_mixed_media_modes(staged_posts)
         ):
@@ -10769,7 +10802,8 @@ def _create_batch_posts_sync_browser_adaptive(
         if len(staged_posts) > 1:
             logger.info(
                 f'Batch sync adaptive mode: sequential pages={len(staged_posts)} '
-                f'parallel_enabled={POST_PARALLEL_BATCH_ENABLED} mixed_media={_batch_has_mixed_media_modes(staged_posts)}'
+                f'posting_mode={mode} parallel_enabled={POST_PARALLEL_BATCH_ENABLED} '
+                f'mixed_media={_batch_has_mixed_media_modes(staged_posts)}'
             )
         return _run_with_post_operation_slot(
             lambda: _create_facebook_posts_unstaged_sync(cookies_json, staged_posts, progress_callback),
@@ -10809,6 +10843,7 @@ def _create_batch_posts_sync_adaptive(
     cookies_json: str,
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    posting_mode: str = 'sequential',
 ) -> List[Dict[str, Any]]:
     fast_results = _try_create_facebook_posts_fast_http_sync(
         cookies_json,
@@ -10818,11 +10853,12 @@ def _create_batch_posts_sync_adaptive(
             cookies_json,
             fallback_posts,
             progress_callback,
+            posting_mode,
         ),
     )
     if fast_results is not None:
         return fast_results
-    return _create_batch_posts_sync_browser_adaptive(cookies_json, posts, progress_callback)
+    return _create_batch_posts_sync_browser_adaptive(cookies_json, posts, progress_callback, posting_mode)
 
 
 def _batch_operation_slot_timeout_results(posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -10925,6 +10961,7 @@ def create_facebook_posts_with_account_lock_sync(
     cookies_json: str,
     posts: List[Dict[str, Any]],
     account_lock_key: str,
+    posting_mode: str = 'sequential',
 ) -> List[Dict[str, Any]]:
     """Serialize a multi-page batch for a single Facebook account."""
     logger.info(f"🔑 Initializing batch account lock check for key: {account_lock_key}")
@@ -10954,10 +10991,10 @@ def create_facebook_posts_with_account_lock_sync(
         pg_conn = _acquire_postgres_account_lock(account_lock_key, POST_BATCH_ACCOUNT_LOCK_WAIT_SECONDS)
         if pg_conn is not None:
             try:
-                return _create_batch_posts_sync_adaptive(cookies_json, posts, progress_callback)
+                return _create_batch_posts_sync_adaptive(cookies_json, posts, progress_callback, posting_mode)
             finally:
                 _release_postgres_account_lock(pg_conn, account_lock_key)
-        return _create_batch_posts_sync_adaptive(cookies_json, posts, progress_callback)
+        return _create_batch_posts_sync_adaptive(cookies_json, posts, progress_callback, posting_mode)
 
     lock_name = _post_account_lock_name(account_lock_key)
     lock_ttl = _batch_account_lock_ttl_seconds(posts)
@@ -11044,7 +11081,7 @@ def create_facebook_posts_with_account_lock_sync(
             'done': 0,
             'total': total_posts,
         })
-        return _create_batch_posts_sync_adaptive(cookies_json, posts, progress_callback)
+        return _create_batch_posts_sync_adaptive(cookies_json, posts, progress_callback, posting_mode)
     finally:
         if acquired:
             try:
