@@ -4254,7 +4254,7 @@ class TelegramBotApp:
             if return_to_admin:
                 await self.show_admin_dashboard(chat_id, message_id, user_id, prefix=prefix)
             else:
-                await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
+                await self.show_dashboard(chat_id, 0, prefix=prefix, user_id=user_id)
             return
 
         session = self.get_dashboard_session(chat_id, user_id)
