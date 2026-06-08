@@ -395,7 +395,11 @@ def dashboard_markup(
         rows.append([button_text("language", lang), button_text("admin", lang)])
     else:
         rows.append([button_text("language", lang)])
-    return reply_keyboard(rows, placeholder=tr(lang, "Choose a dashboard action...", "اختر إجراء لوحة التحكم..."))
+    return reply_keyboard(
+        rows,
+        placeholder=tr(lang, "Tap the square button for dashboard actions", "اضغط زر المربع لإظهار أزرار لوحة التحكم"),
+        persistent=False,
+    )
 
 
 def admin_dashboard_markup(lang: str = "en") -> Dict[str, Any]:
@@ -406,6 +410,7 @@ def admin_dashboard_markup(lang: str = "en") -> Dict[str, Any]:
             [button_text("user_dashboard", lang)],
         ],
         placeholder=tr(lang, "Choose an admin action...", "اختر إجراء للأدمن..."),
+        persistent=False,
     )
 
 
@@ -951,8 +956,8 @@ def dashboard_text(
             "",
             tr(
                 lang,
-                "Use the keyboard buttons below. /start refreshes this dashboard.",
-                "استخدم أزرار لوحة الكتابة بالأسفل. /start يحدّث لوحة التحكم.",
+                "Use the dashboard buttons below, or tap the square button beside media to open them. /start refreshes this dashboard.",
+                "استخدم أزرار لوحة التحكم بالأسفل، أو اضغط زر المربع بجانب الميديا لإظهارها. /start يحدّث لوحة التحكم.",
             ),
         ]
     )

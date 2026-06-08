@@ -29,6 +29,8 @@ def test_arabic_dashboard_keyboard_actions_and_prompts():
     assert markup["keyboard"][0] == ["➕ إضافة حساب", "🔁 تغيير الحساب", "👤 حساباتي"]
     assert markup["keyboard"][1] == ["⚡ الصفحات", "🧪 فحص الكوكيز", "📊 سجل المنشورات"]
     assert markup["keyboard"][2] == ["🌐 اللغة"]
+    assert markup["is_persistent"] is False
+    assert "زر المربع" in markup["input_field_placeholder"]
     assert "⚡ الصفحات" in labels
     assert "🌐 اللغة" in labels
     assert "📝 منشور نصي" not in labels
@@ -56,11 +58,13 @@ def test_arabic_dashboard_keyboard_actions_and_prompts():
 
 
 def test_admin_dashboard_keyboard_has_language_button():
-    labels = _reply_labels(admin_dashboard_markup())
+    markup = admin_dashboard_markup()
+    labels = _reply_labels(markup)
 
     assert "🌐 Language" in labels
     assert "🗑 Delete Users" in labels
     assert "📣 Broadcast" in labels
+    assert markup["is_persistent"] is False
     assert "📊 System Stats" not in labels
     assert "📈 Post Stats" not in labels
     assert "⚙️ System Config" not in labels
