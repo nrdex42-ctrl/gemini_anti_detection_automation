@@ -24,9 +24,9 @@ def test_arabic_dashboard_keyboard_actions_and_prompts():
     labels = _reply_labels(markup)
 
     assert markup["keyboard"][0] == ["➕ إضافة حساب", "🔁 تغيير الحساب", "👤 حساباتي"]
-    assert markup["keyboard"][1] == ["⚡ النشر في الصفحات", "🧪 فحص الكوكيز", "📊 سجل المنشورات"]
+    assert markup["keyboard"][1] == ["⚡ الصفحات", "🧪 فحص الكوكيز", "📊 سجل المنشورات"]
     assert markup["keyboard"][2] == ["🌐 اللغة"]
-    assert "⚡ النشر في الصفحات" in labels
+    assert "⚡ الصفحات" in labels
     assert "🌐 اللغة" in labels
     assert "📝 منشور نصي" not in labels
     assert "📸 منشور صورة" not in labels

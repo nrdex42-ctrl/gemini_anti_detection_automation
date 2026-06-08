@@ -43,7 +43,7 @@ BUTTON_SYSTEM_CONFIG = "⚙️ System Config"
 BUTTON_DEBUG_SNAPSHOT = "🧰 Debug Snapshot"
 
 AR_BUTTON_ADD_ACCOUNT = "➕ إضافة حساب"
-AR_BUTTON_POST_ACTIVE = "⚡ النشر في الصفحات"
+AR_BUTTON_POST_ACTIVE = "⚡ الصفحات"
 AR_BUTTON_QUICK_TEXT = "📝 منشور نصي"
 AR_BUTTON_QUICK_IMAGE = "📸 منشور صورة"
 AR_BUTTON_QUICK_VIDEO = "🎬 منشور ريلز"
