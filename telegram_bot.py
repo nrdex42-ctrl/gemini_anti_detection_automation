@@ -571,6 +571,7 @@ class TelegramBotApp:
         if _env_bool("AUTO_INIT_DB", True):
             await asyncio.to_thread(self.storage.ensure_schema)
             logger.info("Supabase/Postgres schema ready")
+        await self.release_interrupted_account_locks_on_startup()
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         if _env_bool("AUTO_SET_TELEGRAM_WEBHOOK", True):
             await self.configure_telegram_webhook()
@@ -578,6 +579,22 @@ class TelegramBotApp:
             self.startup_validation_and_broadcast(),
             "startup validation and broadcast"
         )
+
+    async def release_interrupted_account_locks_on_startup(self) -> None:
+        if not _env_bool("BOT_RELEASE_ACCOUNT_LOCKS_ON_STARTUP", True):
+            return
+        try:
+            released = await asyncio.to_thread(
+                self.storage.release_account_runtime_locks_by_owner_prefix,
+                "telegram:",
+            )
+            if released:
+                logger.warning(
+                    "Released %d interrupted Telegram account runtime lock(s) on startup.",
+                    released,
+                )
+        except Exception:
+            logger.exception("Failed to release interrupted account runtime locks on startup")
 
     async def cleanup(self, app: web.Application) -> None:
         for task in list(self.background_tasks):
@@ -6211,9 +6228,11 @@ class TelegramBotApp:
         )
         poll_seconds = _env_int("BOT_ACCOUNT_LOCK_POLL_SECONDS", 10, minimum=1)
         max_wait_seconds = _env_int("BOT_ACCOUNT_LOCK_MAX_WAIT_SECONDS", 3600, minimum=60)
+        stale_lock_seconds = _env_int("BOT_ACCOUNT_LOCK_STALE_SECONDS", 90, minimum=0)
         storage_timeout_seconds = _env_int("BOT_STORAGE_OPERATION_TIMEOUT_SECONDS", 45, minimum=5)
         started = time.monotonic()
         notified_wait = False
+        last_stale_cleanup_at = 0.0
 
         async def notify(detail: str) -> None:
             if progress_update is not None:
@@ -6249,9 +6268,38 @@ class TelegramBotApp:
             if runtime:
                 return True
 
-            if time.monotonic() - started > max_wait_seconds:
+            elapsed_seconds = time.monotonic() - started
+            if (
+                stale_lock_seconds > 0
+                and elapsed_seconds >= stale_lock_seconds
+                and time.monotonic() - last_stale_cleanup_at >= max(10, poll_seconds)
+            ):
+                last_stale_cleanup_at = time.monotonic()
+                try:
+                    released = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.storage.release_stale_account_runtime_locks,
+                            stale_lock_seconds,
+                            "telegram:",
+                        ),
+                        timeout=storage_timeout_seconds,
+                    )
+                    if released:
+                        self.debug_event(
+                            "account_slot_stale_locks_released",
+                            trace_id,
+                            account_id=account_id,
+                            released=released,
+                            stale_seconds=stale_lock_seconds,
+                        )
+                        await notify("Previous posting lock was interrupted. Retrying the account slot...")
+                        continue
+                except Exception:
+                    logger.exception("Failed to clear stale account runtime locks")
+
+            if elapsed_seconds > max_wait_seconds:
                 raise RuntimeError(f"Timed out waiting for account lock: {account_id}")
-            elapsed = int(time.monotonic() - started)
+            elapsed = int(elapsed_seconds)
             if progress_update is not None:
                 await notify(f"Account is busy; waiting for an isolated posting slot. {elapsed}s elapsed.")
             elif not notified_wait:

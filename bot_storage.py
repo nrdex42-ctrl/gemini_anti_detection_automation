@@ -1338,6 +1338,43 @@ class BotStorage:
             conn.commit()
         return changed
 
+    def release_account_runtime_locks_by_owner_prefix(self, owner_prefix: str = "telegram:") -> int:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update fb_account_runtime
+                    set locked_until = null,
+                        locked_by = null,
+                        updated_at = now()
+                    where locked_until is not null
+                      and coalesce(locked_by, '') like %s
+                    """,
+                    (f"{owner_prefix}%",),
+                )
+                changed = cur.rowcount
+            conn.commit()
+        return int(changed or 0)
+
+    def release_stale_account_runtime_locks(self, stale_seconds: int, owner_prefix: str = "telegram:") -> int:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    update fb_account_runtime
+                    set locked_until = null,
+                        locked_by = null,
+                        updated_at = now()
+                    where locked_until is not null
+                      and coalesce(locked_by, '') like %s
+                      and updated_at < now() - (%s || ' seconds')::interval
+                    """,
+                    (f"{owner_prefix}%", int(stale_seconds)),
+                )
+                changed = cur.rowcount
+            conn.commit()
+        return int(changed or 0)
+
     def mark_job_started(self, job_id: str) -> None:
         with self.connect() as conn:
             with conn.cursor() as cur:

@@ -47,6 +47,10 @@ services:
         value: "10"
       - key: BOT_ACCOUNT_LOCK_HEARTBEAT_SECONDS
         value: "30"
+      - key: BOT_RELEASE_ACCOUNT_LOCKS_ON_STARTUP
+        value: "true"
+      - key: BOT_ACCOUNT_LOCK_STALE_SECONDS
+        value: "90"
       - key: BOT_ALLOW_ACCOUNT_OWNERSHIP_TRANSFER
         value: "true"
       - key: BOT_DASHBOARD_SESSION_TTL_SECONDS

@@ -158,3 +158,85 @@ def test_account_slot_wait_ignores_cookie_cooldown_env(monkeypatch):
         assert not any("cooldown" in item.lower() for item in updates)
 
     asyncio.run(run())
+
+
+def test_startup_releases_interrupted_account_locks(monkeypatch):
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+
+        class Storage:
+            def __init__(self):
+                self.prefixes = []
+
+            def release_account_runtime_locks_by_owner_prefix(self, owner_prefix):
+                self.prefixes.append(owner_prefix)
+                return 2
+
+        storage = Storage()
+        app.storage = storage
+        monkeypatch.setenv("BOT_RELEASE_ACCOUNT_LOCKS_ON_STARTUP", "true")
+
+        await app.release_interrupted_account_locks_on_startup()
+
+        assert storage.prefixes == ["telegram:"]
+
+    asyncio.run(run())
+
+
+def test_account_slot_wait_clears_stale_interrupted_lock(monkeypatch):
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.debug_event = lambda *args, **kwargs: None
+        updates = []
+        sleeps = []
+
+        class Storage:
+            def __init__(self):
+                self.claims = 0
+                self.stale_calls = []
+
+            def claim_account_runtime(self, account_id, owner, lease_seconds):
+                self.claims += 1
+                if self.claims == 1:
+                    return None
+                return {
+                    "account_id": account_id,
+                    "last_cookie_used_at": "recent",
+                    "locked_until": None,
+                    "locked_by": owner,
+                }
+
+            def release_stale_account_runtime_locks(self, stale_seconds, owner_prefix):
+                self.stale_calls.append((stale_seconds, owner_prefix))
+                return 1
+
+        async def progress_update(detail):
+            updates.append(detail)
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        times = iter([0, 2, 20])
+
+        def fake_monotonic():
+            try:
+                return next(times)
+            except StopIteration:
+                return 20
+
+        storage = Storage()
+        app.storage = storage
+        monkeypatch.setenv("BOT_ACCOUNT_LOCK_STALE_SECONDS", "1")
+        monkeypatch.setenv("BOT_ACCOUNT_LOCK_POLL_SECONDS", "1")
+        monkeypatch.setattr(telegram_bot.time, "monotonic", fake_monotonic)
+        monkeypatch.setattr(telegram_bot.asyncio, "sleep", fake_sleep)
+
+        acquired = await app.wait_for_account_slot("acct_1", "owner_1", 123, progress_update)
+
+        assert acquired is True
+        assert storage.claims == 2
+        assert storage.stale_calls == [(1, "telegram:")]
+        assert sleeps == []
+        assert any("Previous posting lock was interrupted" in item for item in updates)
+
+    asyncio.run(run())
