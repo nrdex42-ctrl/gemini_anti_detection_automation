@@ -940,9 +940,21 @@ class TelegramBotApp:
         if not active_session:
             return
         lang = str(active_session.get("lang") or await self.user_language(user_id))
-        control_key = f"{stage}:{lang}"
+        normalized_stage = str(stage or "").strip()
+        if normalized_stage == "page":
+            normalized_stage = "page_select"
         existing_key = str(active_session.get("post_stage_controls_key") or "")
         existing_message_id = int(active_session.get("post_stage_controls_message_id") or 0)
+        if normalized_stage == "page_select":
+            if existing_message_id:
+                with suppress(Exception):
+                    await self.delete_message(chat_id, existing_message_id)
+            active_session.pop("post_stage_controls_message_id", None)
+            active_session.pop("post_stage_controls_key", None)
+            active_session["lang"] = lang
+            self.set_dashboard_session(chat_id, user_id, active_session)
+            return
+        control_key = f"{normalized_stage}:{lang}"
         if existing_key == control_key and existing_message_id:
             return
         if existing_message_id:
@@ -950,9 +962,9 @@ class TelegramBotApp:
                 await self.delete_message(chat_id, existing_message_id)
         sent = await self.send_message(
             chat_id,
-            post_stage_control_card(stage, lang=lang),
+            post_stage_control_card(normalized_stage, lang=lang),
             reply_to_message_id,
-            reply_markup=post_stage_reply_markup(stage, lang=lang),
+            reply_markup=post_stage_reply_markup(normalized_stage, lang=lang),
         )
         new_message_id = int((sent.get("result") or {}).get("message_id") or 0)
         if new_message_id:

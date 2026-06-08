@@ -255,6 +255,43 @@ def test_page_selection_fallback_instruction_uses_session_language():
     asyncio.run(run())
 
 
+def test_page_selection_stage_controls_are_removed():
+    async def run():
+        app, sent = build_session_app(
+            {
+                "action": "post",
+                "step": "page_select",
+                "lang": "ar",
+                "account_id": "acct_1",
+                "post_stage_controls_message_id": 444,
+                "post_stage_controls_key": "review:ar",
+            },
+            lang="ar",
+        )
+        deleted = []
+
+        async def delete_message(chat_id, message_id):
+            deleted.append((chat_id, message_id))
+
+        app.delete_message = delete_message
+
+        await app.send_post_stage_controls(
+            123,
+            99,
+            456,
+            app.get_dashboard_session(123, 99),
+            "page_select",
+        )
+
+        assert sent == []
+        assert deleted == [(123, 444)]
+        session = app.get_dashboard_session(123, 99)
+        assert "post_stage_controls_message_id" not in session
+        assert "post_stage_controls_key" not in session
+
+    asyncio.run(run())
+
+
 def test_active_multi_video_upload_consumes_stale_dashboard_button_text():
     async def run():
         app, sent = build_session_app(
