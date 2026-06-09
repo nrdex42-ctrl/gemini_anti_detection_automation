@@ -24,17 +24,14 @@ def test_multi_video_caption_prompt_uses_shared_caption_step():
     }
 
     text = app.multi_video_caption_prompt(session)
-    instructions = app.multi_video_caption_instruction_card(session)
 
     assert "Video Caption" in text
     assert "Videos received: 2/2" in text
     assert "Current caption: Shared caption" in text
     assert "Send one shared caption for all videos." not in text
-    assert "Send one shared caption for all videos." in instructions
-    assert "tap ✅ Done" in instructions
 
 
-def test_final_multi_video_upload_sends_caption_instructions_as_separate_card():
+def test_final_multi_video_upload_sends_single_caption_card_without_instructions_card():
     async def run():
         app, sent = build_session_app(
             {
@@ -62,16 +59,51 @@ def test_final_multi_video_upload_sends_caption_instructions_as_separate_card():
         )
 
         assert handled is True
-        assert len(sent) == 2
+        assert len(sent) == 1
         assert "✅ All 2 videos received." in sent[0]["text"]
         assert "Videos received: 2/2" in sent[0]["text"]
         assert "Send one shared caption" not in sent[0]["text"]
-        assert "Caption Instructions" in sent[1]["text"]
-        assert "Send one shared caption for all videos." in sent[1]["text"]
-        assert sent[1]["reply_markup"]["keyboard"][0] == ["✅ Done"]
+        assert "Caption Instructions" not in sent[0]["text"]
+        assert sent[0]["reply_markup"]["keyboard"][0] == ["⬅️ Back to Dashboard", "❌ Cancel"]
         session = app.get_dashboard_session(123, 99)
         assert session["step"] == "multi_caption"
         assert session["multi_media_paths"] == ["/tmp/one.mp4", "/tmp/two.mp4"]
+
+    asyncio.run(run())
+
+
+def test_partial_multi_video_upload_does_not_send_received_card():
+    async def run():
+        app, sent = build_session_app(
+            {
+                "action": "post",
+                "step": "multi_video_upload",
+                "lang": "en",
+                "account_id": "acct_1",
+                "pages": [{"page_name": "Huawei"}, {"page_name": "Oppo"}],
+                "selected_pages": [0, 1],
+                "multi_media_paths": [],
+            }
+        )
+
+        async def download_file(file_id, account_id):
+            return "/tmp/one.mp4"
+
+        app.download_file = download_file
+
+        handled = await app.handle_dashboard_session(
+            123,
+            99,
+            456,
+            "",
+            {"video": {"file_id": "video_1"}},
+        )
+
+        assert handled is True
+        assert sent == []
+        session = app.get_dashboard_session(123, 99)
+        assert session["step"] == "multi_video_upload"
+        assert session["multi_media_paths"] == ["/tmp/one.mp4"]
 
     asyncio.run(run())
 
@@ -424,14 +456,55 @@ def test_final_multi_image_upload_sends_image_caption_cards():
         )
 
         assert handled is True
-        assert len(sent) == 2
+        assert len(sent) == 1
         assert "✅ All 2 images received." in sent[0]["text"]
         assert "Images received: 2/2" in sent[0]["text"]
-        assert "Send one shared caption for all images." in sent[1]["text"]
+        assert "Send one shared caption for all images." not in sent[0]["text"]
+        assert "Caption Instructions" not in sent[0]["text"]
+        assert sent[0]["reply_markup"]["keyboard"][0] == ["⬅️ Back to Dashboard", "❌ Cancel"]
         session = app.get_dashboard_session(123, 99)
         assert session["step"] == "multi_caption"
         assert session["post_type"] == "image"
         assert session["multi_media_paths"] == ["/tmp/one.jpg", "/tmp/two.jpg"]
+
+    asyncio.run(run())
+
+
+def test_multi_caption_message_opens_review_card_immediately():
+    async def run():
+        app, sent = build_session_app(
+            {
+                "action": "post",
+                "step": "multi_caption",
+                "lang": "en",
+                "account_id": "acct_1",
+                "pages": [{"page_name": "Huawei"}, {"page_name": "Oppo"}],
+                "selected_pages": [0, 1],
+                "post_type": "video",
+                "caption_draft": "",
+                "multi_media_paths": ["/tmp/one.mp4", "/tmp/two.mp4"],
+            }
+        )
+        reviewed = []
+
+        async def show_post_review(chat_id, message_id, user_id, session, *, edit=False):
+            reviewed.append(dict(session))
+
+        app.show_post_review = show_post_review
+
+        handled = await app.handle_dashboard_session(
+            123,
+            99,
+            456,
+            "Shared caption",
+            {"text": "Shared caption"},
+        )
+
+        assert handled is True
+        assert sent == []
+        assert reviewed
+        assert reviewed[0]["caption"] == "Shared caption"
+        assert "caption_draft" not in reviewed[0]
 
     asyncio.run(run())
 

@@ -39,7 +39,6 @@ from telegram_dashboard import (
     dashboard_action,
     dashboard_markup,
     dashboard_text,
-    done_cancel_markup,
     inline_button,
     inline_markup,
     image_mode_card,
@@ -2467,31 +2466,6 @@ class TelegramBotApp:
             lines.extend(["", f"Current caption: {compact_text(draft, 700)}"])
         return "\n".join(lines)
 
-    def multi_video_caption_instruction_card(self, session: Dict[str, Any]) -> str:
-        lang = str(session.get("lang") or "en")
-        post_type = "image" if str(session.get("post_type") or "") == "image" else "video"
-        plural = "الصور" if post_type == "image" else "الريلز"
-        english_plural = "images" if post_type == "image" else "videos"
-        if lang == "ar":
-            return "\n".join(
-                [
-                    "ℹ️ تعليمات الكابشن",
-                    "━━━━━━━━━━━━━━━━━━",
-                    f"ابعت كابشن واحد مشترك لكل {plural}.",
-                    "ابعت مسافة واحدة لو عايز تنشر بدون كابشن.",
-                    "بعد ما تكتب الكابشن اضغط ✅ تم لعرض كارت المراجعة.",
-                ]
-            )
-        return "\n".join(
-            [
-                "ℹ️ Caption Instructions",
-                "━━━━━━━━━━━━━━━━━━",
-                f"Send one shared caption for all {english_plural}.",
-                "Send a single space if you want to post without a caption.",
-                "After typing the caption, tap ✅ Done to show the review card.",
-            ]
-        )
-
     async def send_multi_video_caption_cards(
         self,
         chat_id: int,
@@ -2501,15 +2475,11 @@ class TelegramBotApp:
         prefix: str = "",
     ) -> None:
         lang = str(session.get("lang") or "en")
-        await self.send_message(chat_id, self.multi_video_caption_prompt(session, prefix=prefix), reply_to_message_id)
         await self.send_message(
             chat_id,
-            self.multi_video_caption_instruction_card(session),
+            self.multi_video_caption_prompt(session, prefix=prefix),
             reply_to_message_id,
-            reply_markup=done_cancel_markup(
-                lang=lang,
-                placeholder="اكتب الكابشن ثم اضغط تم" if lang == "ar" else "Type caption, then tap Done",
-            ),
+            reply_markup=cancel_markup(lang=lang),
         )
 
     async def validate_video_url_or_reply(self, chat_id: int, message_id: int, text: str, lang: str = "en") -> str:
@@ -4104,17 +4074,6 @@ class TelegramBotApp:
             session.pop("multi_captions", None)
             if len(paths) < len(selected_pages):
                 self.set_dashboard_session(chat_id, user_id, session)
-                received_line = (
-                    f"✅ تم استلام الريلز {len(paths)}/{len(selected_pages)}."
-                    if lang == "ar"
-                    else f"✅ Video {len(paths)}/{len(selected_pages)} received."
-                )
-                await self.send_message(
-                    chat_id,
-                    "\n".join([received_line, "", self.multi_video_prompt(session)]),
-                    message_id,
-                    reply_markup=post_stage_reply_markup("multi_video_upload", lang=lang),
-                )
                 return True
             session["step"] = "multi_caption"
             session["caption"] = ""
@@ -4294,19 +4253,12 @@ class TelegramBotApp:
             done_values = {"Done", BUTTON_DONE, "✅ تم", "تم"}
             if text.strip() in done_values:
                 session["caption"] = str(session.get("caption_draft") or "")
-                session.pop("caption_draft", None)
-                session.pop("multi_captions", None)
-                self.set_dashboard_session(chat_id, user_id, session)
-                await self.show_post_review(chat_id, message_id, user_id, session)
-                return True
-            session["caption_draft"] = "" if not text.strip() else text
+            else:
+                session["caption"] = "" if not text.strip() else text
+            session.pop("caption_draft", None)
+            session.pop("multi_captions", None)
             self.set_dashboard_session(chat_id, user_id, session)
-            saved_line = (
-                "✅ تم حفظ الكابشن. اضغط ✅ تم لعرض كارت المراجعة، أو ابعت كابشن جديد لاستبداله."
-                if lang == "ar"
-                else "✅ Caption saved. Tap ✅ Done to show the review card, or send another caption to replace it."
-            )
-            await self.send_multi_video_caption_cards(chat_id, message_id, session, prefix=saved_line)
+            await self.show_post_review(chat_id, message_id, user_id, session)
             return True
 
         if action == "post" and step in {"media_image", "media_video"}:

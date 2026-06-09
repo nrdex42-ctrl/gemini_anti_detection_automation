@@ -544,10 +544,7 @@ def post_stage_reply_markup(stage: str, lang: str = "en") -> Dict[str, Any]:
             persistent=False,
         )
     if normalized_stage == "multi_caption":
-        return done_cancel_markup(
-            lang=lang,
-            placeholder=tr(lang, "Type caption, then tap Done", "اكتب الكابشن ثم اضغط تم"),
-        )
+        return cancel_markup(lang=lang)
     if normalized_stage == "caption_after_media":
         return skip_cancel_markup(lang=lang)
     return cancel_markup(lang=lang)
