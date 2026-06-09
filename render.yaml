@@ -73,6 +73,8 @@ services:
         value: "12"
       - key: BOT_ACCOUNT_NAME_LOOKUP_TIMEOUT_SECONDS
         value: "45"
+      - key: BOT_COOKIE_VALIDATION_TIMEOUT_SECONDS
+        value: "8"
       - key: FACEBOOK_BROWSER_ACCOUNT_LOOKUP_FALLBACK_ENABLED
         value: "true"
       - key: POST_BATCH_PAGE_TIMEOUT_SECONDS

@@ -960,15 +960,13 @@ class TelegramBotApp:
                 logger.info("No active accounts found for startup cookie validation.")
                 return
             
-            from playwright_engine import validate_facebook_session
             for account in accounts:
                 account_id = str(account.get("account_id") or "")
                 display = account_display_name(account, account_id)
                 logger.info("Startup cookie validation: Checking %s...", display)
                 try:
                     cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, None)
-                    parsed = parse_account_cookie_payload(cookie_header, account_id)
-                    session_ok, detail = await validate_facebook_session(cookies_json(parse_cookies(parsed.cookie_header)))
+                    session_ok, detail = await self.validate_facebook_cookie_session(cookie_header, account_id, "en")
                     status_text = "Facebook session is valid" if session_ok else detail
                     await asyncio.to_thread(
                         self.storage.update_account_cookie_validation,
@@ -3196,6 +3194,112 @@ class TelegramBotApp:
             reply_markup=account_post_action_markup(lang=lang),
         )
 
+    async def validate_facebook_cookie_session(
+        self,
+        cookie_header: str,
+        account_id: str,
+        lang: str = "en",
+    ) -> Tuple[bool, str]:
+        from playwright_engine import validate_facebook_session
+
+        parsed = parse_account_cookie_payload(cookie_header, account_id)
+        cookie_payload = cookies_json(parse_cookies(parsed.cookie_header))
+        timeout_seconds = _env_float("BOT_COOKIE_VALIDATION_TIMEOUT_SECONDS", 8.0, minimum=1.0)
+        try:
+            return await asyncio.wait_for(
+                validate_facebook_session(cookie_payload),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            elapsed = format_elapsed_seconds(timeout_seconds)
+            logger.warning("Cookie validation timed out for %s after %s", account_id, elapsed)
+            if lang == "ar":
+                return False, f"انتهى وقت فحص الكوكيز بعد {elapsed}. تم إيقاف العملية قبل تحديث الصفحات."
+            return False, f"Cookie validation timed out after {elapsed}. Stopped before refreshing pages."
+
+    async def auto_check_and_refresh_pages(
+        self,
+        account_id: str,
+        user_id: int,
+        lang: str,
+        progress_callback: Optional[Callable[[int, str], Awaitable[None]]] = None,
+    ) -> Dict[str, Any]:
+        owner_scope = self.account_owner_scope(user_id)
+        try:
+            cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
+            session_ok, detail = await self.validate_facebook_cookie_session(cookie_header, account_id, lang)
+            icon, status_text = cookie_validation_summary(session_ok, detail)
+            await asyncio.to_thread(
+                self.storage.update_account_cookie_validation,
+                account_id,
+                "valid" if session_ok else "invalid",
+                status_text,
+                owner_scope,
+            )
+            if not session_ok:
+                with suppress(Exception):
+                    await self.maybe_quarantine_account_cookie(
+                        account_id,
+                        user_id,
+                        status_text,
+                        context="auto_prepare_cookie_check",
+                    )
+                return {"ok": False, "stage": "cookie", "icon": icon, "detail": status_text, "pages": []}
+        except Exception as exc:
+            detail = self.encryption_key_recovery_text(lang) if is_encryption_key_error(exc) else compact_error(exc, 500)
+            with suppress(Exception):
+                await asyncio.to_thread(
+                    self.storage.update_account_cookie_validation,
+                    account_id,
+                    "invalid",
+                    compact_error(exc, 500),
+                    owner_scope,
+                )
+            return {"ok": False, "stage": "cookie", "icon": "🔴", "detail": detail, "pages": []}
+
+        if progress_callback:
+            await progress_callback(1, "جاري البحث عن الصفحات المتاحة..." if lang == "ar" else "Finding available pages...")
+        discovery_timeout = _env_int("BOT_PAGE_DISCOVERY_TIMEOUT_SECONDS", 150, minimum=30)
+        heartbeat_seconds = _env_int("BOT_PROGRESS_HEARTBEAT_SECONDS", 8, minimum=2)
+        started = time.monotonic()
+        pages_task = asyncio.create_task(self.discover_pages(account_id, owner_scope))
+        try:
+            while True:
+                remaining = discovery_timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    pages_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await pages_task
+                    raise TimeoutError(f"Page discovery timed out after {discovery_timeout}s.")
+                try:
+                    pages = await asyncio.wait_for(
+                        asyncio.shield(pages_task),
+                        timeout=min(heartbeat_seconds, remaining),
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    if progress_callback:
+                        elapsed = int(time.monotonic() - started)
+                        await progress_callback(
+                            1,
+                            f"جاري البحث عن الصفحات المتاحة... مر {elapsed} ثانية."
+                            if lang == "ar"
+                            else f"Finding available pages... {elapsed}s elapsed.",
+                        )
+            if progress_callback:
+                await progress_callback(
+                    2,
+                    f"جاري حفظ {len(pages)} صفحة متاحة..."
+                    if lang == "ar"
+                    else f"Saving {len(pages)} available page(s)...",
+                )
+            await asyncio.to_thread(self.storage.upsert_pages, account_id, pages)
+            return {"ok": True, "stage": "pages", "detail": "Facebook session is valid", "pages": pages}
+        except Exception as exc:
+            detail = compact_error(exc, 500)
+            logger.warning("Automatic page discovery failed for %s: %s", account_id, detail)
+            return {"ok": False, "stage": "pages", "detail": detail, "pages": []}
+
     async def open_post_pages_after_auto_prepare(
         self,
         chat_id: int,
@@ -3238,33 +3342,16 @@ class TelegramBotApp:
                 reply_to_message_id=message_id,
             )
 
-        try:
-            from playwright_engine import validate_facebook_session
-
-            cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
-            parsed = parse_account_cookie_payload(cookie_header, account_id)
-            session_ok, detail = await validate_facebook_session(cookies_json(parse_cookies(parsed.cookie_header)))
-            icon, status_text = cookie_validation_summary(session_ok, detail)
-            await asyncio.to_thread(
-                self.storage.update_account_cookie_validation,
-                account_id,
-                "valid" if session_ok else "invalid",
-                status_text,
-                owner_scope,
-            )
-            if not session_ok:
-                with suppress(Exception):
-                    await self.maybe_quarantine_account_cookie(
-                        account_id,
-                        user_id,
-                        status_text,
-                        context="post_pages_auto_cookie_check",
-                    )
+        result = await self.auto_check_and_refresh_pages(account_id, user_id, lang, update_progress)
+        if not result.get("ok"):
+            stage = str(result.get("stage") or "")
+            detail = str(result.get("detail") or "")
+            if stage == "cookie":
                 lines = [
                     "🧪 فحص الكوكيز" if lang == "ar" else "🧪 Cookie Check",
                     "━━━━━━━━━━━━━━━━━━",
                     f"الحساب: {display}" if lang == "ar" else f"Account: {display}",
-                    f"{icon} {status_text}",
+                    f"{result.get('icon') or '🔴'} {detail}",
                     "",
                     (
                         "حدّث كوكيز الحساب قبل اختيار الصفحات."
@@ -3272,87 +3359,19 @@ class TelegramBotApp:
                         else "Update this account's cookies before choosing pages."
                     ),
                 ]
-                await self.edit_or_send_message(
-                    chat_id,
-                    progress_message_id,
-                    "\n".join([progress_card(title, 1, 3, "فشل فحص الكوكيز." if lang == "ar" else "Cookie check failed."), "", *lines]),
-                    reply_to_message_id=message_id,
-                    reply_markup=await self.dashboard_reply_markup(user_id),
-                )
-                return
-        except Exception as exc:
-            error_text = self.encryption_key_recovery_text(lang) if is_encryption_key_error(exc) else compact_error(exc, 500)
-            with suppress(Exception):
-                await asyncio.to_thread(
-                    self.storage.update_account_cookie_validation,
-                    account_id,
-                    "invalid",
-                    compact_error(exc, 500),
-                    owner_scope,
-                )
-            await self.edit_or_send_message(
-                chat_id,
-                progress_message_id,
-                "\n".join(
-                    [
-                        progress_card(title, 1, 3, "فشل فحص الكوكيز." if lang == "ar" else "Cookie check failed."),
-                        "",
-                        "🔴 بيانات الكوكيز غير قابلة للاستخدام:" if lang == "ar" else "🔴 Cookie payload is not usable:",
-                        error_text[:900],
-                    ]
-                ),
-                reply_to_message_id=message_id,
-                reply_markup=await self.dashboard_reply_markup(user_id),
-            )
-            return
-
-        await update_progress(1, "جاري البحث عن الصفحات المتاحة..." if lang == "ar" else "Finding available pages...")
-        discovery_timeout = _env_int("BOT_PAGE_DISCOVERY_TIMEOUT_SECONDS", 150, minimum=30)
-        heartbeat_seconds = _env_int("BOT_PROGRESS_HEARTBEAT_SECONDS", 8, minimum=2)
-        started = time.monotonic()
-        pages_task = asyncio.create_task(self.discover_pages(account_id, owner_scope))
-        try:
-            while True:
-                remaining = discovery_timeout - (time.monotonic() - started)
-                if remaining <= 0:
-                    pages_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await pages_task
-                    raise TimeoutError(f"Page discovery timed out after {discovery_timeout}s.")
-                try:
-                    pages = await asyncio.wait_for(
-                        asyncio.shield(pages_task),
-                        timeout=min(heartbeat_seconds, remaining),
-                    )
-                    break
-                except asyncio.TimeoutError:
-                    elapsed = int(time.monotonic() - started)
-                    await update_progress(
-                        1,
-                        f"جاري البحث عن الصفحات المتاحة... مر {elapsed} ثانية."
-                        if lang == "ar"
-                        else f"Finding available pages... {elapsed}s elapsed.",
-                    )
-            await update_progress(
-                2,
-                f"جاري حفظ {len(pages)} صفحة متاحة..."
-                if lang == "ar"
-                else f"Saving {len(pages)} available page(s)...",
-            )
-            await asyncio.to_thread(self.storage.upsert_pages, account_id, pages)
-        except Exception as exc:
-            detail = compact_error(exc, 500)
-            logger.warning("Automatic page discovery before posting failed for %s: %s", account_id, detail)
-            await self.edit_or_send_message(
-                chat_id,
-                progress_message_id,
-                "\n".join(
+                body = "\n".join([progress_card(title, 1, 3, "فشل فحص الكوكيز." if lang == "ar" else "Cookie check failed."), "", *lines])
+            else:
+                body = "\n".join(
                     [
                         progress_card(title, 2, 3, "فشل البحث عن الصفحات." if lang == "ar" else "Page discovery failed."),
                         "",
                         detail,
                     ]
-                ),
+                )
+            await self.edit_or_send_message(
+                chat_id,
+                progress_message_id,
+                body,
                 reply_to_message_id=message_id,
                 reply_markup=await self.dashboard_reply_markup(user_id),
             )
@@ -3376,6 +3395,69 @@ class TelegramBotApp:
             user_id,
             edit=bool(progress_message_id),
         )
+
+    async def switch_active_account_after_auto_prepare(
+        self,
+        chat_id: int,
+        message_id: int,
+        user_id: int,
+        account_id: str,
+        *,
+        edit: bool = False,
+        lang: str = "",
+    ) -> None:
+        lang = lang or await self.user_language(user_id)
+        owner_scope = self.account_owner_scope(user_id)
+        account = await asyncio.to_thread(self.storage.get_account, account_id, owner_scope)
+        display = account_display_name(account or {}, account_id)
+        await asyncio.to_thread(self.storage.set_active_account, user_id, account_id)
+
+        title = "تجهيز الحساب النشط..." if lang == "ar" else "Preparing active account..."
+        initial_text = progress_card(
+            title,
+            0,
+            3,
+            f"جاري فحص كوكيز {display}..." if lang == "ar" else f"Checking {display} cookies...",
+        )
+        if edit:
+            progress_message_id = await self.edit_or_send_message(chat_id, message_id, initial_text)
+        else:
+            progress = await self.send_message(chat_id, initial_text, message_id)
+            progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
+
+        async def update_progress(done: int, detail: str) -> None:
+            nonlocal progress_message_id
+            progress_message_id = await self.edit_or_send_message(
+                chat_id,
+                progress_message_id,
+                progress_card(title, done, 3, detail),
+                reply_to_message_id=0 if edit else message_id,
+            )
+
+        result = await self.auto_check_and_refresh_pages(account_id, user_id, lang, update_progress)
+        self.clear_dashboard_session(chat_id, user_id)
+        if result.get("ok"):
+            pages = result.get("pages") if isinstance(result.get("pages"), list) else []
+            prefix = (
+                f"تم تغيير الحساب النشط إلى {display}. تم تحديث {len(pages)} صفحة متاحة."
+                if lang == "ar"
+                else f"Active account switched to {display}. Refreshed {len(pages)} available page(s)."
+            )
+        else:
+            detail = compact_text(result.get("detail") or "", 220)
+            if str(result.get("stage") or "") == "cookie":
+                prefix = (
+                    f"تم تغيير الحساب النشط إلى {display}. فشل فحص الكوكيز: {detail}"
+                    if lang == "ar"
+                    else f"Active account switched to {display}. Cookie check failed: {detail}"
+                )
+            else:
+                prefix = (
+                    f"تم تغيير الحساب النشط إلى {display}. فشل تحديث الصفحات: {detail}"
+                    if lang == "ar"
+                    else f"Active account switched to {display}. Page refresh failed: {detail}"
+                )
+        await self.show_dashboard(chat_id, progress_message_id or message_id, prefix=prefix, user_id=user_id)
 
     async def active_account_or_warn(self, chat_id: int, message_id: int, user_id: int) -> str:
         active_account = await self.active_account_id(user_id)
@@ -3750,9 +3832,8 @@ class TelegramBotApp:
                 ),
                 reply_to_message_id=message_id,
             )
-            from playwright_engine import validate_facebook_session
             try:
-                session_ok, detail = await validate_facebook_session(cookies_json(parse_cookies(parsed.cookie_header)))
+                session_ok, detail = await self.validate_facebook_cookie_session(parsed.cookie_header, parsed.account_id, lang)
                 icon, status_text = cookie_validation_summary(session_ok, detail)
                 owner_scope = self.account_owner_scope(user_id)
                 await asyncio.to_thread(
@@ -4976,12 +5057,7 @@ class TelegramBotApp:
             return
         session["account_id"] = account_id
         if action in {"switch_account", "manage_accounts"}:
-            await asyncio.to_thread(self.storage.set_active_account, user_id, account_id)
-            account = await asyncio.to_thread(self.storage.get_account, account_id, owner_scope)
-            display = account_display_name(account or {}, account_id)
-            self.clear_dashboard_session(chat_id, user_id)
-            prefix = f"تم تغيير الحساب النشط إلى {display}." if lang == "ar" else f"Active account switched to {display}."
-            await self.show_dashboard(chat_id, message_id if edit else 0, prefix=prefix, user_id=user_id)
+            await self.switch_active_account_after_auto_prepare(chat_id, message_id, user_id, account_id, edit=edit, lang=lang)
             return
         if action == "discover_pages":
             self.clear_dashboard_session(chat_id, user_id)
@@ -5612,8 +5688,6 @@ class TelegramBotApp:
 
         lines = ["🧪 تقرير فحص الكوكيز" if lang == "ar" else "🧪 Cookie Validation Report", "━━━━━━━━━━━━━━━━━━━━━━"]
         valid_count = 0
-        from playwright_engine import validate_facebook_session
-
         for index, account in enumerate(accounts, start=1):
             account_id = str(account.get("account_id") or "")
             display = account_display_name(account, account_id)
@@ -5624,8 +5698,7 @@ class TelegramBotApp:
             )
             try:
                 cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
-                parsed = parse_account_cookie_payload(cookie_header, account_id)
-                session_ok, detail = await validate_facebook_session(cookies_json(parse_cookies(parsed.cookie_header)))
+                session_ok, detail = await self.validate_facebook_cookie_session(cookie_header, account_id, lang)
                 icon, status_text = cookie_validation_summary(session_ok, detail)
                 await asyncio.to_thread(
                     self.storage.update_account_cookie_validation,
@@ -5709,11 +5782,8 @@ class TelegramBotApp:
         )
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
         try:
-            from playwright_engine import validate_facebook_session
-
             cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
-            parsed = parse_account_cookie_payload(cookie_header, account_id)
-            session_ok, detail = await validate_facebook_session(cookies_json(parse_cookies(parsed.cookie_header)))
+            session_ok, detail = await self.validate_facebook_cookie_session(cookie_header, account_id, lang)
             icon, status_text = cookie_validation_summary(session_ok, detail)
             await asyncio.to_thread(
                 self.storage.update_account_cookie_validation,

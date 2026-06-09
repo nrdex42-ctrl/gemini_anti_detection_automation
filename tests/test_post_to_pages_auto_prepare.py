@@ -9,6 +9,7 @@ if "aiohttp" not in sys.modules:
     aiohttp_stub.web = types.SimpleNamespace()
     sys.modules["aiohttp"] = aiohttp_stub
 
+import telegram_bot
 from telegram_bot import TelegramBotApp
 
 
@@ -172,5 +173,66 @@ def test_post_to_pages_stops_before_page_discovery_when_cookie_is_invalid(monkey
         assert app.storage.upserted == []
         assert "Cookie check failed" in edits[-1]
         assert "Session expired" in edits[-1]
+
+    asyncio.run(run())
+
+
+def test_post_to_pages_times_out_slow_cookie_validation_before_page_discovery(monkeypatch):
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.storage = AutoPrepareStorage()
+        app.dashboard_sessions = {}
+        app.account_owner_scope = lambda user_id: user_id
+        app.active_account_id = lambda user_id: asyncio.sleep(0, result="acct_1")
+        app.maybe_quarantine_account_cookie = lambda *args, **kwargs: asyncio.sleep(0, result=False)
+
+        async def user_language(user_id=0):
+            return "en"
+
+        async def dashboard_reply_markup(user_id=0):
+            return {}
+
+        async def validate_facebook_session(cookies):
+            await asyncio.sleep(2)
+            return True, "Facebook session is valid"
+
+        async def discover_pages(account_id, owner_id=None):
+            raise AssertionError("timed-out cookie checks should not discover pages")
+
+        sent = []
+        edits = []
+
+        async def send_message(chat_id, text, reply_to_message_id=0, *, reply_markup=None, parse_mode=""):
+            sent.append(text)
+            return {"ok": True, "result": {"message_id": 777}}
+
+        async def edit_or_send_message(chat_id, message_id, text, **kwargs):
+            edits.append(text)
+            return message_id or 777
+
+        import playwright_engine
+
+        monkeypatch.setattr(playwright_engine, "validate_facebook_session", validate_facebook_session)
+        monkeypatch.setattr(
+            telegram_bot,
+            "_env_float",
+            lambda name, default, minimum=0.0: 0.6
+            if name == "BOT_COOKIE_VALIDATION_TIMEOUT_SECONDS"
+            else max(float(default), float(minimum)),
+        )
+        app.user_language = user_language
+        app.dashboard_reply_markup = dashboard_reply_markup
+        app.discover_pages = discover_pages
+        app.send_message = send_message
+        app.edit_or_send_message = edit_or_send_message
+
+        await app.handle_dashboard_button(123, 99, 456, "post_active")
+
+        assert app.storage.validation_updates == [
+            ("acct_1", "invalid", "Cookie validation timed out after 1s. Stopped before refreshing pages.", 99)
+        ]
+        assert app.storage.upserted == []
+        assert "Cookie check failed" in edits[-1]
+        assert "Cookie validation timed out after 1s" in edits[-1]
 
     asyncio.run(run())
