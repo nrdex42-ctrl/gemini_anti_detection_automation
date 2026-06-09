@@ -139,6 +139,30 @@ def test_arabic_dashboard_account_status_icons_are_left_aligned():
     assert "Mohammed Mohammed" in status_lines[1]
 
 
+def test_smart_dashboard_stored_pages_matches_visible_account_page_counts():
+    text = dashboard_text(
+        accounts=[
+            {
+                "account_id": "acct_omar",
+                "label": "Omar Mohamed",
+                "active": True,
+                "cookie_status": "valid",
+            }
+        ],
+        summary={
+            "page_count": 4,
+            "page_counts_by_account": {"acct_omar": 2},
+            "job_status_counts": {},
+        },
+        active_account="acct_omar",
+        lang="en",
+    )
+
+    assert "Stored pages: 2" in text
+    assert "Stored pages: 4" not in text
+    assert "Omar Mohamed | pages: 2" in text
+
+
 def test_post_stage_keyboards_match_current_card_stage():
     page_markup = post_stage_reply_markup("page_select", "ar")
     assert page_markup["keyboard"][0] == ["📝 منشور نصي", "📸 منشور صورة", "🎬 منشور ريلز"]

@@ -892,6 +892,10 @@ def dashboard_text(
     locked_accounts = summary.get("locked_accounts") or []
     recent_jobs = summary.get("recent_jobs") or []
     page_counts = summary.get("page_counts_by_account") or {}
+    visible_account_ids = [str(account.get("account_id") or "") for account in accounts]
+    visible_page_count = sum(int(page_counts.get(account_id, 0) or 0) for account_id in visible_account_ids)
+    if not page_counts:
+        visible_page_count = int(summary.get("page_count") or 0)
 
     lines: List[str] = []
     if prefix:
@@ -909,7 +913,7 @@ def dashboard_text(
             "━━━━━━━━━━━━━━━━━━",
             tr(lang, f"Accounts: {len(accounts)} total", f"الحسابات: {len(accounts)} إجمالي"),
             tr(lang, f"Active account: {active_text}", f"الحساب النشط: {active_text}"),
-            tr(lang, f"Stored pages: {int(summary.get('page_count') or 0)}", f"الصفحات المحفوظة: {int(summary.get('page_count') or 0)}"),
+            tr(lang, f"Stored pages: {visible_page_count}", f"الصفحات المحفوظة: {visible_page_count}"),
             tr(
                 lang,
                 f"Jobs: {active_jobs} active, {int(status_counts.get('success', 0))} success, {int(status_counts.get('failed', 0))} failed",

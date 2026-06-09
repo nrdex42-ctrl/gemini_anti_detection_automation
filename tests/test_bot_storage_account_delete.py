@@ -121,7 +121,7 @@ def test_purge_removed_account_pages_deletes_inactive_and_orphaned_page_rows():
 def test_dashboard_summary_counts_pages_only_for_active_accounts():
     storage, cursor, _connection = storage_with_fake_connection(
         [3],
-        fetchone_rows=[{"page_count": 2}],
+        fetchone_rows=[{"page_count": 4}],
         fetchall_rows=[
             [{"account_id": "acct_active", "count": 2}],
             [],

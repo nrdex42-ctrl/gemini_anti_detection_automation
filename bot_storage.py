@@ -772,7 +772,7 @@ class BotStorage:
                 recent_jobs = list(cur.fetchall())
 
         return {
-            "page_count": int(page_row.get("page_count") or 0),
+            "page_count": sum(page_counts_by_account.values()),
             "page_counts_by_account": page_counts_by_account,
             "job_status_counts": status_counts,
             "locked_accounts": locked_accounts,
