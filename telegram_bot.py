@@ -3447,9 +3447,9 @@ class TelegramBotApp:
             detail = compact_text(result.get("detail") or "", 220)
             if str(result.get("stage") or "") == "cookie":
                 prefix = (
-                    f"تم تغيير الحساب النشط إلى {display}. فشل فحص الكوكيز: {detail}"
+                    f"تم تغيير الحساب النشط إلى {display}. الكوكيز غير صالحة."
                     if lang == "ar"
-                    else f"Active account switched to {display}. Cookie check failed: {detail}"
+                    else f"Active account switched to {display}. Invalid cookie."
                 )
             else:
                 prefix = (

@@ -210,6 +210,60 @@ def test_account_selection_auto_checks_cookie_refreshes_pages_and_updates_dashbo
     asyncio.run(run())
 
 
+def test_account_selection_cookie_failure_uses_short_dashboard_prefix():
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.dashboard_sessions = {"123:99": {"action": "switch_account", "step": "account", "lang": "en"}}
+        selected = []
+        dashboards = []
+
+        class Storage:
+            def account_exists(self, account_id, active_only=True, owner_id=None):
+                return account_id == "acct_1"
+
+            def set_active_account(self, user_id, account_id):
+                selected.append((user_id, account_id))
+
+            def get_account(self, account_id, owner_id=None):
+                return {"account_id": account_id, "label": "Omar Mohamed"}
+
+        async def user_language(user_id=0):
+            return "en"
+
+        async def auto_check_and_refresh_pages(account_id, user_id, lang, progress_callback=None):
+            return {
+                "ok": False,
+                "stage": "cookie",
+                "detail": (
+                    "Session check inconclusive; browser validation skipped to protect cookie session. "
+                    "HTTP detail: Facebook returned homepage without auth failure markers"
+                ),
+            }
+
+        async def edit_or_send_message(chat_id, message_id, text, **kwargs):
+            return message_id or 777
+
+        async def show_dashboard(chat_id, message_id=0, prefix="", user_id=0, edit_message_id=0):
+            dashboards.append({"prefix": prefix, "message_id": message_id})
+            return 888
+
+        app.storage = Storage()
+        app.user_language = user_language
+        app.auto_check_and_refresh_pages = auto_check_and_refresh_pages
+        app.edit_or_send_message = edit_or_send_message
+        app.show_dashboard = show_dashboard
+        app.account_owner_scope = lambda user_id: user_id
+
+        await app.handle_account_selected(123, 99, 456, {"action": "switch_account", "lang": "en"}, "acct_1", edit=True)
+
+        assert selected == [(99, "acct_1")]
+        assert dashboards == [{"prefix": "Active account switched to Omar Mohamed. Invalid cookie.", "message_id": 456}]
+        assert "Session check inconclusive" not in dashboards[0]["prefix"]
+        assert "HTTP detail" not in dashboards[0]["prefix"]
+
+    asyncio.run(run())
+
+
 def test_account_delete_confirmation_deactivates_account_and_clears_active_account():
     async def run():
         app = TelegramBotApp.__new__(TelegramBotApp)
