@@ -4793,9 +4793,9 @@ class TelegramBotApp:
                 chat_id,
                 message_id,
                 prefix=(
-                    ("تم حذف الحساب." if changed else "الحساب غير موجود.")
+                    ("تم حذف الحساب والصفحات المحفوظة المرتبطة به." if changed else "الحساب غير موجود.")
                     if lang == "ar"
-                    else ("Account deleted." if changed else "Account not found.")
+                    else ("Account deleted and related stored pages removed." if changed else "Account not found.")
                 ),
                 user_id=user_id,
             )
@@ -4829,7 +4829,7 @@ class TelegramBotApp:
                             f"الحساب: {display}",
                             "",
                             "سيتم تعطيل الحساب وإخفاؤه من لوحة التحكم ومسحه من الحساب النشط لو كان محدد.",
-                            "الصفحات والمهام القديمة ستبقى في قاعدة البيانات للتاريخ.",
+                            "سيتم حذف الصفحات المحفوظة المرتبطة بهذا الحساب.",
                         ]
                         if lang == "ar"
                         else [
@@ -4838,7 +4838,7 @@ class TelegramBotApp:
                             f"Account: {display}",
                             "",
                             "This will deactivate the account, remove it from normal dashboard use, and clear it if it is currently active.",
-                            "Stored pages and jobs remain in the database for history.",
+                            "Stored pages linked to this account will be deleted.",
                         ]
                     )
                 ),
@@ -5477,7 +5477,7 @@ class TelegramBotApp:
             await asyncio.to_thread(self.storage.clear_active_account, user_id, args[0])
         await self.send_message(
             chat_id,
-            "Account deactivated." if changed else "Account not found.",
+            "Account removed and related stored pages deleted." if changed else "Account not found.",
             message_id,
             reply_markup=await self.dashboard_reply_markup(user_id),
         )

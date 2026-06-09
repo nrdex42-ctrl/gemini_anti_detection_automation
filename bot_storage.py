@@ -477,6 +477,8 @@ class BotStorage:
                         (account_id, int(owner_id)),
                     )
                 changed = cur.rowcount > 0
+                if changed:
+                    cur.execute("delete from fb_pages where account_id=%s", (account_id,))
             conn.commit()
         return changed
 
@@ -484,8 +486,21 @@ class BotStorage:
         with self.connect() as conn:
             with conn.cursor() as cur:
                 if owner_id is None:
+                    cur.execute("delete from fb_pages where account_id=%s", (account_id,))
                     cur.execute("delete from fb_accounts where account_id=%s", (account_id,))
                 else:
+                    cur.execute(
+                        """
+                        delete from fb_pages p
+                        where p.account_id=%s
+                          and exists (
+                              select 1
+                              from fb_accounts a
+                              where a.account_id=p.account_id and a.created_by=%s
+                          )
+                        """,
+                        (account_id, int(owner_id)),
+                    )
                     cur.execute(
                         "delete from fb_accounts where account_id=%s and created_by=%s",
                         (account_id, int(owner_id)),
@@ -1083,6 +1098,15 @@ class BotStorage:
             with conn.cursor() as cur:
                 cur.execute("delete from fb_post_jobs where telegram_user_id = any(%s::bigint[])", (user_ids,))
                 jobs_deleted = int(cur.rowcount or 0)
+                cur.execute(
+                    """
+                    delete from fb_pages p
+                    using fb_accounts a
+                    where p.account_id = a.account_id
+                      and a.created_by = any(%s::bigint[])
+                    """,
+                    (user_ids,),
+                )
                 cur.execute("delete from fb_accounts where created_by = any(%s::bigint[])", (user_ids,))
                 accounts_deleted = int(cur.rowcount or 0)
                 cur.execute("delete from telegram_user_state where telegram_user_id = any(%s::bigint[])", (user_ids,))

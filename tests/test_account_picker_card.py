@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from telegram_bot import TelegramBotApp
 
@@ -98,6 +99,66 @@ def test_account_selection_callback_sets_active_account_and_returns_dashboard():
         assert selected == [(99, "acct_1")]
         assert dashboards[0]["message_id"] == 456
         assert "Active account switched to Omar Mohamed." in dashboards[0]["prefix"]
+        assert "123:99" not in app.dashboard_sessions
+
+    asyncio.run(run())
+
+
+def test_account_delete_confirmation_deactivates_account_and_clears_active_account():
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.dashboard_sessions = {
+            "123:99": {
+                "action": "manage_accounts",
+                "step": "delete_confirm",
+                "lang": "en",
+                "delete_account_id": "acct_1",
+                "updated_at": time.time(),
+            }
+        }
+        calls = []
+        dashboards = []
+
+        class Storage:
+            def deactivate_account(self, account_id, owner_id=None):
+                calls.append(("deactivate_account", account_id, owner_id))
+                return True
+
+            def clear_active_account(self, user_id, account_id=""):
+                calls.append(("clear_active_account", user_id, account_id))
+
+        def start_background_task(coro, label):
+            coro.close()
+            return None
+
+        async def user_language(user_id=0):
+            return "en"
+
+        async def show_dashboard(chat_id, message_id=0, prefix="", user_id=0, edit_message_id=0):
+            dashboards.append({"chat_id": chat_id, "message_id": message_id, "prefix": prefix, "user_id": user_id})
+            return 888
+
+        app.storage = Storage()
+        app.start_background_task = start_background_task
+        app.user_language = user_language
+        app.show_dashboard = show_dashboard
+        app.account_owner_scope = lambda user_id: user_id
+
+        await app.handle_callback_query(
+            {
+                "callback_query": {
+                    "data": "acctdel:confirm",
+                    "message": {"message_id": 456, "chat": {"id": 123}},
+                    "from": {"id": 99},
+                }
+            }
+        )
+
+        assert calls == [
+            ("deactivate_account", "acct_1", 99),
+            ("clear_active_account", 99, "acct_1"),
+        ]
+        assert dashboards[0]["prefix"] == "Account deleted and related stored pages removed."
         assert "123:99" not in app.dashboard_sessions
 
     asyncio.run(run())
