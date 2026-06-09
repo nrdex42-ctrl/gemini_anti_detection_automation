@@ -2,8 +2,10 @@ import bot_storage
 
 
 class FakeCursor:
-    def __init__(self, rowcounts):
+    def __init__(self, rowcounts, *, fetchone_rows=None, fetchall_rows=None):
         self.rowcounts = list(rowcounts)
+        self.fetchone_rows = list(fetchone_rows or [])
+        self.fetchall_rows = list(fetchall_rows or [])
         self.executed = []
         self.rowcount = 0
 
@@ -16,6 +18,12 @@ class FakeCursor:
     def execute(self, query, params=None):
         self.executed.append((" ".join(str(query).split()), params))
         self.rowcount = self.rowcounts.pop(0) if self.rowcounts else 0
+
+    def fetchone(self):
+        return self.fetchone_rows.pop(0) if self.fetchone_rows else {}
+
+    def fetchall(self):
+        return self.fetchall_rows.pop(0) if self.fetchall_rows else []
 
 
 class FakeConnection:
@@ -36,8 +44,8 @@ class FakeConnection:
         self.committed = True
 
 
-def storage_with_fake_connection(rowcounts):
-    cursor = FakeCursor(rowcounts)
+def storage_with_fake_connection(rowcounts, *, fetchone_rows=None, fetchall_rows=None):
+    cursor = FakeCursor(rowcounts, fetchone_rows=fetchone_rows, fetchall_rows=fetchall_rows)
     connection = FakeConnection(cursor)
     storage = bot_storage.BotStorage("postgresql://example", cipher=object())
     storage.connect = lambda: connection
@@ -96,3 +104,24 @@ def test_admin_delete_users_removes_pages_before_accounts():
     assert cursor.executed[0][0].startswith("delete from fb_post_jobs")
     assert cursor.executed[1][0].startswith("delete from fb_pages p using fb_accounts a")
     assert cursor.executed[2][0].startswith("delete from fb_accounts")
+
+
+def test_dashboard_summary_counts_pages_only_for_active_accounts():
+    storage, cursor, _connection = storage_with_fake_connection(
+        [],
+        fetchone_rows=[{"page_count": 2}],
+        fetchall_rows=[
+            [{"account_id": "acct_active", "count": 2}],
+            [],
+            [],
+            [],
+        ],
+    )
+
+    summary = storage.dashboard_summary(owner_id=99)
+
+    assert summary["page_count"] == 2
+    assert summary["page_counts_by_account"] == {"acct_active": 2}
+    assert "join fb_accounts a on a.account_id = p.account_id" in cursor.executed[0][0]
+    assert "where a.created_by=%s and a.active = true" in cursor.executed[0][0]
+    assert "where a.created_by=%s and a.active = true" in cursor.executed[1][0]

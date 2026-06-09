@@ -633,14 +633,21 @@ class BotStorage:
         with self.connect() as conn:
             with conn.cursor() as cur:
                 if owner_id is None:
-                    cur.execute("select count(*)::int as page_count from fb_pages")
+                    cur.execute(
+                        """
+                        select count(*)::int as page_count
+                        from fb_pages p
+                        join fb_accounts a on a.account_id = p.account_id
+                        where a.active = true
+                        """
+                    )
                 else:
                     cur.execute(
                         """
                         select count(*)::int as page_count
                         from fb_pages p
                         join fb_accounts a on a.account_id = p.account_id
-                        where a.created_by=%s
+                        where a.created_by=%s and a.active = true
                         """,
                         (int(owner_id),),
                     )
@@ -649,9 +656,11 @@ class BotStorage:
                 if owner_id is None:
                     cur.execute(
                         """
-                        select account_id, count(*)::int as count
-                        from fb_pages
-                        group by account_id
+                        select p.account_id, count(*)::int as count
+                        from fb_pages p
+                        join fb_accounts a on a.account_id = p.account_id
+                        where a.active = true
+                        group by p.account_id
                         """
                     )
                 else:
@@ -660,7 +669,7 @@ class BotStorage:
                         select p.account_id, count(*)::int as count
                         from fb_pages p
                         join fb_accounts a on a.account_id = p.account_id
-                        where a.created_by=%s
+                        where a.created_by=%s and a.active = true
                         group by p.account_id
                         """,
                         (int(owner_id),),
