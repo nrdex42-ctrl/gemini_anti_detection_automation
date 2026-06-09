@@ -163,6 +163,44 @@ def test_smart_dashboard_stored_pages_matches_visible_account_page_counts():
     assert "Omar Mohamed | pages: 2" in text
 
 
+def test_smart_dashboard_replaces_recent_posts_with_active_account_pages():
+    text = dashboard_text(
+        accounts=[
+            {
+                "account_id": "acct_omar",
+                "label": "Omar Mohamed",
+                "active": True,
+                "cookie_status": "valid",
+            }
+        ],
+        summary={
+            "page_count": 2,
+            "page_counts_by_account": {"acct_omar": 2},
+            "job_status_counts": {},
+            "recent_jobs": [
+                {
+                    "status": "success",
+                    "post_type": "video",
+                    "page_name": "Old Post Page",
+                    "page_id_or_url": "old",
+                }
+            ],
+        },
+        active_account="acct_omar",
+        active_pages=[
+            {"page_id": "p1", "page_name": "Insan", "page_url": "https://facebook.com/insan"},
+            {"page_id": "p2", "page_name": "Oppo", "page_url": "https://facebook.com/oppo"},
+        ],
+        lang="en",
+    )
+
+    assert "Available pages:" in text
+    assert "- Insan" in text
+    assert "- Oppo" in text
+    assert "Recent posts:" not in text
+    assert "Old Post Page" not in text
+
+
 def test_post_stage_keyboards_match_current_card_stage():
     page_markup = post_stage_reply_markup("page_select", "ar")
     assert page_markup["keyboard"][0] == ["📝 منشور نصي", "📸 منشور صورة", "🎬 منشور ريلز"]

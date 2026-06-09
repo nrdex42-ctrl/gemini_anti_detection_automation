@@ -4,11 +4,19 @@ This checklist prepares the repository for GitHub, Render, Supabase/Postgres, an
 
 ## 1. GitHub
 
-Repository target:
+Primary source repository:
 
 ```text
 https://github.com/nrdex42-ctrl/Anti_Detection_FB_Automation.git
 ```
+
+Render deployment repository:
+
+```text
+https://github.com/nrdex42-ctrl/gemini_anti_detection_automation.git
+```
+
+Keep both `origin/main` and `render/main` on the same commit before deploying.
 
 Before pushing, verify no secrets are tracked:
 

@@ -883,6 +883,7 @@ def dashboard_text(
     accounts: List[Dict[str, Any]],
     summary: Optional[Dict[str, Any]] = None,
     active_account: str = "",
+    active_pages: Optional[List[Dict[str, Any]]] = None,
     prefix: str = "",
     lang: str = "en",
 ) -> str:
@@ -890,7 +891,6 @@ def dashboard_text(
     status_counts = summary.get("job_status_counts") or {}
     active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
     locked_accounts = summary.get("locked_accounts") or []
-    recent_jobs = summary.get("recent_jobs") or []
     page_counts = summary.get("page_counts_by_account") or {}
     visible_account_ids = [str(account.get("account_id") or "") for account in accounts]
     visible_page_count = sum(int(page_counts.get(account_id, 0) or 0) for account_id in visible_account_ids)
@@ -980,17 +980,28 @@ def dashboard_text(
                 )
             )
 
-    if recent_jobs:
+    if active_account and active_pages is not None:
         lines.append("")
-        lines.append(tr(lang, "Recent posts:", "آخر المنشورات:"))
-        for job in recent_jobs[:5]:
-            target = clean_facebook_page_name(
-                job.get("page_name"),
-                str(job.get("page_id_or_url") or ""),
-                str(job.get("page_id_or_url") or ""),
-            )[:36]
+        lines.append(tr(lang, "Available pages:", "الصفحات المتاحة:"))
+        if active_pages:
+            max_dashboard_pages = 8
+            for page in active_pages[:max_dashboard_pages]:
+                target = clean_facebook_page_name(
+                    page.get("page_name"),
+                    str(page.get("page_url") or ""),
+                    str(page.get("page_id") or page.get("page_url") or ""),
+                )[:36]
+                lines.append(f"- {target}")
+            if len(active_pages) > max_dashboard_pages:
+                remaining = len(active_pages) - max_dashboard_pages
+                lines.append(tr(lang, f"... {remaining} more pages", f"... و {remaining} صفحات إضافية"))
+        else:
             lines.append(
-                f"- {job.get('status')} {job.get('post_type')} -> {target}"
+                tr(
+                    lang,
+                    "No pages stored for the active account. Tap Refresh Pages.",
+                    "لا توجد صفحات محفوظة للحساب النشط. اضغط تحديث الصفحات.",
+                )
             )
 
     lines.extend(

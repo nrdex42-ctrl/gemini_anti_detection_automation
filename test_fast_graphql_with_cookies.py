@@ -162,6 +162,10 @@ async def discover_pages_via_http(cookie_string: str) -> list:
     return pages
 
 async def main():
+    if not COOKIE_STRING:
+        print("Set FB_RAW_COOKIE_STRING with a valid Facebook cookie string before running this live helper.")
+        return
+
     cookies_list = parse_cookies(COOKIE_STRING)
     cookies_json = json.dumps(cookies_list)
     # Extract c_user from the active cookies

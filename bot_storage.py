@@ -752,7 +752,7 @@ class BotStorage:
                 if owner_id is None:
                     cur.execute(
                         """
-                        select id::text, account_id, page_id_or_url, page_name, post_type, status, created_at
+                        select id::text, account_id, page_id_or_url, page_name, post_type, status, error, created_at, completed_at
                         from fb_post_jobs
                         order by created_at desc
                         limit 8
@@ -761,7 +761,7 @@ class BotStorage:
                 else:
                     cur.execute(
                         """
-                        select id::text, account_id, page_id_or_url, page_name, post_type, status, created_at
+                        select id::text, account_id, page_id_or_url, page_name, post_type, status, error, created_at, completed_at
                         from fb_post_jobs
                         where telegram_user_id=%s
                         order by created_at desc

@@ -32,6 +32,12 @@ class AccountStorage:
     def upsert_pages(self, account_id, pages):
         self.pages.append((account_id, pages))
 
+    def list_pages(self, account_id, owner_scope=None):
+        for stored_account_id, pages in reversed(self.pages):
+            if stored_account_id == account_id:
+                return pages
+        return []
+
 
 def test_account_add_success_sends_fresh_dashboard_to_replace_cookie_keyboard(monkeypatch):
     async def run():

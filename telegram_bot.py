@@ -190,6 +190,123 @@ def account_add_page_summary_lines(
     return lines
 
 
+def post_history_status_icon(status: Any) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized == "success":
+        return "✅"
+    if normalized == "failed":
+        return "❌"
+    if normalized in {"queued", "pending"}:
+        return "⏳"
+    if normalized == "processing":
+        return "🔄"
+    if normalized in {"skipped", "cancelled", "canceled"}:
+        return "⚪"
+    return "▫️"
+
+
+def post_history_status_label(status: Any, lang: str = "en") -> str:
+    normalized = str(status or "unknown").strip().lower()
+    if lang == "ar":
+        return {
+            "success": "ناجح",
+            "failed": "فشل",
+            "queued": "انتظار",
+            "pending": "انتظار",
+            "processing": "جاري",
+            "skipped": "متخطى",
+            "cancelled": "ملغي",
+            "canceled": "ملغي",
+        }.get(normalized, normalized or "غير معروف")
+    return {
+        "success": "success",
+        "failed": "failed",
+        "queued": "queued",
+        "pending": "queued",
+        "processing": "processing",
+        "skipped": "skipped",
+        "cancelled": "cancelled",
+        "canceled": "cancelled",
+    }.get(normalized, normalized or "unknown")
+
+
+def post_history_type_label(post_type: Any, lang: str = "en") -> str:
+    normalized = str(post_type or "post").strip().lower()
+    if lang == "ar":
+        return {
+            "text": "نص",
+            "image": "صورة",
+            "video": "ريلز",
+        }.get(normalized, normalized or "منشور")
+    return {
+        "text": "Text",
+        "image": "Image",
+        "video": "Video",
+    }.get(normalized, normalized.capitalize() if normalized else "Post")
+
+
+def post_history_card(
+    recent_jobs: List[Dict[str, Any]],
+    accounts: Optional[List[Dict[str, Any]]] = None,
+    *,
+    lang: str = "en",
+) -> str:
+    jobs = list(recent_jobs or [])
+    is_ar = lang == "ar"
+    lines = ["📊 سجل المنشورات" if is_ar else "📊 Post History", "━━━━━━━━━━━━━━━━━━━━━━"]
+    if not jobs:
+        lines.append("لا توجد مهام نشر بعد." if is_ar else "No post jobs yet.")
+        return "\n".join(lines)
+
+    counts: Dict[str, int] = {}
+    for job in jobs:
+        status = str(job.get("status") or "unknown").strip().lower()
+        counts[status] = counts.get(status, 0) + 1
+    active_count = counts.get("queued", 0) + counts.get("pending", 0) + counts.get("processing", 0)
+    if is_ar:
+        lines.append(
+            f"آخر {len(jobs)} | ✅ {counts.get('success', 0)} ناجحة | ❌ {counts.get('failed', 0)} فاشلة | ⏳ {active_count} نشطة"
+        )
+    else:
+        lines.append(
+            f"Showing latest {len(jobs)} | ✅ {counts.get('success', 0)} success | ❌ {counts.get('failed', 0)} failed | ⏳ {active_count} active"
+        )
+
+    account_by_id = {str(account.get("account_id") or ""): account for account in (accounts or [])}
+    for index, job in enumerate(jobs, start=1):
+        account_id = str(job.get("account_id") or "").strip()
+        account_name = compact_text(account_display_name(account_by_id.get(account_id, {}), account_id), 44)
+        page_name = compact_text(
+            page_display_name(
+                {
+                    "page_name": job.get("page_name"),
+                    "page_url": job.get("page_id_or_url"),
+                },
+                -1,
+            ),
+            44,
+        )
+        status = post_history_status_label(job.get("status"), lang)
+        status_icon = post_history_status_icon(job.get("status"))
+        post_type = post_history_type_label(job.get("post_type"), lang)
+        when = format_display_datetime(job.get("completed_at") or job.get("created_at"))
+
+        lines.extend(
+            [
+                "",
+                f"{index}. {status_icon} {post_type} • {status}",
+                f"{'الصفحة' if is_ar else 'Page'}: {page_name}",
+                f"{'الحساب' if is_ar else 'Account'}: {account_name}",
+                f"{'الوقت' if is_ar else 'Time'}: {when}",
+            ]
+        )
+        error = str(job.get("error") or "").strip()
+        if error and str(job.get("status") or "").strip().lower() == "failed":
+            lines.append(f"{'التفاصيل' if is_ar else 'Detail'}: {compact_text(error, 120)}")
+
+    return "\n".join(lines)
+
+
 def page_status_bar(status: str, width: int = 5) -> str:
     normalized = str(status or "pending").lower()
     if normalized == "success":
@@ -776,7 +893,12 @@ class TelegramBotApp:
                     owner_scope = self.account_owner_scope(user_id)
                     summary = await asyncio.to_thread(self.storage.dashboard_summary, owner_scope)
                     accounts = await asyncio.to_thread(self.storage.list_accounts, owner_scope)
-                    active_account = await asyncio.to_thread(self.storage.get_active_account, user_id, owner_scope)
+                    active_account = str(await asyncio.to_thread(self.storage.get_active_account, user_id, owner_scope) or "")
+                    active_pages = (
+                        await asyncio.to_thread(self.storage.list_pages, active_account, owner_scope)
+                        if active_account
+                        else []
+                    )
                     lang = await asyncio.to_thread(self.storage.get_user_language, user_id)
                     status_counts = summary.get("job_status_counts") or {}
                     active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
@@ -784,6 +906,7 @@ class TelegramBotApp:
                         accounts=accounts,
                         summary=summary,
                         active_account=active_account,
+                        active_pages=active_pages,
                         prefix="🔄 تم تحديث البوت بعد Deploy جديد. تم تحديث لوحة التحكم." if lang == "ar" else "🔄 Bot updated after a new deploy. Dashboard refreshed.",
                         lang=lang,
                     )
@@ -1491,10 +1614,22 @@ class TelegramBotApp:
     ) -> int:
         try:
             accounts, summary, active_account = await self.dashboard_state(user_id)
+            active_pages = (
+                await asyncio.to_thread(self.storage.list_pages, active_account, self.account_owner_scope(user_id))
+                if active_account
+                else []
+            )
             lang = await self.user_language(user_id)
             if user_id:
                 self.schedule_account_name_refresh(user_id, accounts, chat_id, edit_message_id=edit_message_id or message_id)
-            text = dashboard_text(accounts=accounts, summary=summary, active_account=active_account, prefix=prefix, lang=lang)
+            text = dashboard_text(
+                accounts=accounts,
+                summary=summary,
+                active_account=active_account,
+                active_pages=active_pages,
+                prefix=prefix,
+                lang=lang,
+            )
             status_counts = summary.get("job_status_counts") or {}
             active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
             reply_markup = dashboard_markup(
@@ -5464,21 +5599,13 @@ class TelegramBotApp:
         lang = await self.user_language(user_id)
         summary = await self.dashboard_summary(user_id)
         recent_jobs = summary.get("recent_jobs") or []
-        if not recent_jobs:
-            text = "لا توجد مهام نشر بعد." if lang == "ar" else "No post jobs yet."
-            await self.edit_or_send_message(chat_id, message_id, text, reply_markup=await self.dashboard_reply_markup(user_id))
-            return
-        lines = ["📊 سجل المنشورات" if lang == "ar" else "📊 Post History", "━━━━━━━━━━━━━━━━━━━━━━"]
-        for job in recent_jobs:
-            page = page_display_name(
-                {
-                    "page_name": job.get("page_name"),
-                    "page_url": job.get("page_id_or_url"),
-                },
-                -1,
-            )[:42]
-            lines.append(f"- {job.get('status')} | {job.get('account_id')} | {job.get('post_type')} | {page}")
-        await self.edit_or_send_message(chat_id, message_id, "\n".join(lines), reply_markup=await self.dashboard_reply_markup(user_id))
+        accounts = await self.dashboard_accounts(user_id) if recent_jobs else []
+        await self.edit_or_send_message(
+            chat_id,
+            message_id,
+            post_history_card(recent_jobs, accounts, lang=lang),
+            reply_markup=await self.dashboard_reply_markup(user_id),
+        )
 
     async def command_remove_account(self, chat_id: int, message_id: int, args: List[str], user_id: int = 0) -> None:
         if len(args) != 1:
