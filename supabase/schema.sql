@@ -94,6 +94,13 @@ create table if not exists fb_post_jobs (
 
 alter table fb_post_jobs add column if not exists account_label text not null default '';
 
+update fb_post_jobs j
+set account_label = a.label
+from fb_accounts a
+where j.account_id = a.account_id
+  and coalesce(j.account_label, '') = ''
+  and coalesce(a.label, '') <> '';
+
 create index if not exists idx_fb_accounts_active on fb_accounts(active);
 create index if not exists idx_fb_accounts_created_by on fb_accounts(created_by);
 create index if not exists idx_fb_pages_account_id on fb_pages(account_id);
