@@ -274,7 +274,7 @@ def test_admin_posting_mode_card_updates_persistent_setting():
     asyncio.run(run())
 
 
-def test_restart_dashboard_broadcast_counts_only_successful_sends(caplog):
+def test_restart_dashboard_broadcast_keeps_revision_unmarked_when_any_send_fails(caplog):
     async def run():
         storage = AdminStorage()
         storage.restart_targets = [
@@ -299,8 +299,60 @@ def test_restart_dashboard_broadcast_counts_only_successful_sends(caplog):
         await app.notify_restart_dashboard()
 
         assert sent == [111, 222]
-        assert storage.meta["last_restart_broadcast_revision"] == "test:rev"
+        assert "last_restart_broadcast_revision" not in storage.meta
         assert "Restart dashboard broadcast sent to 1 user(s), failed=1" in caplog.text
+        assert "Restart dashboard broadcast not marked sent for test:rev because 1 target(s) failed" in caplog.text
+
+    asyncio.run(run())
+
+
+def test_restart_dashboard_broadcast_marks_revision_after_all_sends_succeed():
+    async def run():
+        storage = AdminStorage()
+        storage.restart_targets = [
+            {"telegram_user_id": 111, "chat_id": 111},
+            {"telegram_user_id": 222, "chat_id": 222},
+        ]
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.storage = storage
+        app.admin_ids = set()
+        app.deploy_revision = lambda: "test:rev"
+        app.account_owner_scope = lambda user_id: str(user_id)
+        app.is_admin_user = lambda user_id: False
+        sent = []
+
+        async def send_message(chat_id, text, reply_to_message_id=0, *, reply_markup=None, parse_mode=""):
+            sent.append(chat_id)
+            return {"ok": True}
+
+        app.send_message = send_message
+
+        await app.notify_restart_dashboard()
+
+        assert sent == [111, 222]
+        assert storage.meta["last_restart_broadcast_revision"] == "test:rev"
+
+    asyncio.run(run())
+
+
+def test_startup_sends_restart_dashboard_before_cookie_validation(monkeypatch):
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        calls = []
+
+        async def notify_restart_dashboard():
+            calls.append("notify")
+
+        async def validate_all_accounts_cookies_startup():
+            calls.append("validate")
+
+        app.notify_restart_dashboard = notify_restart_dashboard
+        app.validate_all_accounts_cookies_startup = validate_all_accounts_cookies_startup
+        monkeypatch.setenv("RESTART_BROADCAST_ENABLED", "true")
+
+        await app.startup_validation_and_broadcast()
+
+        assert calls == ["notify", "validate"]
 
     asyncio.run(run())
 

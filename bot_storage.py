@@ -609,9 +609,10 @@ class BotStorage:
                 if owner_id is None:
                     cur.execute(
                         """
-                        select page_id, page_name, page_url, updated_at
-                        from fb_pages
-                        where account_id=%s
+                        select p.page_id, p.page_name, p.page_url, p.updated_at
+                        from fb_pages p
+                        join fb_accounts a on a.account_id = p.account_id
+                        where p.account_id=%s and a.active = true
                         order by page_name, page_id
                         """,
                         (account_id,),
@@ -622,16 +623,39 @@ class BotStorage:
                         select p.page_id, p.page_name, p.page_url, p.updated_at
                         from fb_pages p
                         join fb_accounts a on a.account_id = p.account_id
-                        where p.account_id=%s and a.created_by=%s
+                        where p.account_id=%s and a.created_by=%s and a.active = true
                         order by p.page_name, p.page_id
                         """,
                         (account_id, int(owner_id)),
                     )
                 return list(cur.fetchall())
 
+    @staticmethod
+    def _purge_removed_account_pages(cur: Any) -> int:
+        cur.execute(
+            """
+            delete from fb_pages p
+            where not exists (
+                select 1
+                from fb_accounts a
+                where a.account_id = p.account_id
+                  and a.active = true
+            )
+            """
+        )
+        return int(cur.rowcount or 0)
+
+    def purge_removed_account_pages(self) -> int:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                deleted = self._purge_removed_account_pages(cur)
+            conn.commit()
+        return deleted
+
     def dashboard_summary(self, owner_id: Optional[int] = None) -> Dict[str, Any]:
         with self.connect() as conn:
             with conn.cursor() as cur:
+                self._purge_removed_account_pages(cur)
                 if owner_id is None:
                     cur.execute(
                         """
@@ -758,6 +782,7 @@ class BotStorage:
     def admin_summary(self) -> Dict[str, Any]:
         with self.connect() as conn:
             with conn.cursor() as cur:
+                self._purge_removed_account_pages(cur)
                 cur.execute(
                     """
                     select
@@ -769,7 +794,14 @@ class BotStorage:
                 )
                 account_row = cur.fetchone() or {}
 
-                cur.execute("select count(*)::int as page_count from fb_pages")
+                cur.execute(
+                    """
+                    select count(*)::int as page_count
+                    from fb_pages p
+                    join fb_accounts a on a.account_id = p.account_id
+                    where a.active = true
+                    """
+                )
                 page_row = cur.fetchone() or {}
 
                 cur.execute(

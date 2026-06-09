@@ -767,54 +767,66 @@ class TelegramBotApp:
             sent = 0
             failed = 0
             for target in targets:
-                user_id = int(target.get("telegram_user_id") or 0)
-                chat_id = int(target.get("chat_id") or user_id or 0)
-                if not chat_id or not user_id:
-                    continue
-                owner_scope = self.account_owner_scope(user_id)
-                summary = await asyncio.to_thread(self.storage.dashboard_summary, owner_scope)
-                accounts = await asyncio.to_thread(self.storage.list_accounts, owner_scope)
-                active_account = await asyncio.to_thread(self.storage.get_active_account, user_id, owner_scope)
-                lang = await asyncio.to_thread(self.storage.get_user_language, user_id)
-                status_counts = summary.get("job_status_counts") or {}
-                active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
-                text = dashboard_text(
-                    accounts=accounts,
-                    summary=summary,
-                    active_account=active_account,
-                    prefix="🔄 تم تحديث البوت بعد Deploy جديد. تم تحديث لوحة التحكم." if lang == "ar" else "🔄 Bot updated after a new deploy. Dashboard refreshed.",
-                    lang=lang,
-                )
-                result = await self.send_message(
-                    chat_id,
-                    text,
-                    reply_markup=dashboard_markup(
-                        has_accounts=bool(accounts),
+                try:
+                    user_id = int(target.get("telegram_user_id") or 0)
+                    chat_id = int(target.get("chat_id") or user_id or 0)
+                    if not chat_id or not user_id:
+                        failed += 1
+                        continue
+                    owner_scope = self.account_owner_scope(user_id)
+                    summary = await asyncio.to_thread(self.storage.dashboard_summary, owner_scope)
+                    accounts = await asyncio.to_thread(self.storage.list_accounts, owner_scope)
+                    active_account = await asyncio.to_thread(self.storage.get_active_account, user_id, owner_scope)
+                    lang = await asyncio.to_thread(self.storage.get_user_language, user_id)
+                    status_counts = summary.get("job_status_counts") or {}
+                    active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
+                    text = dashboard_text(
+                        accounts=accounts,
+                        summary=summary,
                         active_account=active_account,
-                        active_jobs=active_jobs,
-                        is_admin=self.is_admin_user(user_id),
+                        prefix="🔄 تم تحديث البوت بعد Deploy جديد. تم تحديث لوحة التحكم." if lang == "ar" else "🔄 Bot updated after a new deploy. Dashboard refreshed.",
                         lang=lang,
-                    ),
-                )
-                if result.get("ok"):
-                    sent += 1
-                else:
+                    )
+                    result = await self.send_message(
+                        chat_id,
+                        text,
+                        reply_markup=dashboard_markup(
+                            has_accounts=bool(accounts),
+                            active_account=active_account,
+                            active_jobs=active_jobs,
+                            is_admin=self.is_admin_user(user_id),
+                            lang=lang,
+                        ),
+                    )
+                    if result.get("ok"):
+                        sent += 1
+                    else:
+                        failed += 1
+                except Exception:
                     failed += 1
-            await asyncio.to_thread(self.storage.set_meta, marker_key, revision)
+                    logger.exception("Restart dashboard broadcast failed for target=%s", target)
+            if failed == 0:
+                await asyncio.to_thread(self.storage.set_meta, marker_key, revision)
+            else:
+                logger.warning(
+                    "Restart dashboard broadcast not marked sent for %s because %d target(s) failed",
+                    revision,
+                    failed,
+                )
             logger.info("Restart dashboard broadcast sent to %d user(s), failed=%d", sent, failed)
         except Exception:
             logger.exception("Restart dashboard broadcast failed")
 
     async def startup_validation_and_broadcast(self) -> None:
         try:
-            await self.validate_all_accounts_cookies_startup()
-        except Exception:
-            logger.exception("Startup validation task failed")
-        try:
             if _env_bool("RESTART_BROADCAST_ENABLED", True):
                 await self.notify_restart_dashboard()
         except Exception:
             logger.exception("Startup notify restart dashboard failed")
+        try:
+            await self.validate_all_accounts_cookies_startup()
+        except Exception:
+            logger.exception("Startup validation task failed")
 
     async def validate_all_accounts_cookies_startup(self) -> None:
         logger.info("Starting startup cookie validation background task...")

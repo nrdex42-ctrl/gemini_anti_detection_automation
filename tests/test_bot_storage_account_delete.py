@@ -106,9 +106,21 @@ def test_admin_delete_users_removes_pages_before_accounts():
     assert cursor.executed[2][0].startswith("delete from fb_accounts")
 
 
+def test_purge_removed_account_pages_deletes_inactive_and_orphaned_page_rows():
+    storage, cursor, connection = storage_with_fake_connection([3])
+
+    deleted = storage.purge_removed_account_pages()
+
+    assert deleted == 3
+    assert connection.committed is True
+    assert cursor.executed[0][0].startswith("delete from fb_pages p where not exists")
+    assert "a.account_id = p.account_id" in cursor.executed[0][0]
+    assert "a.active = true" in cursor.executed[0][0]
+
+
 def test_dashboard_summary_counts_pages_only_for_active_accounts():
     storage, cursor, _connection = storage_with_fake_connection(
-        [],
+        [3],
         fetchone_rows=[{"page_count": 2}],
         fetchall_rows=[
             [{"account_id": "acct_active", "count": 2}],
@@ -122,6 +134,7 @@ def test_dashboard_summary_counts_pages_only_for_active_accounts():
 
     assert summary["page_count"] == 2
     assert summary["page_counts_by_account"] == {"acct_active": 2}
-    assert "join fb_accounts a on a.account_id = p.account_id" in cursor.executed[0][0]
-    assert "where a.created_by=%s and a.active = true" in cursor.executed[0][0]
+    assert cursor.executed[0][0].startswith("delete from fb_pages p where not exists")
+    assert "join fb_accounts a on a.account_id = p.account_id" in cursor.executed[1][0]
     assert "where a.created_by=%s and a.active = true" in cursor.executed[1][0]
+    assert "where a.created_by=%s and a.active = true" in cursor.executed[2][0]
