@@ -1,10 +1,12 @@
 from telegram_dashboard import (
     LTR_MARK,
+    account_post_action_markup,
     admin_dashboard_markup,
     dashboard_action,
     dashboard_markup,
     dashboard_text,
     language_selection_markup,
+    page_selection_markup,
     parse_image_mode_choice,
     parse_post_type_choice,
     parse_video_mode_choice,
@@ -199,6 +201,27 @@ def test_smart_dashboard_replaces_recent_posts_with_active_account_pages():
     assert "- Oppo" in text
     assert "Recent posts:" not in text
     assert "Old Post Page" not in text
+
+
+def test_page_selection_card_does_not_show_refresh_pages_button():
+    markup = page_selection_markup(
+        [{"page_id": "p1", "page_name": "Insan", "page_url": "https://facebook.com/insan"}],
+        [],
+        lang="en",
+    )
+    labels = _inline_labels(markup)
+    callbacks = [button["callback_data"] for row in markup["inline_keyboard"] for button in row]
+
+    assert "🔄 Refresh Pages" not in labels
+    assert "pg:refresh" not in callbacks
+
+
+def test_account_post_action_markup_only_continues_to_pages():
+    labels = _reply_labels(account_post_action_markup("en"))
+
+    assert "➡️ Continue to pages" in labels
+    assert "🧪 Check Account" not in labels
+    assert "🔄 Refresh Pages" not in labels
 
 
 def test_post_stage_keyboards_match_current_card_stage():

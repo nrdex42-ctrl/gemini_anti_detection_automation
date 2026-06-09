@@ -488,8 +488,7 @@ def done_cancel_markup(lang: str = "en", *, placeholder: str = "") -> Dict[str, 
 def account_post_action_markup(lang: str = "en") -> Dict[str, Any]:
     return reply_keyboard(
         [
-            [button_text("check_this_account", lang)],
-            [button_text("continue_to_pages", lang), button_text("refresh_pages", lang)],
+            [button_text("continue_to_pages", lang)],
             [button_text("back", lang)],
         ],
         placeholder=tr(lang, "Choose account action", "اختار إجراء الحساب"),
@@ -660,7 +659,7 @@ def page_selection_card(
         ]
     )
     if not pages:
-        lines.append(tr(lang, "No cached pages found. Refresh pages first.", "لا توجد صفحات محفوظة. حدّث الصفحات أولاً."))
+        lines.append(tr(lang, "No available pages found for this account.", "لا توجد صفحات متاحة لهذا الحساب."))
     else:
         for idx, page in enumerate(pages[:10]):
             marker = "✅" if idx in selected else "⬜"
@@ -680,7 +679,6 @@ def page_selection_markup(pages: List[Dict[str, Any]], selected_indexes: List[in
         rows.append([inline_button(f"{marker} {_short(page_display_name(page, idx), 48)}", f"pg:{idx}")])
     if pages:
         rows.append([inline_button(tr(lang, "📋 All", "📋 الكل"), "pg:all"), inline_button(tr(lang, "✅ Confirm", "✅ تأكيد"), "pg:confirm")])
-    rows.append([inline_button(button_text("refresh_pages", lang), "pg:refresh")])
     rows.append([inline_button(button_text("dashboard", lang), "dash:back")])
     return inline_markup(rows)
 

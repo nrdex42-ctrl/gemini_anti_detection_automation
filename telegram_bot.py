@@ -3196,6 +3196,187 @@ class TelegramBotApp:
             reply_markup=account_post_action_markup(lang=lang),
         )
 
+    async def open_post_pages_after_auto_prepare(
+        self,
+        chat_id: int,
+        message_id: int,
+        user_id: int,
+        account_id: str,
+    ) -> None:
+        lang = await self.user_language(user_id)
+        owner_scope = self.account_owner_scope(user_id)
+        account = await asyncio.to_thread(self.storage.get_account, account_id, owner_scope)
+        if not account:
+            await self.send_message(
+                chat_id,
+                f"الحساب غير موجود: {account_id}" if lang == "ar" else f"Account not found: {account_id}",
+                message_id,
+                reply_markup=await self.dashboard_reply_markup(user_id),
+            )
+            return
+
+        display = account_display_name(account, account_id)
+        title = "تجهيز الصفحات..." if lang == "ar" else "Preparing pages..."
+        progress = await self.send_message(
+            chat_id,
+            progress_card(
+                title,
+                0,
+                3,
+                f"جاري فحص كوكيز {display}..." if lang == "ar" else f"Checking {display} cookies...",
+            ),
+            message_id,
+        )
+        progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
+
+        async def update_progress(done: int, detail: str) -> None:
+            nonlocal progress_message_id
+            progress_message_id = await self.edit_or_send_message(
+                chat_id,
+                progress_message_id,
+                progress_card(title, done, 3, detail),
+                reply_to_message_id=message_id,
+            )
+
+        try:
+            from playwright_engine import validate_facebook_session
+
+            cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
+            parsed = parse_account_cookie_payload(cookie_header, account_id)
+            session_ok, detail = await validate_facebook_session(cookies_json(parse_cookies(parsed.cookie_header)))
+            icon, status_text = cookie_validation_summary(session_ok, detail)
+            await asyncio.to_thread(
+                self.storage.update_account_cookie_validation,
+                account_id,
+                "valid" if session_ok else "invalid",
+                status_text,
+                owner_scope,
+            )
+            if not session_ok:
+                with suppress(Exception):
+                    await self.maybe_quarantine_account_cookie(
+                        account_id,
+                        user_id,
+                        status_text,
+                        context="post_pages_auto_cookie_check",
+                    )
+                lines = [
+                    "🧪 فحص الكوكيز" if lang == "ar" else "🧪 Cookie Check",
+                    "━━━━━━━━━━━━━━━━━━",
+                    f"الحساب: {display}" if lang == "ar" else f"Account: {display}",
+                    f"{icon} {status_text}",
+                    "",
+                    (
+                        "حدّث كوكيز الحساب قبل اختيار الصفحات."
+                        if lang == "ar"
+                        else "Update this account's cookies before choosing pages."
+                    ),
+                ]
+                await self.edit_or_send_message(
+                    chat_id,
+                    progress_message_id,
+                    "\n".join([progress_card(title, 1, 3, "فشل فحص الكوكيز." if lang == "ar" else "Cookie check failed."), "", *lines]),
+                    reply_to_message_id=message_id,
+                    reply_markup=await self.dashboard_reply_markup(user_id),
+                )
+                return
+        except Exception as exc:
+            error_text = self.encryption_key_recovery_text(lang) if is_encryption_key_error(exc) else compact_error(exc, 500)
+            with suppress(Exception):
+                await asyncio.to_thread(
+                    self.storage.update_account_cookie_validation,
+                    account_id,
+                    "invalid",
+                    compact_error(exc, 500),
+                    owner_scope,
+                )
+            await self.edit_or_send_message(
+                chat_id,
+                progress_message_id,
+                "\n".join(
+                    [
+                        progress_card(title, 1, 3, "فشل فحص الكوكيز." if lang == "ar" else "Cookie check failed."),
+                        "",
+                        "🔴 بيانات الكوكيز غير قابلة للاستخدام:" if lang == "ar" else "🔴 Cookie payload is not usable:",
+                        error_text[:900],
+                    ]
+                ),
+                reply_to_message_id=message_id,
+                reply_markup=await self.dashboard_reply_markup(user_id),
+            )
+            return
+
+        await update_progress(1, "جاري البحث عن الصفحات المتاحة..." if lang == "ar" else "Finding available pages...")
+        discovery_timeout = _env_int("BOT_PAGE_DISCOVERY_TIMEOUT_SECONDS", 150, minimum=30)
+        heartbeat_seconds = _env_int("BOT_PROGRESS_HEARTBEAT_SECONDS", 8, minimum=2)
+        started = time.monotonic()
+        pages_task = asyncio.create_task(self.discover_pages(account_id, owner_scope))
+        try:
+            while True:
+                remaining = discovery_timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    pages_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await pages_task
+                    raise TimeoutError(f"Page discovery timed out after {discovery_timeout}s.")
+                try:
+                    pages = await asyncio.wait_for(
+                        asyncio.shield(pages_task),
+                        timeout=min(heartbeat_seconds, remaining),
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    elapsed = int(time.monotonic() - started)
+                    await update_progress(
+                        1,
+                        f"جاري البحث عن الصفحات المتاحة... مر {elapsed} ثانية."
+                        if lang == "ar"
+                        else f"Finding available pages... {elapsed}s elapsed.",
+                    )
+            await update_progress(
+                2,
+                f"جاري حفظ {len(pages)} صفحة متاحة..."
+                if lang == "ar"
+                else f"Saving {len(pages)} available page(s)...",
+            )
+            await asyncio.to_thread(self.storage.upsert_pages, account_id, pages)
+        except Exception as exc:
+            detail = compact_error(exc, 500)
+            logger.warning("Automatic page discovery before posting failed for %s: %s", account_id, detail)
+            await self.edit_or_send_message(
+                chat_id,
+                progress_message_id,
+                "\n".join(
+                    [
+                        progress_card(title, 2, 3, "فشل البحث عن الصفحات." if lang == "ar" else "Page discovery failed."),
+                        "",
+                        detail,
+                    ]
+                ),
+                reply_to_message_id=message_id,
+                reply_markup=await self.dashboard_reply_markup(user_id),
+            )
+            return
+
+        self.set_dashboard_session(
+            chat_id,
+            user_id,
+            {
+                "action": "post",
+                "account_id": account_id,
+                "step": "page_select",
+                "lang": lang,
+            },
+        )
+        await update_progress(3, "تم تجهيز الصفحات." if lang == "ar" else "Available pages ready.")
+        await self.prompt_for_page(
+            chat_id,
+            progress_message_id or message_id,
+            account_id,
+            user_id,
+            edit=bool(progress_message_id),
+        )
+
     async def active_account_or_warn(self, chat_id: int, message_id: int, user_id: int) -> str:
         active_account = await self.active_account_id(user_id)
         if active_account:
@@ -3335,7 +3516,7 @@ class TelegramBotApp:
         if action == "post_active":
             active_account = await self.active_account_or_warn(chat_id, message_id, user_id)
             if active_account:
-                await self.show_active_account_actions(chat_id, message_id, user_id, active_account)
+                await self.open_post_pages_after_auto_prepare(chat_id, message_id, user_id, active_account)
             return
         if action == "post_all_pages":
             active_account = await self.active_account_or_warn(chat_id, message_id, user_id)
