@@ -28,7 +28,7 @@ def normalize_user_approval_status(value: Any, default: str = "approved") -> str
 
 
 class SecretCipher:
-    """Encrypt stored Facebook cookies when ENCRYPTION_KEY is configured."""
+    """Encrypt stored Facebook cookies with the required ENCRYPTION_KEY."""
 
     def __init__(self, key: str = "") -> None:
         raw = (key or os.getenv("ENCRYPTION_KEY", "")).strip()
@@ -43,8 +43,10 @@ class SecretCipher:
             self._fernet = Fernet(derived)
 
     def encrypt(self, value: str) -> str:
-        if not value or value.startswith(TOKEN_PREFIX) or self._fernet is None:
+        if not value or value.startswith(TOKEN_PREFIX):
             return value
+        if self._fernet is None:
+            raise RuntimeError("ENCRYPTION_KEY is required before storing Facebook cookies")
         return f"{TOKEN_PREFIX}{self._fernet.encrypt(value.encode('utf-8')).decode('utf-8')}"
 
     def decrypt(self, value: str) -> str:
@@ -580,26 +582,38 @@ class BotStorage:
         return self.cipher.decrypt(str(row["cookie_ciphertext"]))
 
     def upsert_pages(self, account_id: str, pages: List[Dict[str, str]]) -> None:
+        normalized_pages: List[Dict[str, str]] = []
+        seen_page_ids = set()
+        for page in pages:
+            page_id = str(page.get("id") or page.get("page_id") or "").strip()
+            page_url = str(page.get("url") or page.get("page_url") or page.get("page_id_or_url") or "").strip()
+            page_name = clean_facebook_page_name(
+                page.get("name") or page.get("page_name"),
+                page_url,
+                page_id or page_url,
+            )
+            if not page_id and "id=" in page_url:
+                page_id = page_url.split("id=", 1)[1].split("&", 1)[0]
+            if not page_id:
+                identity = page_url or page_name
+                if not identity:
+                    continue
+                page_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+            if page_id in seen_page_ids:
+                continue
+            seen_page_ids.add(page_id)
+            normalized_pages.append({"page_id": page_id, "page_name": page_name or page_id, "page_url": page_url})
+
         with self.connect() as conn:
             with conn.cursor() as cur:
-                for page in pages:
-                    page_id = str(page.get("id") or "").strip()
-                    page_url = str(page.get("url") or "").strip()
-                    page_name = clean_facebook_page_name(page.get("name"), page_url, page_id or page_url)
-                    if not page_id and "id=" in page_url:
-                        page_id = page_url.split("id=", 1)[1].split("&", 1)[0]
-                    if not page_id:
-                        page_id = hashlib.sha256(page_url.encode("utf-8")).hexdigest()[:24]
+                cur.execute("delete from fb_pages where account_id=%s", (account_id,))
+                for page in normalized_pages:
                     cur.execute(
                         """
                         insert into fb_pages (account_id, page_id, page_name, page_url, updated_at)
                         values (%s, %s, %s, %s, now())
-                        on conflict (account_id, page_id) do update set
-                            page_name = excluded.page_name,
-                            page_url = excluded.page_url,
-                            updated_at = now()
                         """,
-                        (account_id, page_id, page_name, page_url),
+                        (account_id, page["page_id"], page["page_name"], page["page_url"]),
                     )
             conn.commit()
 
@@ -752,19 +766,25 @@ class BotStorage:
                 if owner_id is None:
                     cur.execute(
                         """
-                        select id::text, account_id, page_id_or_url, page_name, post_type, status, error, created_at, completed_at
-                        from fb_post_jobs
-                        order by created_at desc
+                        select j.id::text, j.account_id,
+                               coalesce(nullif(j.account_label, ''), a.label, j.account_id) as account_label,
+                               j.page_id_or_url, j.page_name, j.post_type, j.status, j.error, j.created_at, j.completed_at
+                        from fb_post_jobs j
+                        left join fb_accounts a on a.account_id = j.account_id
+                        order by j.created_at desc
                         limit 8
                         """
                     )
                 else:
                     cur.execute(
                         """
-                        select id::text, account_id, page_id_or_url, page_name, post_type, status, error, created_at, completed_at
-                        from fb_post_jobs
-                        where telegram_user_id=%s
-                        order by created_at desc
+                        select j.id::text, j.account_id,
+                               coalesce(nullif(j.account_label, ''), a.label, j.account_id) as account_label,
+                               j.page_id_or_url, j.page_name, j.post_type, j.status, j.error, j.created_at, j.completed_at
+                        from fb_post_jobs j
+                        left join fb_accounts a on a.account_id = j.account_id
+                        where j.telegram_user_id=%s
+                        order by j.created_at desc
                         limit 8
                         """,
                         (int(owner_id),),
@@ -1295,9 +1315,13 @@ class BotStorage:
                     """
                     insert into fb_post_jobs (
                         telegram_chat_id, telegram_user_id, account_id, page_id_or_url,
-                        page_name, post_type, caption, media_path
+                        account_label, page_name, post_type, caption, media_path
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s)
+                    values (
+                        %s, %s, %s, %s,
+                        coalesce(nullif(%s, ''), (select label from fb_accounts where account_id=%s), %s),
+                        %s, %s, %s, %s
+                    )
                     returning id::text
                     """,
                     (
@@ -1305,6 +1329,9 @@ class BotStorage:
                         telegram_user_id,
                         account_id,
                         page_id_or_url,
+                        "",
+                        account_id,
+                        account_id,
                         page_name,
                         post_type,
                         caption,
@@ -1326,9 +1353,13 @@ class BotStorage:
                         """
                         insert into fb_post_jobs (
                             telegram_chat_id, telegram_user_id, account_id, page_id_or_url,
-                            page_name, post_type, caption, media_path
+                            account_label, page_name, post_type, caption, media_path
                         )
-                        values (%s, %s, %s, %s, %s, %s, %s, %s)
+                        values (
+                            %s, %s, %s, %s,
+                            coalesce(nullif(%s, ''), (select label from fb_accounts where account_id=%s), %s),
+                            %s, %s, %s, %s
+                        )
                         returning id::text
                         """,
                         (
@@ -1336,6 +1367,9 @@ class BotStorage:
                             int(job["telegram_user_id"]),
                             str(job["account_id"]),
                             str(job["page_id_or_url"]),
+                            str(job.get("account_label") or ""),
+                            str(job["account_id"]),
+                            str(job["account_id"]),
                             str(job.get("page_name") or ""),
                             str(job["post_type"]),
                             str(job.get("caption") or ""),

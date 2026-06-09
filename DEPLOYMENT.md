@@ -46,7 +46,7 @@ Schema options:
 
 ```bash
 export DATABASE_URL="postgresql://..."
-python scripts/init_supabase.py
+python3 scripts/init_supabase.py
 ```
 
 The schema creates:
@@ -75,7 +75,7 @@ After Render gives you a public URL, automatic webhook setup uses Render's `REND
 export TELEGRAM_BOT_TOKEN="..."
 export TELEGRAM_WEBHOOK_SECRET="..."
 export PUBLIC_BASE_URL="https://your-custom-domain.example"
-python scripts/set_telegram_webhook.py
+python3 scripts/set_telegram_webhook.py
 ```
 
 ## 4. Render
@@ -175,7 +175,7 @@ The production posting mode is concurrent for same-media batches: one shared bro
 Generate `ENCRYPTION_KEY` locally only for a brand-new Supabase database. If you already have stored accounts/cookies in Supabase, reuse the exact old `ENCRYPTION_KEY` instead:
 
 ```bash
-python scripts/generate_fernet_key.py
+python3 scripts/generate_fernet_key.py
 ```
 
 ## 5. Production Operation
@@ -195,7 +195,7 @@ export TELEGRAM_BOT_TOKEN="..."
 export TELEGRAM_WEBHOOK_SECRET="..."
 # Optional for custom domains. On Render, RENDER_EXTERNAL_URL is used automatically.
 export PUBLIC_BASE_URL="https://your-custom-domain.example"
-python scripts/set_telegram_webhook.py
+python3 scripts/set_telegram_webhook.py
 ```
 
 The dashboard Add Facebook Account button accepts raw cookie headers, JSON cookie arrays, `{cookies:[...]}` exports, uploaded JSON files, and multi-message JSON chunks followed by the `✅ Done` button.

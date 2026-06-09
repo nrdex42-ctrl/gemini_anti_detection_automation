@@ -1,4 +1,6 @@
 import bot_storage
+import pytest
+from cryptography.fernet import Fernet
 
 
 class FakeCursor:
@@ -138,3 +140,46 @@ def test_dashboard_summary_counts_pages_only_for_active_accounts():
     assert "join fb_accounts a on a.account_id = p.account_id" in cursor.executed[1][0]
     assert "where a.created_by=%s and a.active = true" in cursor.executed[1][0]
     assert "where a.created_by=%s and a.active = true" in cursor.executed[2][0]
+
+
+def test_secret_cipher_requires_encryption_key_for_cookie_storage(monkeypatch):
+    monkeypatch.delenv("ENCRYPTION_KEY", raising=False)
+    cipher = bot_storage.SecretCipher()
+
+    with pytest.raises(RuntimeError, match="ENCRYPTION_KEY is required before storing Facebook cookies"):
+        cipher.encrypt("c_user=123; xs=session")
+
+    assert cipher.decrypt("c_user=123; xs=session") == "c_user=123; xs=session"
+
+
+def test_secret_cipher_encrypts_and_decrypts_with_key():
+    cipher = bot_storage.SecretCipher(Fernet.generate_key().decode("utf-8"))
+
+    encrypted = cipher.encrypt("c_user=123; xs=session")
+
+    assert encrypted.startswith(bot_storage.TOKEN_PREFIX)
+    assert encrypted != "c_user=123; xs=session"
+    assert cipher.decrypt(encrypted) == "c_user=123; xs=session"
+
+
+def test_upsert_pages_replaces_account_page_snapshot_and_normalizes_page_fields():
+    storage, cursor, connection = storage_with_fake_connection([2, 1, 1])
+
+    storage.upsert_pages(
+        "acct_1",
+        [
+            {"page_id": "p1", "page_name": "Insan", "page_url": "https://facebook.com/insan"},
+            {"id": "p1", "name": "Duplicate Insan", "url": "https://facebook.com/insan"},
+            {"page_name": "Oppo"},
+        ],
+    )
+
+    assert connection.committed is True
+    assert cursor.executed[0] == ("delete from fb_pages where account_id=%s", ("acct_1",))
+    assert len(cursor.executed) == 3
+    assert cursor.executed[1][1] == ("acct_1", "p1", "Insan", "https://facebook.com/insan")
+    account_id, generated_page_id, page_name, page_url = cursor.executed[2][1]
+    assert account_id == "acct_1"
+    assert len(generated_page_id) == 24
+    assert page_name == "Oppo"
+    assert page_url == ""

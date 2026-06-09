@@ -78,6 +78,7 @@ create table if not exists fb_post_jobs (
     telegram_chat_id bigint,
     telegram_user_id bigint,
     account_id text not null references fb_accounts(account_id) on delete cascade,
+    account_label text not null default '',
     page_id_or_url text not null,
     page_name text not null default '',
     post_type text not null check (post_type in ('text', 'image', 'video')),
@@ -90,6 +91,8 @@ create table if not exists fb_post_jobs (
     started_at timestamptz,
     completed_at timestamptz
 );
+
+alter table fb_post_jobs add column if not exists account_label text not null default '';
 
 create index if not exists idx_fb_accounts_active on fb_accounts(active);
 create index if not exists idx_fb_accounts_created_by on fb_accounts(created_by);

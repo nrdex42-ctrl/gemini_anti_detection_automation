@@ -20,27 +20,27 @@ cd "/home/shabana/Public/anti-detection FB automation"
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-python -m playwright install chromium
+python3 -m playwright install chromium
 cp .env.example .env
 ```
 
 Generate an encryption key for `.env`:
 
 ```bash
-python scripts/generate_fernet_key.py
+python3 scripts/generate_fernet_key.py
 ```
 
 Initialize the database schema:
 
 ```bash
 export DATABASE_URL="postgresql://..."
-python scripts/init_supabase.py
+python3 scripts/init_supabase.py
 ```
 
 Run the bot locally:
 
 ```bash
-python telegram_bot.py
+python3 telegram_bot.py
 ```
 
 ## Telegram Bot Commands

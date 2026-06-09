@@ -48,3 +48,23 @@ def test_post_history_card_empty_state_keeps_card_header():
         "━━━━━━━━━━━━━━━━━━━━━━",
         "No post jobs yet.",
     ]
+
+
+def test_post_history_card_uses_stored_account_label_when_account_is_not_active():
+    text = post_history_card(
+        [
+            {
+                "account_id": "acct_deleted",
+                "account_label": "Archived Account",
+                "page_name": "Old Page",
+                "post_type": "image",
+                "status": "success",
+                "created_at": datetime(2026, 6, 10, 12, 5, tzinfo=timezone.utc),
+            }
+        ],
+        [],
+        lang="en",
+    )
+
+    assert "Account: Archived Account" in text
+    assert "Account: acct_deleted" not in text

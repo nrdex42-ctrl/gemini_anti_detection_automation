@@ -275,7 +275,8 @@ def post_history_card(
     account_by_id = {str(account.get("account_id") or ""): account for account in (accounts or [])}
     for index, job in enumerate(jobs, start=1):
         account_id = str(job.get("account_id") or "").strip()
-        account_name = compact_text(account_display_name(account_by_id.get(account_id, {}), account_id), 44)
+        account_label = str(job.get("account_label") or "").strip()
+        account_name = compact_text(account_label or account_display_name(account_by_id.get(account_id, {}), account_id), 44)
         page_name = compact_text(
             page_display_name(
                 {
