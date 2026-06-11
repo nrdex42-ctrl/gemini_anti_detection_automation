@@ -63,7 +63,7 @@ def test_posting_result_card_includes_overall_elapsed_time():
     assert "████" not in card
     assert "Completed: 2026-06-07 08:54 PM" in card
     assert "Total time: 2m 05s" in card
-    assert "============\nFB account: Omar Mohamed\nID: 61576466101916" in card
+    assert "============\nFB: Omar Mohamed\nID: 61576466101916" in card
     assert POSTING_STATUS_SYNC_TEXT in card
     assert "Page status sync" not in card
     assert "Succeeded pages: 2" in card
@@ -90,9 +90,9 @@ def test_posting_result_card_puts_account_footer_after_none_line():
         account_id="61576466101916",
     )
 
-    expected_footer = "- none\n============\nFB account: Omar Mohamed\nID: 61576466101916"
+    expected_footer = "- none\n============\nFB: Omar Mohamed\nID: 61576466101916"
     assert expected_footer in card
-    assert card.rsplit("============", 1)[-1].strip() == "FB account: Omar Mohamed\nID: 61576466101916"
+    assert card.rsplit("============", 1)[-1].strip() == "FB: Omar Mohamed\nID: 61576466101916"
 
 
 def test_posting_live_status_card_uses_user_friendly_status_text_instead_of_debug_id():
