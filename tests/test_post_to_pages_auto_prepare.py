@@ -236,3 +236,80 @@ def test_post_to_pages_times_out_slow_cookie_validation_before_page_discovery(mo
         assert "Cookie validation timed out after 1s" in edits[-1]
 
     asyncio.run(run())
+
+
+def test_post_to_pages_blocks_stored_checkpoint_without_rechecking_cookie(monkeypatch):
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.dashboard_sessions = {}
+        app.account_owner_scope = lambda user_id: user_id
+        app.active_account_id = lambda user_id: asyncio.sleep(0, result="acct_1")
+
+        class CheckpointStorage:
+            def __init__(self):
+                self.cookie_loads = 0
+                self.validation_updates = []
+                self.upserted = []
+
+            def get_account(self, account_id, owner_id=None):
+                return {
+                    "account_id": account_id,
+                    "label": "Omar Mohamed",
+                    "active": True,
+                    "cookie_status": "invalid",
+                    "cookie_status_detail": "Facebook checkpoint or verification required",
+                }
+
+            def get_account_cookie(self, account_id, owner_id=None):
+                self.cookie_loads += 1
+                raise AssertionError("stored checkpoint should block before loading cookies")
+
+            def update_account_cookie_validation(self, account_id, status, detail, owner_scope):
+                self.validation_updates.append((account_id, status, detail, owner_scope))
+
+            def upsert_pages(self, account_id, pages):
+                self.upserted.append((account_id, pages))
+
+        async def user_language(user_id=0):
+            return "en"
+
+        async def dashboard_reply_markup(user_id=0):
+            return {}
+
+        async def validate_facebook_session(cookies):
+            raise AssertionError("stored checkpoint should block before validation")
+
+        async def discover_pages(account_id, owner_id=None):
+            raise AssertionError("stored checkpoint should not discover pages")
+
+        sent = []
+        edits = []
+
+        async def send_message(chat_id, text, reply_to_message_id=0, *, reply_markup=None, parse_mode=""):
+            sent.append(text)
+            return {"ok": True, "result": {"message_id": 777}}
+
+        async def edit_or_send_message(chat_id, message_id, text, **kwargs):
+            edits.append(text)
+            return message_id or 777
+
+        import playwright_engine
+
+        monkeypatch.setattr(playwright_engine, "validate_facebook_session", validate_facebook_session)
+        app.storage = CheckpointStorage()
+        app.user_language = user_language
+        app.dashboard_reply_markup = dashboard_reply_markup
+        app.discover_pages = discover_pages
+        app.send_message = send_message
+        app.edit_or_send_message = edit_or_send_message
+
+        await app.handle_dashboard_button(123, 99, 456, "post_active")
+
+        assert app.storage.cookie_loads == 0
+        assert app.storage.validation_updates == []
+        assert app.storage.upserted == []
+        assert "Cookie check failed" in edits[-1]
+        assert "Facebook checkpoint required" in edits[-1]
+        assert "complete verification" in edits[-1]
+
+    asyncio.run(run())

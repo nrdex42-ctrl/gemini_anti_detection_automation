@@ -53,6 +53,8 @@ def test_posting_result_card_includes_overall_elapsed_time():
         debug_id="batch_test",
         elapsed_seconds=125,
         completed_at=datetime(2026, 6, 7, 17, 54, tzinfo=timezone.utc),
+        account_name="Omar Mohamed",
+        account_id="61576466101916",
     )
 
     assert "Posting complete: 2/3 succeeded" in card
@@ -61,6 +63,7 @@ def test_posting_result_card_includes_overall_elapsed_time():
     assert "████" not in card
     assert "Completed: 2026-06-07 08:54 PM" in card
     assert "Total time: 2m 05s" in card
+    assert "Facebook account: Omar Mohamed | ID: 61576466101916" in card
     assert POSTING_STATUS_SYNC_TEXT in card
     assert "Page status sync" not in card
     assert "Succeeded pages: 2" in card

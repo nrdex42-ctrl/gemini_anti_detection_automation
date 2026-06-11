@@ -329,6 +329,8 @@ def posting_result_card(
     debug_id: str = "",
     elapsed_seconds: Optional[float] = None,
     completed_at: Optional[Any] = None,
+    account_name: str = "",
+    account_id: str = "",
     max_length: int = 3800,
 ) -> str:
     total = max(1, len(results))
@@ -340,6 +342,12 @@ def posting_result_card(
         lines.append(f"Completed: {format_display_datetime(completed_at)}")
     if elapsed_seconds is not None:
         lines.append(f"Total time: {format_elapsed_seconds(elapsed_seconds)}")
+    if account_name or account_id:
+        display = compact_text(account_name or account_id, 60)
+        if account_id:
+            lines.append(f"Facebook account: {display} | ID: {account_id}")
+        else:
+            lines.append(f"Facebook account: {display}")
     lines.append(POSTING_STATUS_SYNC_TEXT)
     lines.append("")
 
@@ -457,8 +465,31 @@ FACEBOOK_SESSION_LOSS_RE = re.compile(
 )
 
 
+FACEBOOK_CHECKPOINT_RE = re.compile(
+    r"checkpoint|confirm your identity|verification required|verify your identity|security check|"
+    r"تحقق|تأكيد الهوية|فحص أمني",
+    re.I,
+)
+
+
 def is_facebook_session_loss_detail(detail: Any) -> bool:
     return bool(FACEBOOK_SESSION_LOSS_RE.search(str(detail or "")))
+
+
+def is_facebook_checkpoint_detail(detail: Any) -> bool:
+    return bool(FACEBOOK_CHECKPOINT_RE.search(str(detail or "")))
+
+
+def facebook_cookie_recovery_message(detail: Any, lang: str = "en") -> str:
+    if is_facebook_checkpoint_detail(detail):
+        if lang == "ar":
+            return "مطلوب Checkpoint من فيسبوك. افتح فيسبوك يدويًا، أكمل التحقق، ثم أضف كوكيز جديدة داخل البوت."
+        return "Facebook checkpoint required. Open Facebook manually, complete verification, then add fresh cookies to the bot."
+    if is_facebook_session_loss_detail(detail):
+        if lang == "ar":
+            return "الكوكيز غير صالحة. سجّل دخول فيسبوك يدويًا ثم أضف كوكيز جديدة داخل البوت."
+        return "Invalid cookie. Re-login to Facebook manually, then add fresh cookies to the bot."
+    return compact_text(detail, 180) or ("الكوكيز غير صالحة." if lang == "ar" else "Invalid cookie.")
 
 
 def account_cookie_quarantine_detail(detail: Any, limit: int = 700) -> str:
@@ -1118,6 +1149,17 @@ class TelegramBotApp:
             reply_markup=await self.dashboard_reply_markup(user_id),
         )
         return int((sent.get("result") or {}).get("message_id") or 0)
+
+    async def posting_account_context(self, account_id: str, user_id: int) -> Tuple[str, str]:
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            return "", ""
+        try:
+            account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
+        except Exception:
+            logger.exception("Could not load posting account context for %s", account_id)
+            return account_id, account_id
+        return account_display_name(account or {}, account_id), account_id
 
     async def send_post_stage_controls(
         self,
@@ -3226,6 +3268,18 @@ class TelegramBotApp:
     ) -> Dict[str, Any]:
         owner_scope = self.account_owner_scope(user_id)
         try:
+            account = await asyncio.to_thread(self.storage.get_account, account_id, owner_scope)
+            stored_status = str((account or {}).get("cookie_status") or "").strip().lower()
+            stored_detail = str((account or {}).get("cookie_status_detail") or "").strip()
+            if stored_status == "invalid" and is_facebook_session_loss_detail(stored_detail):
+                return {
+                    "ok": False,
+                    "stage": "cookie",
+                    "icon": "🔴",
+                    "detail": facebook_cookie_recovery_message(stored_detail, lang),
+                    "pages": [],
+                }
+
             cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
             session_ok, detail = await self.validate_facebook_cookie_session(cookie_header, account_id, lang)
             icon, status_text = cookie_validation_summary(session_ok, detail)
@@ -3237,14 +3291,17 @@ class TelegramBotApp:
                 owner_scope,
             )
             if not session_ok:
+                user_detail = status_text
                 with suppress(Exception):
-                    await self.maybe_quarantine_account_cookie(
+                    quarantined = await self.maybe_quarantine_account_cookie(
                         account_id,
                         user_id,
                         status_text,
                         context="auto_prepare_cookie_check",
                     )
-                return {"ok": False, "stage": "cookie", "icon": icon, "detail": status_text, "pages": []}
+                    if quarantined:
+                        user_detail = facebook_cookie_recovery_message(status_text, lang)
+                return {"ok": False, "stage": "cookie", "icon": icon, "detail": user_detail, "pages": []}
         except Exception as exc:
             detail = self.encryption_key_recovery_text(lang) if is_encryption_key_error(exc) else compact_error(exc, 500)
             with suppress(Exception):
@@ -6160,13 +6217,7 @@ class TelegramBotApp:
             status = str(account.get("cookie_status") or "").strip().lower()
             detail = str(account.get("cookie_status_detail") or "").strip()
             if status == "invalid" and is_facebook_session_loss_detail(detail):
-                message = (
-                    "جلسة فيسبوك لهذا الحساب تم إيقافها بعد ظهور تسجيل خروج/Checkpoint. "
-                    "سجّل دخول يدويًا وصدّر كوكيز جديدة ثم حدّث الحساب داخل البوت."
-                    if lang == "ar"
-                    else "This Facebook session was quarantined after a logout/checkpoint signal. "
-                    "Log in manually, export fresh cookies, then update the account in the bot."
-                )
+                message = facebook_cookie_recovery_message(detail, lang)
                 raise RuntimeError(message)
         try:
             cookie_string = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
@@ -6745,6 +6796,7 @@ class TelegramBotApp:
                 )
             self.debug_event("post_job_complete", trace_id, job_id=job_id, success=success, error=error[:300])
             completed_at = datetime.now(timezone.utc)
+            account_name, posting_account_id = await self.posting_account_context(account_id, user_id)
             progress_message_id = await self.send_posting_complete_card(
                 chat_id,
                 user_id,
@@ -6759,6 +6811,8 @@ class TelegramBotApp:
                     debug_id=trace_id,
                     elapsed_seconds=time.monotonic() - started,
                     completed_at=completed_at,
+                    account_name=account_name,
+                    account_id=posting_account_id,
                 ),
                 progress_message_id=progress_message_id,
             )
@@ -6774,6 +6828,7 @@ class TelegramBotApp:
             )
             await asyncio.to_thread(self.storage.mark_job_completed, job_id, False, {"exception": str(exc)}, str(exc))
             completed_at = datetime.now(timezone.utc)
+            account_name, posting_account_id = await self.posting_account_context(account_id, user_id)
             progress_message_id = await self.send_posting_complete_card(
                 chat_id,
                 user_id,
@@ -6783,6 +6838,8 @@ class TelegramBotApp:
                     debug_id=trace_id,
                     elapsed_seconds=time.monotonic() - started,
                     completed_at=completed_at,
+                    account_name=account_name,
+                    account_id=posting_account_id,
                 ),
                 progress_message_id=progress_message_id,
             )
@@ -7094,6 +7151,7 @@ class TelegramBotApp:
                     context="batch_post_result",
                 )
             completed_at = datetime.now(timezone.utc)
+            account_name, posting_account_id = await self.posting_account_context(account_id, user_id)
             progress_message_id = await self.send_posting_complete_card(
                 chat_id,
                 user_id,
@@ -7102,6 +7160,8 @@ class TelegramBotApp:
                     debug_id=trace_id,
                     elapsed_seconds=time.monotonic() - started,
                     completed_at=completed_at,
+                    account_name=account_name,
+                    account_id=posting_account_id,
                 ),
                 progress_message_id=progress_message_id,
             )
@@ -7152,6 +7212,7 @@ class TelegramBotApp:
                     for job in jobs
                 ]
                 completed_at = datetime.now(timezone.utc)
+                account_name, posting_account_id = await self.posting_account_context(account_id, user_id)
                 await self.send_posting_complete_card(
                     chat_id,
                     user_id,
@@ -7161,6 +7222,8 @@ class TelegramBotApp:
                         debug_id=trace_id,
                         elapsed_seconds=time.monotonic() - started,
                         completed_at=completed_at,
+                        account_name=account_name,
+                        account_id=posting_account_id,
                     ),
                     progress_message_id=progress_message_id,
                 )

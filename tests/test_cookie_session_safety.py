@@ -143,7 +143,7 @@ def test_quarantined_cookie_blocks_future_queue_preflight():
         with pytest.raises(RuntimeError) as exc_info:
             await app.ensure_account_cookie_readable("acct_1", 99, "en")
 
-        assert "quarantined" in str(exc_info.value)
+        assert "Invalid cookie. Re-login to Facebook manually" in str(exc_info.value)
         assert storage.get_cookie_called is False
 
     asyncio.run(run())
