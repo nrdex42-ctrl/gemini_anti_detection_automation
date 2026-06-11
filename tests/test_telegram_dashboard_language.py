@@ -165,6 +165,33 @@ def test_smart_dashboard_stored_pages_matches_visible_account_page_counts():
     assert "Omar Mohamed | pages: 2" in text
 
 
+def test_smart_dashboard_proxy_status_is_optional():
+    account = {
+        "account_id": "acct_omar",
+        "label": "Omar Mohamed",
+        "active": True,
+        "cookie_status": "valid",
+    }
+    summary = {
+        "page_count": 2,
+        "page_counts_by_account": {"acct_omar": 2},
+        "job_status_counts": {},
+    }
+
+    user_text = dashboard_text(accounts=[account], summary=summary, active_account="acct_omar", lang="en")
+    admin_text = dashboard_text(
+        accounts=[account],
+        summary=summary,
+        active_account="acct_omar",
+        lang="en",
+        show_proxy_status=True,
+        global_proxy_configured=True,
+    )
+
+    assert "Global proxy:" not in user_text
+    assert "Global proxy: set" in admin_text
+
+
 def test_smart_dashboard_replaces_recent_posts_with_active_account_pages():
     text = dashboard_text(
         accounts=[

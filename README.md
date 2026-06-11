@@ -86,7 +86,7 @@ The quick-post buttons use guided steps:
 
 Stored page discovery is cached in Supabase. Posting uses the saved page list and does not rediscover pages each time. Use `Refresh Pages` when an account gains/loses page access or you want to update the cache.
 
-Each Facebook account can have an optional proxy from `My Accounts` -> `Set Proxy`. The bot uses that proxy for cookie checks, page discovery, account-name lookup, and posting for that account. Proxy credentials are encrypted in Supabase and only the redacted host/port is shown in bot cards. If Facebook returns a checkpoint or account restriction, the bot stops automation for that account; resolve the checkpoint manually in a normal browser, then refresh the account cookies in the bot.
+Admins can add an optional global proxy from `My Accounts` -> `Set Global Proxy`. The bot uses that proxy for cookie checks, page discovery, account-name lookup, and posting for all users and accounts. Admins can tap `Test Global Proxy` to verify whether the proxy is working/reachable. Proxy controls and smart-dashboard proxy status are hidden from non-admin users. Proxy credentials are encrypted in Supabase, and posting cards only show the proxy status/IP/location when available. If Facebook returns a checkpoint or account restriction, the bot stops automation for that account; resolve the checkpoint manually in a normal browser, then refresh the account cookies in the bot.
 
 `Post to All Pages` queues one batch for all stored pages of the active account and uses one isolated account session for that batch.
 

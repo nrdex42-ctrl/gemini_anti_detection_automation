@@ -17,12 +17,13 @@ def test_account_picker_card_has_activate_rename_and_delete_buttons():
     assert "Select the account to make active." in text
     assert "Omar Mohamed" in text
     assert "اسماء ضياء" in text
+    assert "proxy" not in text
     assert "keyboard" not in markup
     callbacks = [button["callback_data"] for row in markup["inline_keyboard"] for button in row]
     assert "acctsel:0" in callbacks
     assert "acctren:0" in callbacks
     assert "acctdel:0" in callbacks
-    assert "acctproxy:0" in callbacks
+    assert "acctproxy:0" not in callbacks
 
 
 def test_manage_accounts_dashboard_button_sends_inline_card_without_editing_user_message():
@@ -66,24 +67,39 @@ def test_manage_accounts_dashboard_button_sends_inline_card_without_editing_user
     asyncio.run(run())
 
 
-def test_account_picker_card_shows_clear_proxy_for_configured_accounts():
+def test_account_picker_card_shows_global_proxy_controls_for_admins():
     app = TelegramBotApp.__new__(TelegramBotApp)
     accounts = [
-        {"account_id": "acct_1", "label": "Omar Mohamed", "cookie_status": "valid", "proxy_configured": True},
+        {"account_id": "acct_1", "label": "Omar Mohamed", "cookie_status": "valid"},
     ]
 
-    text = app.account_picker_card("Select account.", accounts, "acct_1", lang="en")
-    markup = app.account_picker_markup(accounts, "acct_1", lang="en")
+    text = app.account_picker_card(
+        "Select account.",
+        accounts,
+        "acct_1",
+        lang="en",
+        can_manage_proxy=True,
+        global_proxy_configured=True,
+    )
+    markup = app.account_picker_markup(
+        accounts,
+        "acct_1",
+        lang="en",
+        can_manage_proxy=True,
+        global_proxy_configured=True,
+    )
     callbacks = [button["callback_data"] for row in markup["inline_keyboard"] for button in row]
 
-    assert "proxy set" in text
-    assert "acctproxy:0" in callbacks
-    assert "acctproxyclear:0" in callbacks
+    assert "Global proxy: set" in text
+    assert "globalproxy" in callbacks
+    assert "globalproxytest" in callbacks
+    assert "globalproxyclear" in callbacks
 
 
-def test_account_proxy_input_updates_storage_and_refreshes_accounts_card():
+def test_non_admin_proxy_input_is_rejected():
     async def run():
         app = TelegramBotApp.__new__(TelegramBotApp)
+        app.admin_ids = {1}
         app.dashboard_sessions = {
             "123:99": {
                 "action": "manage_accounts",
@@ -93,17 +109,9 @@ def test_account_proxy_input_updates_storage_and_refreshes_accounts_card():
                 "updated_at": time.time(),
             }
         }
-        calls = []
         account_cards = []
 
         class Storage:
-            def update_account_proxy(self, account_id, proxy_url, owner_id=None):
-                calls.append(("update_account_proxy", account_id, proxy_url, owner_id))
-                return True
-
-            def get_account(self, account_id, owner_id=None):
-                return {"account_id": account_id, "label": "Omar Mohamed", "proxy_configured": True}
-
             def list_accounts(self, owner_id=None):
                 return [{"account_id": "acct_1", "label": "Omar Mohamed", "proxy_configured": True}]
 
@@ -113,11 +121,14 @@ def test_account_proxy_input_updates_storage_and_refreshes_accounts_card():
             def get_active_account(self, user_id, owner_id=None):
                 return "acct_1"
 
+            def set_global_proxy(self, *args, **kwargs):
+                raise AssertionError("non-admin users must not update global proxy")
+
         async def user_language(user_id=0):
             return "en"
 
         async def send_message(chat_id, text, reply_to_message_id=0, *, reply_markup=None, parse_mode=""):
-            account_cards.append(text)
+            account_cards.append({"text": text, "reply_markup": reply_markup})
             return {"ok": True, "result": {"message_id": 777}}
 
         app.storage = Storage()
@@ -135,12 +146,165 @@ def test_account_proxy_input_updates_storage_and_refreshes_accounts_card():
         )
 
         assert handled is True
-        assert calls == [
-            ("update_account_proxy", "acct_1", "http://user:pass@proxy.example.com:8080", 99)
-        ]
         assert account_cards
-        assert "Proxy updated for Omar Mohamed: http://proxy.example.com:8080" in account_cards[-1]
+        assert "Proxy management is admin-only." in account_cards[-1]["text"]
+        assert "proxy" not in account_cards[-1]["text"].split("👤 My Accounts", 1)[-1]
+        callbacks = [
+            button["callback_data"]
+            for row in account_cards[-1]["reply_markup"]["inline_keyboard"]
+            for button in row
+        ]
+        assert "globalproxy" not in callbacks
+        assert "globalproxytest" not in callbacks
+        assert "globalproxyclear" not in callbacks
+
+    asyncio.run(run())
+
+
+def test_global_proxy_input_updates_storage_and_refreshes_accounts_card():
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.admin_ids = {99}
+        app.dashboard_sessions = {
+            "123:99": {
+                "action": "manage_accounts",
+                "step": "proxy_input",
+                "lang": "en",
+                "updated_at": time.time(),
+            }
+        }
+        calls = []
+        account_cards = []
+
+        class Storage:
+            def set_global_proxy(self, proxy_url):
+                calls.append(("set_global_proxy", proxy_url))
+
+            def list_accounts(self, owner_id=None):
+                return [{"account_id": "acct_1", "label": "Omar Mohamed"}]
+
+            def dashboard_summary(self, owner_id=None):
+                return {"job_status_counts": {}, "page_counts_by_account": {}}
+
+            def get_active_account(self, user_id, owner_id=None):
+                return "acct_1"
+
+            def get_global_proxy(self):
+                return "http://user:pass@proxy.example.com:8080"
+
+        async def user_language(user_id=0):
+            return "en"
+
+        async def send_message(chat_id, text, reply_to_message_id=0, *, reply_markup=None, parse_mode=""):
+            account_cards.append(text)
+            return {"ok": True, "result": {"message_id": 777}}
+
+        app.storage = Storage()
+        app.user_language = user_language
+        app.send_message = send_message
+        app.account_owner_scope = lambda user_id: user_id
+        app.schedule_account_name_refresh = lambda *args, **kwargs: None
+
+        async def global_proxy_health_line(proxy_url="", *, force=False):
+            return "Proxy status: working/reachable | Location: Test City | IP: 203.0.113.10"
+
+        app.global_proxy_health_line = global_proxy_health_line
+
+        handled = await app.handle_dashboard_session(
+            123,
+            99,
+            456,
+            "http://user:pass@proxy.example.com:8080",
+            {},
+        )
+
+        assert handled is True
+        assert calls == [("set_global_proxy", "http://user:pass@proxy.example.com:8080")]
+        assert account_cards
+        assert "Global proxy updated: http://proxy.example.com:8080" in account_cards[-1]
+        assert "Proxy status: working/reachable" in account_cards[-1]
+        assert "Global proxy: set" in account_cards[-1]
         assert "123:99" in app.dashboard_sessions
+
+    asyncio.run(run())
+
+
+def test_global_proxy_test_callback_refreshes_accounts_card_with_status():
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.admin_ids = {99}
+        app.dashboard_sessions = {
+            "123:99": {
+                "action": "manage_accounts",
+                "step": "account",
+                "account_choices": {"0": "acct_1"},
+                "lang": "en",
+                "updated_at": time.time(),
+            }
+        }
+        edits = []
+
+        class Storage:
+            def get_global_proxy(self):
+                return "http://user:pass@proxy.example.com:8080"
+
+            def list_accounts(self, owner_id=None):
+                return [{"account_id": "acct_1", "label": "Omar Mohamed"}]
+
+            def dashboard_summary(self, owner_id=None):
+                return {"job_status_counts": {}, "page_counts_by_account": {}}
+
+            def get_active_account(self, user_id, owner_id=None):
+                return "acct_1"
+
+        async def user_language(user_id=0):
+            return "en"
+
+        async def edit_or_send_message(chat_id, message_id=0, text="", *, reply_markup=None, **kwargs):
+            edits.append({"text": text, "reply_markup": reply_markup})
+            return message_id or 777
+
+        async def answer_callback_query(callback_query_id):
+            return None
+
+        async def global_proxy_health_line(proxy_url="", *, force=False):
+            assert force is True
+            assert proxy_url == "http://user:pass@proxy.example.com:8080"
+            return "Proxy status: working/reachable | Location: Test City | IP: 203.0.113.10"
+
+        app.storage = Storage()
+        app.user_language = user_language
+        app.edit_or_send_message = edit_or_send_message
+        app.answer_callback_query = answer_callback_query
+        def start_background_task(coro, *args, **kwargs):
+            coro.close()
+            return None
+
+        app.start_background_task = start_background_task
+        app.account_owner_scope = lambda user_id: user_id
+        app.schedule_account_name_refresh = lambda *args, **kwargs: None
+        app.global_proxy_health_line = global_proxy_health_line
+
+        await app.handle_callback_query(
+            {
+                "callback_query": {
+                    "id": "cb_1",
+                    "data": "globalproxytest",
+                    "message": {"chat": {"id": 123}, "message_id": 456},
+                    "from": {"id": 99},
+                }
+            }
+        )
+
+        assert edits
+        assert "Global proxy test:" in edits[-1]["text"]
+        assert "Proxy status: working/reachable" in edits[-1]["text"]
+        callbacks = [
+            button["callback_data"]
+            for row in edits[-1]["reply_markup"]["inline_keyboard"]
+            for button in row
+        ]
+        assert "globalproxytest" in callbacks
 
     asyncio.run(run())
 

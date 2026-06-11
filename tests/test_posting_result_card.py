@@ -88,8 +88,13 @@ def test_posting_result_card_puts_account_footer_after_none_line():
         ],
         account_name="Omar Mohamed",
         account_id="61576466101916",
+        proxy_detail="Proxy location: Los Angeles, California, United States | IP: 203.0.113.10",
     )
 
+    assert (
+        "Page results are listed below.\n"
+        "Proxy location: Los Angeles, California, United States | IP: 203.0.113.10"
+    ) in card
     expected_footer = "- none\n============\nFB: Omar Mohamed\nID: 61576466101916"
     assert expected_footer in card
     assert card.rsplit("============", 1)[-1].strip() == "FB: Omar Mohamed\nID: 61576466101916"
@@ -109,6 +114,18 @@ def test_posting_live_status_card_uses_user_friendly_status_text_instead_of_debu
     assert "batch_live" not in card
     assert "Page A" in card
     assert "Uploading video" in card
+
+
+def test_posting_live_status_card_includes_proxy_location():
+    card = posting_live_status_card(
+        "Batch posting...",
+        [{"job_id": "job_1", "page_name": "Page A"}],
+        {"job_1": {"status": "running", "stage": "Uploading video"}},
+        proxy_detail="Proxy location: Los Angeles, California, United States | IP: 203.0.113.10",
+    )
+
+    assert "Proxy location: Los Angeles, California, United States | IP: 203.0.113.10" in card
+    assert card.index("Proxy location:") < card.index("Page statuses update below as each page finishes.")
 
 
 def test_status_detail_line_keeps_status_icon_left_aligned_for_mixed_languages():

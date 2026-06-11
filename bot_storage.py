@@ -1340,6 +1340,13 @@ class BotStorage:
                 )
             conn.commit()
 
+    def get_global_proxy(self) -> str:
+        return self.cipher.decrypt(self.get_meta("global_proxy_ciphertext"))
+
+    def set_global_proxy(self, proxy_url: str = "") -> None:
+        value = self.cipher.encrypt(proxy_url.strip()) if str(proxy_url or "").strip() else ""
+        self.set_meta("global_proxy_ciphertext", value)
+
     def create_post_job(
         self,
         *,

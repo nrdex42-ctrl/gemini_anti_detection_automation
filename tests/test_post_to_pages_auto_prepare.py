@@ -325,8 +325,42 @@ def test_auto_prepare_passes_configured_proxy_to_cookie_validation(monkeypatch):
             def get_account(self, account_id, owner_id=None):
                 return {"account_id": account_id, "label": "Omar Mohamed", "active": True}
 
-            def get_account_proxy(self, account_id, owner_id=None):
-                assert (account_id, owner_id) == ("acct_1", 99)
+            def get_global_proxy(self):
+                return "http://user:pass@proxy.example.com:8080"
+
+        async def validate_facebook_session(cookies, proxy_url=""):
+            captured["proxy_url"] = proxy_url
+            return True, "Facebook session is valid"
+
+        async def discover_pages(account_id, owner_id=None):
+            return [{"id": "p1", "name": "Insan", "url": "https://facebook.com/insan"}]
+
+        import playwright_engine
+
+        monkeypatch.setattr(playwright_engine, "validate_facebook_session", validate_facebook_session)
+        app.storage = ProxyStorage()
+        app.discover_pages = discover_pages
+
+        result = await app.auto_check_and_refresh_pages("acct_1", 99, "en")
+
+        assert result["ok"] is True
+        assert captured["proxy_url"] == "http://user:pass@proxy.example.com:8080"
+
+    asyncio.run(run())
+
+
+def test_auto_prepare_uses_global_proxy_for_non_admin(monkeypatch):
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.admin_ids = {1}
+        app.account_owner_scope = lambda user_id: user_id
+        captured = {}
+
+        class ProxyStorage(AutoPrepareStorage):
+            def get_account(self, account_id, owner_id=None):
+                return {"account_id": account_id, "label": "Omar Mohamed", "active": True}
+
+            def get_global_proxy(self):
                 return "http://user:pass@proxy.example.com:8080"
 
         async def validate_facebook_session(cookies, proxy_url=""):
