@@ -35,6 +35,7 @@ BUTTON_USERS = "👥 Users"
 BUTTON_DELETE_USERS = "🗑 Delete Users"
 BUTTON_BROADCAST = "📣 Broadcast"
 BUTTON_POSTING_MODE = "⚙️ Posting Mode"
+BUTTON_ADMIN_PROXY = "🌐 Proxy"
 BUTTON_ADMIN_ACCOUNTS = "🔑 Accounts"
 BUTTON_POST_STATS = "📈 Post Stats"
 BUTTON_RUNTIME_LOCKS = "🔐 Runtime Locks"
@@ -70,6 +71,7 @@ AR_BUTTON_USERS = "👥 المستخدمين"
 AR_BUTTON_DELETE_USERS = "🗑 حذف مستخدمين"
 AR_BUTTON_BROADCAST = "📣 إرسال تنبيه"
 AR_BUTTON_POSTING_MODE = "⚙️ طريقة النشر"
+AR_BUTTON_ADMIN_PROXY = "🌐 البروكسي"
 AR_BUTTON_ADMIN_ACCOUNTS = "🔑 الحسابات"
 AR_BUTTON_POST_STATS = "📈 إحصائيات المنشورات"
 AR_BUTTON_RUNTIME_LOCKS = "🔐 أقفال التشغيل"
@@ -106,6 +108,7 @@ _BUTTONS_EN = {
     "delete_users": BUTTON_DELETE_USERS,
     "broadcast": BUTTON_BROADCAST,
     "posting_mode": BUTTON_POSTING_MODE,
+    "admin_proxy": BUTTON_ADMIN_PROXY,
     "admin_accounts": BUTTON_ADMIN_ACCOUNTS,
     "post_stats": BUTTON_POST_STATS,
     "runtime_locks": BUTTON_RUNTIME_LOCKS,
@@ -143,6 +146,7 @@ _BUTTONS_AR = {
     "delete_users": AR_BUTTON_DELETE_USERS,
     "broadcast": AR_BUTTON_BROADCAST,
     "posting_mode": AR_BUTTON_POSTING_MODE,
+    "admin_proxy": AR_BUTTON_ADMIN_PROXY,
     "admin_accounts": AR_BUTTON_ADMIN_ACCOUNTS,
     "post_stats": AR_BUTTON_POST_STATS,
     "runtime_locks": AR_BUTTON_RUNTIME_LOCKS,
@@ -211,6 +215,7 @@ DASHBOARD_ACTIONS = {
     BUTTON_DELETE_USERS: "admin_delete_users",
     BUTTON_BROADCAST: "admin_broadcast",
     BUTTON_POSTING_MODE: "admin_posting_mode",
+    BUTTON_ADMIN_PROXY: "admin_proxy",
     BUTTON_ADMIN_ACCOUNTS: "admin_accounts",
     BUTTON_POST_STATS: "admin_post_stats",
     BUTTON_RUNTIME_LOCKS: "admin_runtime_locks",
@@ -272,6 +277,7 @@ DASHBOARD_ACTIONS.update(
         AR_BUTTON_DELETE_USERS: "admin_delete_users",
         AR_BUTTON_BROADCAST: "admin_broadcast",
         AR_BUTTON_POSTING_MODE: "admin_posting_mode",
+        AR_BUTTON_ADMIN_PROXY: "admin_proxy",
         AR_BUTTON_ADMIN_ACCOUNTS: "admin_accounts",
         AR_BUTTON_POST_STATS: "admin_post_stats",
         AR_BUTTON_RUNTIME_LOCKS: "admin_runtime_locks",
@@ -447,6 +453,7 @@ def admin_dashboard_markup(lang: str = "en") -> Dict[str, Any]:
         [
             [button_text("users", lang), button_text("delete_users", lang)],
             [button_text("broadcast", lang), button_text("posting_mode", lang)],
+            [button_text("admin_proxy", lang)],
             [button_text("language", lang), button_text("user_dashboard", lang)],
         ],
         placeholder=tr(lang, "Choose an admin action...", "اختر إجراء للأدمن..."),
@@ -890,8 +897,6 @@ def dashboard_text(
     active_pages: Optional[List[Dict[str, Any]]] = None,
     prefix: str = "",
     lang: str = "en",
-    show_proxy_status: bool = False,
-    global_proxy_configured: bool = False,
 ) -> str:
     summary = summary or {}
     status_counts = summary.get("job_status_counts") or {}
@@ -927,10 +932,6 @@ def dashboard_text(
             ),
         ]
     )
-    if show_proxy_status:
-        proxy_status = tr(lang, "set", "محدد") if global_proxy_configured else tr(lang, "none", "بدون")
-        lines.append(tr(lang, f"Global proxy: {proxy_status}", f"البروكسي العام: {proxy_status}"))
-
     if not accounts:
         lines.extend(
             [

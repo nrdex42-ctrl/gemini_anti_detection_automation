@@ -328,6 +328,142 @@ def test_admin_posting_mode_card_updates_persistent_setting():
     asyncio.run(run())
 
 
+def test_admin_proxy_card_updates_global_proxy_and_tests_status():
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.storage = AdminStorage()
+        app.admin_ids = {99}
+        app.dashboard_sessions = {}
+        sent = []
+        edits = []
+        health_calls = []
+
+        async def user_language(user_id=0):
+            return "en"
+
+        async def send_message(chat_id, text, reply_to_message_id=0, *, reply_markup=None, parse_mode=""):
+            sent.append({"text": text, "reply_markup": reply_markup})
+            return {"ok": True, "result": {"message_id": 777}}
+
+        async def edit_or_send_message(chat_id, message_id=0, text="", *, reply_markup=None, **kwargs):
+            edits.append({"text": text, "reply_markup": reply_markup})
+            return message_id or 777
+
+        async def global_proxy_health_line(proxy_url="", *, force=False):
+            health_calls.append((proxy_url, force))
+            return "Proxy status: working/reachable | Location: Test City | IP: 203.0.113.10"
+
+        app.user_language = user_language
+        app.send_message = send_message
+        app.edit_or_send_message = edit_or_send_message
+        app.global_proxy_health_line = global_proxy_health_line
+
+        await app.show_admin_proxy(123, 456, 99)
+
+        assert "🌐 Global Proxy" in sent[-1]["text"]
+        assert "Status: none" in sent[-1]["text"]
+        callbacks = [
+            button["callback_data"]
+            for row in sent[-1]["reply_markup"]["inline_keyboard"]
+            for button in row
+        ]
+        assert callbacks == ["adm:proxy:set", "adm:dash"]
+
+        app.set_dashboard_session(123, 99, {"action": "admin_proxy", "step": "proxy_input", "lang": "en"})
+        handled = await app.handle_dashboard_session(
+            123,
+            99,
+            456,
+            "http://user:pass@proxy.example.com:8080",
+            {},
+        )
+
+        assert handled is True
+        assert app.storage.meta["global_proxy_ciphertext"] == "http://user:pass@proxy.example.com:8080"
+        assert health_calls == [("http://user:pass@proxy.example.com:8080", True)]
+        assert "Global proxy updated: http://proxy.example.com:8080" in sent[-1]["text"]
+        assert "Current: http://proxy.example.com:8080" in sent[-1]["text"]
+        assert "Scope: all users and accounts" in sent[-1]["text"]
+        assert "Proxy status: working/reachable" in sent[-1]["text"]
+        callbacks = [
+            button["callback_data"]
+            for row in sent[-1]["reply_markup"]["inline_keyboard"]
+            for button in row
+        ]
+        assert "adm:proxy:set" in callbacks
+        assert "adm:proxy:test" in callbacks
+        assert "adm:proxy:clear" in callbacks
+
+        await app.handle_admin_callback(123, 99, 456, "adm:proxy:test", {})
+
+        assert health_calls[-1] == ("http://user:pass@proxy.example.com:8080", True)
+        assert "Global proxy test complete." in edits[-1]["text"]
+        assert "Checked:" in edits[-1]["text"]
+        assert "Proxy status: working/reachable" in edits[-1]["text"]
+
+    asyncio.run(run())
+
+
+def test_old_global_proxy_callback_routes_to_admin_proxy_card():
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.storage = AdminStorage()
+        app.storage.meta["global_proxy_ciphertext"] = "http://user:pass@proxy.example.com:8080"
+        app.admin_ids = {99}
+        app.dashboard_sessions = {}
+        edits = []
+
+        async def user_language(user_id=0):
+            return "en"
+
+        async def edit_or_send_message(chat_id, message_id=0, text="", *, reply_markup=None, **kwargs):
+            edits.append({"text": text, "reply_markup": reply_markup})
+            return message_id or 777
+
+        async def answer_callback_query(callback_query_id, text=""):
+            return None
+
+        async def global_proxy_health_line(proxy_url="", *, force=False):
+            assert proxy_url == "http://user:pass@proxy.example.com:8080"
+            assert force is True
+            return "Proxy status: working/reachable | Location: Test City | IP: 203.0.113.10"
+
+        def start_background_task(coro, *args, **kwargs):
+            coro.close()
+            return None
+
+        app.user_language = user_language
+        app.edit_or_send_message = edit_or_send_message
+        app.answer_callback_query = answer_callback_query
+        app.global_proxy_health_line = global_proxy_health_line
+        app.start_background_task = start_background_task
+
+        await app.handle_callback_query(
+            {
+                "callback_query": {
+                    "id": "cb_1",
+                    "data": "globalproxytest",
+                    "message": {"chat": {"id": 123}, "message_id": 456},
+                    "from": {"id": 99},
+                }
+            }
+        )
+
+        assert edits
+        assert "🌐 Global Proxy" in edits[-1]["text"]
+        assert "Global proxy test complete." in edits[-1]["text"]
+        assert "Checked:" in edits[-1]["text"]
+        callbacks = [
+            button["callback_data"]
+            for row in edits[-1]["reply_markup"]["inline_keyboard"]
+            for button in row
+        ]
+        assert "adm:proxy:test" in callbacks
+        assert "globalproxytest" not in callbacks
+
+    asyncio.run(run())
+
+
 def test_restart_dashboard_broadcast_keeps_revision_unmarked_when_any_send_fails(caplog):
     async def run():
         storage = AdminStorage()

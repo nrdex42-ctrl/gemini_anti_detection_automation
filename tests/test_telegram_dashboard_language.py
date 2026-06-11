@@ -67,6 +67,7 @@ def test_admin_dashboard_keyboard_has_language_button():
     assert "🗑 Delete Users" in labels
     assert "📣 Broadcast" in labels
     assert "⚙️ Posting Mode" in labels
+    assert "🌐 Proxy" in labels
     assert markup["is_persistent"] is False
     assert "📊 System Stats" not in labels
     assert "📈 Post Stats" not in labels
@@ -78,6 +79,7 @@ def test_admin_dashboard_keyboard_has_language_button():
     assert dashboard_action("🗑 Delete Users") == "admin_delete_users"
     assert dashboard_action("📣 Broadcast") == "admin_broadcast"
     assert dashboard_action("⚙️ Posting Mode") == "admin_posting_mode"
+    assert dashboard_action("🌐 Proxy") == "admin_proxy"
 
 
 def test_user_dashboard_admin_row_includes_language_and_admin_dashboard():
@@ -96,6 +98,7 @@ def test_arabic_admin_dashboard_keyboard_is_translated():
     assert "🗑 حذف مستخدمين" in labels
     assert "📣 إرسال تنبيه" in labels
     assert "⚙️ طريقة النشر" in labels
+    assert "🌐 البروكسي" in labels
     assert "📊 إحصائيات النظام" not in labels
     assert "📈 إحصائيات المنشورات" not in labels
     assert "⚙️ إعدادات النظام" not in labels
@@ -105,6 +108,7 @@ def test_arabic_admin_dashboard_keyboard_is_translated():
     assert dashboard_action("🗑 حذف مستخدمين") == "admin_delete_users"
     assert dashboard_action("📣 إرسال تنبيه") == "admin_broadcast"
     assert dashboard_action("⚙️ طريقة النشر") == "admin_posting_mode"
+    assert dashboard_action("🌐 البروكسي") == "admin_proxy"
 
 
 def test_arabic_dashboard_account_status_icons_are_left_aligned():
@@ -165,7 +169,7 @@ def test_smart_dashboard_stored_pages_matches_visible_account_page_counts():
     assert "Omar Mohamed | pages: 2" in text
 
 
-def test_smart_dashboard_proxy_status_is_optional():
+def test_smart_dashboard_does_not_render_proxy_status():
     account = {
         "account_id": "acct_omar",
         "label": "Omar Mohamed",
@@ -184,12 +188,10 @@ def test_smart_dashboard_proxy_status_is_optional():
         summary=summary,
         active_account="acct_omar",
         lang="en",
-        show_proxy_status=True,
-        global_proxy_configured=True,
     )
 
     assert "Global proxy:" not in user_text
-    assert "Global proxy: set" in admin_text
+    assert "Global proxy:" not in admin_text
 
 
 def test_smart_dashboard_replaces_recent_posts_with_active_account_pages():

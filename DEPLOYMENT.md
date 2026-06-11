@@ -201,13 +201,13 @@ python3 scripts/set_telegram_webhook.py
 
 The dashboard Add Facebook Account button accepts raw cookie headers, JSON cookie arrays, `{cookies:[...]}` exports, uploaded JSON files, and multi-message JSON chunks followed by the `✅ Done` button.
 
-For admins, `My Accounts` -> `Set Global Proxy` stores an optional bot-wide proxy. Supported formats are `host:port`, `http://user:pass@host:port`, `https://host:port`, and `socks5://host:port`. The bot uses the configured proxy for cookie validation, page discovery, account-name lookup, and posting for all users and accounts. Admins can tap `Test Global Proxy` to verify whether the proxy is working/reachable. Proxy controls and smart-dashboard proxy status are hidden from non-admin users. Proxy credentials are encrypted in `bot_meta` under `global_proxy_ciphertext`; posting cards only show the proxy status/IP/location when available. A Facebook checkpoint still requires manual resolution in a browser followed by refreshed cookies.
+For admins, `Admin Dashboard` -> `Proxy` stores an optional bot-wide proxy. Supported formats are `host:port`, `http://user:pass@host:port`, `https://host:port`, and `socks5://host:port`. The bot uses the configured proxy for cookie validation, page discovery, account-name lookup, and posting for all users and accounts. Admins can tap `Test Global Proxy` to verify whether the proxy is working/reachable. Proxy controls are available only from the admin-side dashboard. Proxy credentials are encrypted in `bot_meta` under `global_proxy_ciphertext`; posting cards only show the proxy status/IP/location when available. A Facebook checkpoint still requires manual resolution in a browser followed by refreshed cookies.
 
 Page discovery is cached in `fb_pages`. Normal posting reads the saved page list and does not rediscover pages before each post. Use the `🔄 Refresh Pages` dashboard button when you want to refresh a selected account's cached pages.
 
 Normal users can use `/start` and the typing-area dashboard after approval. With `BOT_REQUIRE_USER_APPROVAL=true`, new users are saved as pending and cannot add accounts or post until an admin approves them from `🔒 Admin Dashboard` -> `👥 Users`.
 
-Admins listed in `BOT_ADMIN_IDS` can use `🔒 Admin Dashboard` to view system stats, users, accounts, post stats, active account locks, and runtime config.
+Admins listed in `BOT_ADMIN_IDS` can use `🔒 Admin Dashboard` to manage users, broadcasts, posting mode, the global proxy, and admin-only diagnostic views.
 
 Set `RESTART_BROADCAST_ENABLED=true` to let the bot send known users a refreshed dashboard message once per Render deploy revision.
 

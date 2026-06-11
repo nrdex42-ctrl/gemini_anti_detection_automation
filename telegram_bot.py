@@ -1012,6 +1012,15 @@ class TelegramBotApp:
         async with self.session.post(f"{self.api_base}/{method}", json=payload, timeout=timeout_seconds) as resp:
             data = await resp.json(content_type=None)
             if not data.get("ok"):
+                description = str(data.get("description") or data)
+                if method == "editMessageText" and "message is not modified" in description.lower():
+                    logger.info(
+                        "Telegram API %s skipped unchanged message chat_id=%s message_id=%s",
+                        method,
+                        payload.get("chat_id", "-"),
+                        payload.get("message_id", "-"),
+                    )
+                    return data
                 logger.warning(
                     "Telegram API %s failed chat_id=%s message_id=%s reply_to=%s has_markup=%s: %s",
                     method,
@@ -1114,8 +1123,6 @@ class TelegramBotApp:
                         active_pages=active_pages,
                         prefix="🔄 تم تحديث البوت بعد Deploy جديد. تم تحديث لوحة التحكم." if lang == "ar" else "🔄 Bot updated after a new deploy. Dashboard refreshed.",
                         lang=lang,
-                        show_proxy_status=self.is_admin_user(user_id),
-                        global_proxy_configured=bool(await self.global_proxy_url()) if self.is_admin_user(user_id) else False,
                     )
                     result = await self.send_message(
                         chat_id,
@@ -1957,8 +1964,6 @@ class TelegramBotApp:
                 active_pages=active_pages,
                 prefix=prefix,
                 lang=lang,
-                show_proxy_status=self.is_admin_user(user_id),
-                global_proxy_configured=bool(await self.global_proxy_url()) if self.is_admin_user(user_id) else False,
             )
             status_counts = summary.get("job_status_counts") or {}
             active_jobs = int(status_counts.get("queued", 0)) + int(status_counts.get("processing", 0))
@@ -2351,6 +2356,98 @@ class TelegramBotApp:
             ]
         )
 
+    def admin_proxy_card(
+        self,
+        proxy_url: str = "",
+        *,
+        prefix: str = "",
+        health_line: str = "",
+        checked_at: str = "",
+        lang: str = "en",
+    ) -> str:
+        lines: List[str] = []
+        if prefix:
+            lines.extend([prefix, ""])
+        configured = bool(str(proxy_url or "").strip())
+        current = proxy_display_url(proxy_url) if configured else ""
+        if lang == "ar":
+            lines.extend(
+                [
+                    "🌐 البروكسي العام",
+                    "━━━━━━━━━━━━━━━━━━",
+                    f"الحالة: {'محدد' if configured else 'بدون'}",
+                    f"الحالي: {current or 'لا يوجد'}",
+                    "النطاق: كل المستخدمين والحسابات",
+                ]
+            )
+            if health_line:
+                lines.extend(["", "نتيجة الفحص:", health_line])
+                if checked_at:
+                    lines.append(f"وقت الفحص: {checked_at}")
+            else:
+                lines.extend(["", "اضغط اختبار البروكسي للتأكد إنه يعمل ويمكن الوصول له."])
+            lines.extend(["", "استخدم الأزرار بالأسفل لتغيير البروكسي العام."])
+        else:
+            lines.extend(
+                [
+                    "🌐 Global Proxy",
+                    "━━━━━━━━━━━━━━━━━━",
+                    f"Status: {'set' if configured else 'none'}",
+                    f"Current: {current or 'none'}",
+                    "Scope: all users and accounts",
+                ]
+            )
+            if health_line:
+                lines.extend(["", "Reachability:", health_line])
+                if checked_at:
+                    lines.append(f"Checked: {checked_at}")
+            else:
+                lines.extend(["", "Tap Test Global Proxy to verify whether it is working/reachable."])
+            lines.extend(["", "Use the buttons below to manage the bot-wide proxy."])
+        return "\n".join(lines)
+
+    def admin_proxy_markup(self, proxy_url: str = "", lang: str = "en") -> Dict[str, Any]:
+        configured = bool(str(proxy_url or "").strip())
+        rows: List[List[Dict[str, str]]] = [
+            [inline_button("🌐 تغيير البروكسي العام" if lang == "ar" else "🌐 Set Global Proxy", "adm:proxy:set")]
+        ]
+        if configured:
+            rows.append(
+                [
+                    inline_button("🧪 اختبار البروكسي" if lang == "ar" else "🧪 Test Global Proxy", "adm:proxy:test"),
+                    inline_button("🚫 مسح البروكسي العام" if lang == "ar" else "🚫 Clear Global Proxy", "adm:proxy:clear"),
+                ]
+            )
+        rows.append([inline_button("🔒 لوحة الأدمن" if lang == "ar" else "🔒 Admin Dashboard", "adm:dash")])
+        return inline_markup(rows)
+
+    def admin_proxy_prompt_card(self, proxy_url: str = "", lang: str = "en") -> str:
+        configured = bool(str(proxy_url or "").strip())
+        current = proxy_display_url(proxy_url) if configured else ""
+        if lang == "ar":
+            return "\n".join(
+                [
+                    "🌐 تغيير البروكسي العام",
+                    "━━━━━━━━━━━━━━━━━━",
+                    f"الحالي: {current or 'لا يوجد'}",
+                    "",
+                    "ابعت رابط البروكسي الآن. سيتم استخدامه لكل المستخدمين والحسابات.",
+                    "الصيغ المقبولة: host:port أو http://user:pass@host:port أو socks5://host:port",
+                    "ابعت clear لمسح البروكسي.",
+                ]
+            )
+        return "\n".join(
+            [
+                "🌐 Set Global Proxy",
+                "━━━━━━━━━━━━━━━━━━",
+                f"Current: {current or 'none'}",
+                "",
+                "Send the proxy URL now. It will be used for all users and accounts.",
+                "Accepted formats: host:port, http://user:pass@host:port, or socks5://host:port",
+                "Send clear to remove the proxy.",
+            ]
+        )
+
     async def show_admin_dashboard(self, chat_id: int, message_id: int, user_id: int, prefix: str = "") -> None:
         if not self.is_admin_user(user_id):
             await self.send_message(chat_id, "Admin dashboard is restricted.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
@@ -2367,6 +2464,30 @@ class TelegramBotApp:
             message_id,
             reply_markup=admin_dashboard_markup(lang=lang),
         )
+
+    async def show_admin_proxy(
+        self,
+        chat_id: int,
+        message_id: int,
+        user_id: int,
+        prefix: str = "",
+        *,
+        edit: bool = False,
+        health_line: str = "",
+        checked_at: str = "",
+    ) -> None:
+        if not self.is_admin_user(user_id):
+            await self.send_message(chat_id, "Admin dashboard is restricted.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+            return
+        lang = await self.user_language(user_id)
+        proxy_url = await self.global_proxy_url()
+        self.set_dashboard_session(chat_id, user_id, {"action": "admin_proxy", "step": "menu", "lang": lang})
+        text = self.admin_proxy_card(proxy_url, prefix=prefix, health_line=health_line, checked_at=checked_at, lang=lang)
+        markup = self.admin_proxy_markup(proxy_url, lang=lang)
+        if edit:
+            await self.edit_or_send_message(chat_id, message_id, text, reply_markup=markup)
+        else:
+            await self.send_message(chat_id, text, message_id, reply_markup=markup)
 
     async def show_admin_users(self, chat_id: int, message_id: int, user_id: int, page: int = 0, *, edit: bool = False) -> None:
         lang = await self.user_language(user_id)
@@ -2690,8 +2811,6 @@ class TelegramBotApp:
         active_account: str,
         *,
         lang: str = "en",
-        can_manage_proxy: bool = False,
-        global_proxy_configured: bool = False,
     ) -> str:
         title = prompt or ("اختار الحساب اللي هيبقى نشط." if lang == "ar" else "Select the account to make active.")
         lines = [title, "━━━━━━━━━━━━━━━━━━"]
@@ -2699,11 +2818,6 @@ class TelegramBotApp:
             active = next((item for item in accounts if str(item.get("account_id") or "") == active_account), None)
             active_name = account_display_name(active or {}, active_account)
             lines.append(f"الحساب النشط: {active_name}" if lang == "ar" else f"Active account: {active_name}")
-        if can_manage_proxy:
-            proxy_status = "محدد" if global_proxy_configured and lang == "ar" else (
-                "set" if global_proxy_configured else ("بدون" if lang == "ar" else "none")
-            )
-            lines.append(f"البروكسي العام: {proxy_status}" if lang == "ar" else f"Global proxy: {proxy_status}")
         lines.extend(["", "الحسابات:" if lang == "ar" else "Accounts:"])
         for index, item in enumerate(accounts, start=1):
             account_id = str(item.get("account_id") or "")
@@ -2731,8 +2845,6 @@ class TelegramBotApp:
         active_account: str,
         *,
         lang: str = "en",
-        can_manage_proxy: bool = False,
-        global_proxy_configured: bool = False,
     ) -> Dict[str, Any]:
         rows: List[List[Dict[str, str]]] = []
         for index, item in enumerate(accounts):
@@ -2746,12 +2858,6 @@ class TelegramBotApp:
                     inline_button("🗑 حذف" if lang == "ar" else "🗑 Delete", f"acctdel:{index}"),
                 ]
             )
-        if can_manage_proxy:
-            proxy_buttons = [inline_button("🌐 تغيير البروكسي العام" if lang == "ar" else "🌐 Set Global Proxy", "globalproxy")]
-            if global_proxy_configured:
-                proxy_buttons.append(inline_button("🧪 اختبار البروكسي" if lang == "ar" else "🧪 Test Global Proxy", "globalproxytest"))
-                proxy_buttons.append(inline_button("🚫 مسح البروكسي العام" if lang == "ar" else "🚫 Clear Global Proxy", "globalproxyclear"))
-            rows.append(proxy_buttons)
         rows.append([inline_button("⬅️ رجوع" if lang == "ar" else "⬅️ Back", "dash:back")])
         return inline_markup(rows)
 
@@ -3485,18 +3591,9 @@ class TelegramBotApp:
         account: Dict[str, Any],
         pages: List[Dict[str, Any]],
         lang: str = "en",
-        can_manage_proxy: bool = False,
-        global_proxy_configured: bool = False,
     ) -> str:
         display = account_display_name(account, str(account.get("account_id") or ""))
         updated = self._format_dt(account.get("updated_at"))
-        proxy_line = ""
-        if can_manage_proxy:
-            proxy_line = (
-                "البروكسي العام: محدد" if global_proxy_configured and lang == "ar" else (
-                    "Global proxy: set" if global_proxy_configured else ("البروكسي العام: بدون" if lang == "ar" else "Global proxy: none")
-                )
-            )
         if pages:
             newest_page_update = max((page.get("updated_at") for page in pages if page.get("updated_at")), default="")
             pages_line = (
@@ -3517,7 +3614,6 @@ class TelegramBotApp:
                     "━━━━━━━━━━━━━━━━━━",
                     f"الحالة: {'نشط' if account.get('active') else 'غير نشط'}",
                     f"آخر تحديث: {updated}",
-                    *([proxy_line] if proxy_line else []),
                     pages_line,
                     "",
                     "تقدر تفحص كوكيز الحساب، تكمل بالصفحات المحفوظة، أو تحدّث كاش الصفحات.",
@@ -3529,7 +3625,6 @@ class TelegramBotApp:
                 "━━━━━━━━━━━━━━━━━━",
                 f"Status: {'active' if account.get('active') else 'inactive'}",
                 f"Updated: {updated}",
-                *([proxy_line] if proxy_line else []),
                 pages_line,
                 "",
                 "You can check this account cookie shape before choosing pages, continue with cached pages, or refresh the page cache.",
@@ -3549,15 +3644,12 @@ class TelegramBotApp:
             return
         lang = await self.user_language(user_id)
         pages = await asyncio.to_thread(self.storage.list_pages, account_id, self.account_owner_scope(user_id))
-        global_proxy_configured = bool(await self.global_proxy_url()) if self.can_manage_account_proxy(user_id) else False
         await self.send_message(
             chat_id,
             self.account_action_text(
                 account,
                 pages,
                 lang=lang,
-                can_manage_proxy=self.can_manage_account_proxy(user_id),
-                global_proxy_configured=global_proxy_configured,
             ),
             message_id,
             reply_markup=account_post_action_markup(lang=lang),
@@ -3900,6 +3992,7 @@ class TelegramBotApp:
             "admin_delete_users",
             "admin_broadcast",
             "admin_posting_mode",
+            "admin_proxy",
             "admin_accounts",
             "admin_post_stats",
             "admin_runtime_locks",
@@ -3920,6 +4013,8 @@ class TelegramBotApp:
                 await self.show_admin_broadcast_menu(chat_id, message_id, user_id)
             elif action == "admin_posting_mode":
                 await self.show_admin_posting_mode(chat_id, message_id, user_id)
+            elif action == "admin_proxy":
+                await self.show_admin_proxy(chat_id, message_id, user_id)
             elif action == "admin_accounts":
                 await self.show_admin_accounts(chat_id, message_id, user_id)
             elif action == "admin_post_stats":
@@ -4474,11 +4569,11 @@ class TelegramBotApp:
             await self.show_dashboard(chat_id, 0, prefix=prefix, user_id=user_id)
             return True
 
-        if action == "manage_accounts" and step == "proxy_input":
+        if action in {"admin_proxy", "manage_accounts"} and step == "proxy_input":
             if not self.can_manage_account_proxy(user_id):
                 self.clear_dashboard_session(chat_id, user_id)
                 prefix = "إدارة البروكسي متاحة للأدمن فقط." if lang == "ar" else "Proxy management is admin-only."
-                await self.command_accounts(chat_id, message_id, user_id, prefix=prefix)
+                await self.show_dashboard(chat_id, 0, prefix=prefix, user_id=user_id)
                 return True
             raw_value = text.strip()
             try:
@@ -4494,7 +4589,7 @@ class TelegramBotApp:
                         "Send the proxy as http://user:pass@host:port or socks5://host:port."
                     ),
                     message_id,
-                    reply_markup=cancel_markup(lang=lang),
+                    reply_markup=admin_dashboard_markup(lang=lang),
                 )
                 return True
             await self.set_global_proxy_url(proxy_url)
@@ -4502,10 +4597,19 @@ class TelegramBotApp:
             if proxy_url:
                 proxy_label = proxy_display_url(proxy_url)
                 health_line = await self.global_proxy_health_line(proxy_url, force=True)
+                checked_at = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d %I:%M:%S %p")
                 prefix = (
-                    f"تم تحديث البروكسي العام: {proxy_label}\n{health_line}"
+                    f"تم تحديث البروكسي العام: {proxy_label}"
                     if lang == "ar"
-                    else f"Global proxy updated: {proxy_label}\n{health_line}"
+                    else f"Global proxy updated: {proxy_label}"
+                )
+                await self.show_admin_proxy(
+                    chat_id,
+                    message_id,
+                    user_id,
+                    prefix=prefix,
+                    health_line=health_line,
+                    checked_at=checked_at,
                 )
             else:
                 prefix = (
@@ -4513,7 +4617,7 @@ class TelegramBotApp:
                     if lang == "ar"
                     else "Global proxy cleared."
                 )
-            await self.command_accounts(chat_id, message_id, user_id, prefix=prefix)
+                await self.show_admin_proxy(chat_id, message_id, user_id, prefix=prefix)
             return True
 
         if step == "account":
@@ -5170,6 +5274,47 @@ class TelegramBotApp:
             await self.show_admin_dashboard(chat_id, message_id, user_id)
             return
 
+        if data == "adm:proxy":
+            await self.show_admin_proxy(chat_id, message_id, user_id, edit=True)
+            return
+
+        if data == "adm:proxy:set":
+            proxy_url = await self.global_proxy_url()
+            self.set_dashboard_session(chat_id, user_id, {"action": "admin_proxy", "step": "proxy_input", "lang": lang})
+            await self.edit_or_send_message(
+                chat_id,
+                message_id,
+                self.admin_proxy_prompt_card(proxy_url, lang=lang),
+                reply_markup=inline_markup([[inline_button("❌ إلغاء" if lang == "ar" else "❌ Cancel", "adm:proxy")]]),
+            )
+            return
+
+        if data == "adm:proxy:test":
+            proxy_url = await self.global_proxy_url()
+            if not proxy_url:
+                prefix = "لا يوجد بروكسي عام محدد." if lang == "ar" else "No global proxy is configured."
+                await self.show_admin_proxy(chat_id, message_id, user_id, prefix=prefix, edit=True)
+                return
+            health_line = await self.global_proxy_health_line(proxy_url, force=True)
+            checked_at = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d %I:%M:%S %p")
+            prefix = "اكتمل فحص البروكسي العام." if lang == "ar" else "Global proxy test complete."
+            await self.show_admin_proxy(
+                chat_id,
+                message_id,
+                user_id,
+                prefix=prefix,
+                edit=True,
+                health_line=health_line,
+                checked_at=checked_at,
+            )
+            return
+
+        if data == "adm:proxy:clear":
+            await self.set_global_proxy_url("")
+            prefix = "تم مسح البروكسي العام." if lang == "ar" else "Global proxy cleared."
+            await self.show_admin_proxy(chat_id, message_id, user_id, prefix=prefix, edit=True)
+            return
+
         if data.startswith("adm:posting_mode:"):
             requested_mode = data.rsplit(":", 1)[-1]
             mode = await self.set_posting_mode(requested_mode)
@@ -5564,6 +5709,43 @@ class TelegramBotApp:
                 return
             await self.handle_admin_callback(chat_id, user_id, message_id, data, session)
             return
+        if data in {"globalproxy", "globalproxytest", "globalproxyclear"} or data.startswith(("acctproxy:", "acctproxyclear:")):
+            if not self.is_admin_user(user_id):
+                await self.send_message(chat_id, "Proxy management is admin-only.", message_id, reply_markup=await self.dashboard_reply_markup(user_id))
+                return
+            if data == "globalproxytest":
+                proxy_url = await self.global_proxy_url()
+                if not proxy_url:
+                    prefix = "لا يوجد بروكسي عام محدد." if lang == "ar" else "No global proxy is configured."
+                    await self.show_admin_proxy(chat_id, message_id, user_id, prefix=prefix, edit=True)
+                    return
+                health_line = await self.global_proxy_health_line(proxy_url, force=True)
+                checked_at = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d %I:%M:%S %p")
+                prefix = "اكتمل فحص البروكسي العام." if lang == "ar" else "Global proxy test complete."
+                await self.show_admin_proxy(
+                    chat_id,
+                    message_id,
+                    user_id,
+                    prefix=prefix,
+                    edit=True,
+                    health_line=health_line,
+                    checked_at=checked_at,
+                )
+                return
+            if data == "globalproxyclear" or data.startswith("acctproxyclear:"):
+                await self.set_global_proxy_url("")
+                prefix = "تم مسح البروكسي العام." if lang == "ar" else "Global proxy cleared."
+                await self.show_admin_proxy(chat_id, message_id, user_id, prefix=prefix, edit=True)
+                return
+            proxy_url = await self.global_proxy_url()
+            self.set_dashboard_session(chat_id, user_id, {"action": "admin_proxy", "step": "proxy_input", "lang": lang})
+            await self.edit_or_send_message(
+                chat_id,
+                message_id,
+                self.admin_proxy_prompt_card(proxy_url, lang=lang),
+                reply_markup=inline_markup([[inline_button("❌ إلغاء" if lang == "ar" else "❌ Cancel", "adm:proxy")]]),
+            )
+            return
         if not session:
             prefix = "انتهت صلاحية الكارت. تم تحديث لوحة التحكم." if lang == "ar" else "This card expired. Dashboard refreshed."
             await self.show_dashboard(chat_id, message_id, prefix=prefix, user_id=user_id)
@@ -5626,77 +5808,6 @@ class TelegramBotApp:
                         ]
                     )
                 ),
-                reply_markup={"inline_keyboard": []},
-            )
-            return
-
-        if data == "globalproxytest":
-            if not self.can_manage_account_proxy(user_id):
-                prefix = "إدارة البروكسي متاحة للأدمن فقط." if lang == "ar" else "Proxy management is admin-only."
-                await self.command_accounts(chat_id, message_id, user_id, edit=True, prefix=prefix)
-                return
-            proxy_url = await self.global_proxy_url()
-            if not proxy_url:
-                prefix = "لا يوجد بروكسي عام محدد." if lang == "ar" else "No global proxy is configured."
-            else:
-                health_line = await self.global_proxy_health_line(proxy_url, force=True)
-                prefix = (
-                    f"نتيجة فحص البروكسي:\n{health_line}"
-                    if lang == "ar"
-                    else f"Global proxy test:\n{health_line}"
-                )
-            await self.command_accounts(chat_id, message_id, user_id, edit=True, prefix=prefix)
-            return
-
-        if data == "globalproxyclear" or data.startswith("acctproxyclear:"):
-            if not self.can_manage_account_proxy(user_id):
-                prefix = "إدارة البروكسي متاحة للأدمن فقط." if lang == "ar" else "Proxy management is admin-only."
-                await self.command_accounts(chat_id, message_id, user_id, edit=True, prefix=prefix)
-                return
-            await self.set_global_proxy_url("")
-            prefix = (
-                "تم مسح البروكسي العام."
-                if lang == "ar"
-                else "Global proxy cleared."
-            )
-            await self.command_accounts(chat_id, message_id, user_id, edit=True, prefix=prefix)
-            return
-
-        if data == "globalproxy" or data.startswith("acctproxy:"):
-            if not self.can_manage_account_proxy(user_id):
-                prefix = "إدارة البروكسي متاحة للأدمن فقط." if lang == "ar" else "Proxy management is admin-only."
-                await self.command_accounts(chat_id, message_id, user_id, edit=True, prefix=prefix)
-                return
-            session["action"] = "manage_accounts"
-            session["step"] = "proxy_input"
-            session.pop("proxy_account_id", None)
-            self.set_dashboard_session(chat_id, user_id, session)
-            global_proxy_url = await self.global_proxy_url()
-            current_status = "محدد" if global_proxy_url and lang == "ar" else ("set" if global_proxy_url else ("بدون" if lang == "ar" else "none"))
-            if lang == "ar":
-                lines = [
-                    "🌐 البروكسي العام",
-                    "━━━━━━━━━━━━━━━━━━",
-                    f"الحالة الحالية: {current_status}",
-                    "",
-                    "ابعت رابط البروكسي الآن. سيتم استخدامه لكل المستخدمين والحسابات.",
-                    "الصيغ المقبولة: http://user:pass@host:port أو socks5://host:port",
-                    "ابعت clear لمسح البروكسي.",
-                ]
-            else:
-                lines = [
-                    "🌐 Global Proxy",
-                    "━━━━━━━━━━━━━━━━━━",
-                    f"Current status: {current_status}",
-                    "",
-                    "Send the proxy URL now. It will be used for all users and accounts.",
-                    "Accepted formats: http://user:pass@host:port or socks5://host:port",
-                    "Send clear to remove the proxy.",
-                ]
-            await self.edit_message(
-                chat_id,
-                message_id,
-                "\n".join(lines),
                 reply_markup={"inline_keyboard": []},
             )
             return
@@ -6076,6 +6187,7 @@ class TelegramBotApp:
             "admin_delete_users",
             "admin_broadcast",
             "admin_posting_mode",
+            "admin_proxy",
             "admin_accounts",
             "admin_post_stats",
             "admin_runtime_locks",
@@ -6190,15 +6302,11 @@ class TelegramBotApp:
             if lang == "ar"
             else "👤 My Accounts\nSelect the account to make active."
         )
-        can_manage_proxy = self.can_manage_account_proxy(user_id)
-        global_proxy_configured = bool(await self.global_proxy_url()) if can_manage_proxy else False
         text = self.account_picker_card(
             prompt,
             accounts,
             active_account,
             lang=lang,
-            can_manage_proxy=can_manage_proxy,
-            global_proxy_configured=global_proxy_configured,
         )
         if prefix:
             text = f"{prefix}\n\n{text}"
@@ -6206,8 +6314,6 @@ class TelegramBotApp:
             accounts,
             active_account,
             lang=lang,
-            can_manage_proxy=can_manage_proxy,
-            global_proxy_configured=global_proxy_configured,
         )
         if edit:
             await self.edit_or_send_message(chat_id, message_id, text, reply_markup=markup)
