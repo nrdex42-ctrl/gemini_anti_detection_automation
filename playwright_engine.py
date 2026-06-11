@@ -35,6 +35,7 @@ from urllib.parse import parse_qs, urlencode, unquote, urlparse, urlunparse
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from playwright_stealth import stealth_async
 from config import ADMIN_USER_IDS, DIAGNOSTICS_DIR, HEADLESS, TELEGRAM_TOKEN
+from proxy_utils import playwright_proxy_config, proxy_display_url, requests_proxy_config
 from session_manager import session_manager
 
 # Python 3.8 does not ship asyncio.to_thread; provide a compatible fallback so
@@ -3951,7 +3952,7 @@ async def _new_facebook_context(browser: Browser) -> BrowserContext:
     return context
 
 
-async def launch_browser_session(cookies_json: str) -> Tuple[Any, Browser, BrowserContext, Page]:
+async def launch_browser_session(cookies_json: str, proxy_url: str = '') -> Tuple[Any, Browser, BrowserContext, Page]:
     """Launch a stealth Playwright browser with the given cookies."""
     # Log the browser path configuration for debugging
     browser_path = os.environ.get('PLAYWRIGHT_BROWSERS_PATH', 'default')
@@ -4014,18 +4015,24 @@ async def launch_browser_session(cookies_json: str) -> Tuple[Any, Browser, Brows
                 logger.info(f'Found and using local system browser at: {executable_path}')
                 break
 
+        launch_options: Dict[str, Any] = {
+            'headless': HEADLESS,
+            'args': launch_args,
+        }
+        proxy_config = playwright_proxy_config(proxy_url)
+        if proxy_config:
+            launch_options['proxy'] = proxy_config
+            logger.info('Launching Facebook browser session with account proxy %s', proxy_display_url(proxy_url))
         try:
             if executable_path:
                 browser = await playwright.chromium.launch(
-                    headless=HEADLESS,
-                    args=launch_args,
-                    executable_path=executable_path
+                    **launch_options,
+                    executable_path=executable_path,
                 )
             else:
                 logger.info('No compatible local system browser found, falling back to default Playwright Chromium.')
                 browser = await playwright.chromium.launch(
-                    headless=HEADLESS,
-                    args=launch_args
+                    **launch_options,
                 )
             return playwright, browser
         except Exception:
@@ -4537,7 +4544,7 @@ def _extract_pages_from_graphql_payload(payload: Any) -> List[Dict[str, str]]:
     return results
 
 
-async def discover_facebook_pages(cookies_json: str) -> Tuple[bool, List[Dict[str, str]], str]:
+async def discover_facebook_pages(cookies_json: str, proxy_url: str = '') -> Tuple[bool, List[Dict[str, str]], str]:
     """Discover pages visible to the current Facebook cookie session."""
     started_at = asyncio.get_running_loop().time()
     session_guard: Optional[Tuple[Any, ...]] = None
@@ -4548,7 +4555,7 @@ async def discover_facebook_pages(cookies_json: str) -> Tuple[bool, List[Dict[st
             wait_seconds=POST_DISCOVERY_COOKIE_LOCK_WAIT_SECONDS,
             enforce_min_interval=False,
         )
-        playwright, browser, context, page = await launch_browser_session(cookies_json)
+        playwright, browser, context, page = await launch_browser_session(cookies_json, proxy_url=proxy_url)
     except TimeoutError as exc:
         await _release_cookie_session_guard(session_guard)
         detail = (
@@ -4730,7 +4737,7 @@ async def discover_facebook_pages(cookies_json: str) -> Tuple[bool, List[Dict[st
                 await _release_cookie_session_guard(session_guard)
 
 
-def _validate_facebook_session_fast(cookies_json: str) -> Tuple[bool, str]:
+def _validate_facebook_session_fast(cookies_json: str, proxy_url: str = '') -> Tuple[bool, str]:
     """
     Fast session validation via HTTP request (~1-2s instead of ~30-40s).
     Checks if the cookies can access Facebook without being redirected to login.
@@ -4775,6 +4782,7 @@ def _validate_facebook_session_fast(cookies_json: str) -> Tuple[bool, str]:
             headers=headers,
             timeout=10,
             allow_redirects=True,
+            proxies=requests_proxy_config(proxy_url),
         )
 
         final_url = resp.url.lower()
@@ -4844,7 +4852,7 @@ def _validate_facebook_session_fast(cookies_json: str) -> Tuple[bool, str]:
         return False, f'HTTP validation error: {exc}'
 
 
-async def validate_facebook_session(cookies_json: str) -> Tuple[bool, str]:
+async def validate_facebook_session(cookies_json: str, proxy_url: str = '') -> Tuple[bool, str]:
     """Check whether saved Facebook cookies still open an authenticated session.
 
     Uses a fast HTTP-based check first (~1-2s). Falls back to full
@@ -4854,7 +4862,7 @@ async def validate_facebook_session(cookies_json: str) -> Tuple[bool, str]:
     try:
         loop = asyncio.get_running_loop()
         ok, detail = await loop.run_in_executor(
-            None, _validate_facebook_session_fast, cookies_json
+            None, _validate_facebook_session_fast, cookies_json, proxy_url
         )
         # If the fast check gave a definitive answer, use it
         if ok:
@@ -4902,7 +4910,7 @@ async def validate_facebook_session(cookies_json: str) -> Tuple[bool, str]:
             'session validation',
             enforce_min_interval=False,
         )
-        playwright, browser, context, page = await launch_browser_session(cookies_json)
+        playwright, browser, context, page = await launch_browser_session(cookies_json, proxy_url=proxy_url)
     except Exception as exc:
         await _release_cookie_session_guard(session_guard)
         logger.error(f'Could not launch browser for session validation: {exc}')
@@ -4949,7 +4957,7 @@ async def validate_facebook_session(cookies_json: str) -> Tuple[bool, str]:
                 await _release_cookie_session_guard(session_guard)
 
 
-def _get_facebook_account_name_fast(cookies_json: str) -> Tuple[bool, str, str]:
+def _get_facebook_account_name_fast(cookies_json: str, proxy_url: str = '') -> Tuple[bool, str, str]:
     """
     Fast account name lookup via HTTP request (~1-2s instead of ~40s).
     Uses the requests library to fetch the Facebook profile page
@@ -5008,6 +5016,7 @@ def _get_facebook_account_name_fast(cookies_json: str) -> Tuple[bool, str, str]:
                 headers=headers,
                 timeout=10,
                 allow_redirects=True,
+                proxies=requests_proxy_config(proxy_url),
             )
 
             logger.info(f'⚡ Fast HTTP lookup: status={resp.status_code} final_url={resp.url[:100]}')
@@ -5108,7 +5117,7 @@ def _get_facebook_account_name_fast(cookies_json: str) -> Tuple[bool, str, str]:
     return False, '', last_error
 
 
-async def get_facebook_account_name(cookies_json: str) -> Tuple[bool, str, str]:
+async def get_facebook_account_name(cookies_json: str, proxy_url: str = '') -> Tuple[bool, str, str]:
     """Resolve a display name from the authenticated Facebook cookie session.
     
     Uses a fast HTTP-based lookup first (~1-2s). Falls back to full
@@ -5118,7 +5127,7 @@ async def get_facebook_account_name(cookies_json: str) -> Tuple[bool, str, str]:
     try:
         loop = asyncio.get_running_loop()
         ok, name, error = await loop.run_in_executor(
-            None, _get_facebook_account_name_fast, cookies_json
+            None, _get_facebook_account_name_fast, cookies_json, proxy_url
         )
         if ok and name:
             return True, name, ''
@@ -5152,7 +5161,7 @@ async def get_facebook_account_name(cookies_json: str) -> Tuple[bool, str, str]:
             'account name lookup',
             enforce_min_interval=False,
         )
-        playwright, browser, context, page = await launch_browser_session(cookies_json)
+        playwright, browser, context, page = await launch_browser_session(cookies_json, proxy_url=proxy_url)
     except Exception as exc:
         await _release_cookie_session_guard(session_guard)
         logger.error(f'Could not launch browser for account name lookup: {exc}')
@@ -9753,6 +9762,7 @@ async def _create_facebook_post_browser(
     media_url: Optional[str] = None,
     page_name: Optional[str] = None,
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    proxy_url: str = '',
 ) -> Tuple[bool, str]:
     """
     Automate creating a post on Facebook using the configured browser route strategy.
@@ -9772,7 +9782,7 @@ async def _create_facebook_post_browser(
         return False, str(exc)
 
     try:
-        playwright, browser, context, page = await launch_browser_session(cookies_json)
+        playwright, browser, context, page = await launch_browser_session(cookies_json, proxy_url=proxy_url)
     except Exception as exc:
         logger.error(f'Could not launch browser for posting: {exc}')
         await asyncio.to_thread(_mark_cookie_session_used, cookies_json, False, str(exc))
@@ -9840,7 +9850,11 @@ async def _try_create_facebook_posts_fast_http(
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
     browser_fallback: Callable[[List[Dict[str, Any]]], Awaitable[List[Dict[str, Any]]]],
+    proxy_url: str = '',
 ) -> Optional[List[Dict[str, Any]]]:
+    if proxy_url:
+        logger.info('Fast HTTP GraphQL tier skipped because an account proxy is configured.')
+        return None
     try:
         from fast_graphql_poster import create_facebook_posts_fast, is_fast_graphql_enabled
     except Exception as exc:
@@ -9869,6 +9883,7 @@ async def create_facebook_post(
     media_url: Optional[str] = None,
     page_name: Optional[str] = None,
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    proxy_url: str = '',
 ) -> Tuple[bool, str]:
     post = {
         'page_id_or_url': page_id_or_url,
@@ -9895,6 +9910,7 @@ async def create_facebook_post(
                 fallback_post.get('media_url') or None,
                 fallback_page_label,
                 progress_callback,
+                proxy_url,
             )
             fallback_results.append({'page': fallback_page_label, 'success': success, 'result': result})
         return fallback_results
@@ -9904,6 +9920,7 @@ async def create_facebook_post(
         [post],
         progress_callback,
         browser_fallback,
+        proxy_url,
     )
     if fast_results is not None and fast_results:
         first = fast_results[0]
@@ -9917,6 +9934,7 @@ async def create_facebook_post(
         media_url,
         page_name,
         progress_callback,
+        proxy_url,
     )
 
 
@@ -9960,6 +9978,7 @@ async def _create_facebook_posts_unstaged(
     cookies_json: str,
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    proxy_url: str = '',
 ) -> List[Dict[str, Any]]:
     """Publish multiple page posts with one browser session and one login check."""
     session_guard = None
@@ -9987,7 +10006,7 @@ async def _create_facebook_posts_unstaged(
         ]
 
     try:
-        playwright, browser, context, page = await launch_browser_session(cookies_json)
+        playwright, browser, context, page = await launch_browser_session(cookies_json, proxy_url=proxy_url)
     except Exception as exc:
         logger.error(f'Could not launch browser for batch posting: {exc}')
         await asyncio.to_thread(_mark_cookie_session_used, cookies_json, False, str(exc))
@@ -10235,6 +10254,7 @@ async def _create_facebook_posts_browser(
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     posting_mode: str = 'sequential',
+    proxy_url: str = '',
 ) -> List[Dict[str, Any]]:
     staged_paths: List[str] = []
     try:
@@ -10250,6 +10270,14 @@ async def _create_facebook_posts_browser(
                 f'Batch async adaptive mode: parallel_enabled=true pages={len(staged_posts)} '
                 f'allow_same_cookie={POST_ALLOW_PARALLEL_SAME_COOKIE}'
             )
+            if proxy_url:
+                return await _create_facebook_posts_parallel_unstaged(
+                    cookies_json,
+                    staged_posts,
+                    progress_callback,
+                    max_parallel=MAX_PARALLEL_PAGES,
+                    proxy_url=proxy_url,
+                )
             return await _create_facebook_posts_parallel_unstaged(
                 cookies_json,
                 staged_posts,
@@ -10262,6 +10290,8 @@ async def _create_facebook_posts_browser(
                 f'posting_mode={mode} parallel_enabled={POST_PARALLEL_BATCH_ENABLED} '
                 f'mixed_media={_batch_has_mixed_media_modes(staged_posts)}'
             )
+        if proxy_url:
+            return await _create_facebook_posts_unstaged(cookies_json, staged_posts, progress_callback, proxy_url=proxy_url)
         return await _create_facebook_posts_unstaged(cookies_json, staged_posts, progress_callback)
     finally:
         await asyncio.to_thread(_cleanup_staged_batch_media, staged_paths)
@@ -10272,16 +10302,24 @@ async def _create_facebook_posts_legacy(
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     posting_mode: str = 'sequential',
+    proxy_url: str = '',
 ) -> List[Dict[str, Any]]:
     fast_results = await _try_create_facebook_posts_fast_http(
         cookies_json,
         posts,
         progress_callback,
-        lambda fallback_posts: _create_facebook_posts_browser(cookies_json, fallback_posts, progress_callback, posting_mode),
+        lambda fallback_posts: _create_facebook_posts_browser(
+            cookies_json,
+            fallback_posts,
+            progress_callback,
+            posting_mode,
+            proxy_url=proxy_url,
+        ),
+        proxy_url,
     )
     if fast_results is not None:
         return fast_results
-    return await _create_facebook_posts_browser(cookies_json, posts, progress_callback, posting_mode)
+    return await _create_facebook_posts_browser(cookies_json, posts, progress_callback, posting_mode, proxy_url=proxy_url)
 
 
 async def create_facebook_posts(
@@ -10289,6 +10327,7 @@ async def create_facebook_posts(
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     posting_mode: str = 'sequential',
+    proxy_url: str = '',
 ) -> List[Dict[str, Any]]:
     mode = _normalize_batch_posting_mode(posting_mode)
 
@@ -10302,6 +10341,7 @@ async def create_facebook_posts(
             legacy_posts,
             legacy_progress_callback,
             posting_mode=mode,
+            proxy_url=proxy_url,
         )
 
     try:
@@ -10314,7 +10354,7 @@ async def create_facebook_posts(
         )
     except Exception as exc:
         logger.warning(f'Integration adapter failed; using legacy batch path: {exc}')
-        return await _create_facebook_posts_legacy(cookies_json, posts, progress_callback, posting_mode=mode)
+        return await _create_facebook_posts_legacy(cookies_json, posts, progress_callback, posting_mode=mode, proxy_url=proxy_url)
 
 
 async def _create_facebook_posts_parallel_unstaged(
@@ -10322,6 +10362,7 @@ async def _create_facebook_posts_parallel_unstaged(
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     max_parallel: Optional[int] = None,
+    proxy_url: str = '',
 ) -> List[Dict[str, Any]]:
     """
     Publish multiple page posts in PARALLEL with isolated browser contexts.
@@ -10345,12 +10386,16 @@ async def _create_facebook_posts_parallel_unstaged(
 
     if total <= 1:
         # Single post — use the sequential path (simpler, less overhead)
+        if proxy_url:
+            return await _create_facebook_posts_unstaged(cookies_json, posts, progress_callback, proxy_url=proxy_url)
         return await _create_facebook_posts_unstaged(cookies_json, posts, progress_callback)
     if not POST_ALLOW_PARALLEL_SAME_COOKIE:
         logger.info(
             'PARALLEL_BATCH stage="disabled" reason="same_cookie_session_safety"; '
             'set POST_ALLOW_PARALLEL_SAME_COOKIE=true to opt in'
         )
+        if proxy_url:
+            return await _create_facebook_posts_unstaged(cookies_json, posts, progress_callback, proxy_url=proxy_url)
         return await _create_facebook_posts_unstaged(cookies_json, posts, progress_callback)
     concurrency = _parallel_batch_effective_concurrency(total, max_parallel)
     if concurrency <= 1:
@@ -10358,6 +10403,8 @@ async def _create_facebook_posts_parallel_unstaged(
             'PARALLEL_BATCH stage="disabled" reason="same_cookie_parallel_cap_is_one"; '
             'using optimized sequential batch'
         )
+        if proxy_url:
+            return await _create_facebook_posts_unstaged(cookies_json, posts, progress_callback, proxy_url=proxy_url)
         return await _create_facebook_posts_unstaged(cookies_json, posts, progress_callback)
     if concurrency < requested_concurrency:
         logger.info(
@@ -10385,7 +10432,7 @@ async def _create_facebook_posts_parallel_unstaged(
 
     # --- Step 1: Launch one browser, validate login in a shared check ---
     try:
-        playwright, browser, check_context, check_page = await launch_browser_session(cookies_json)
+        playwright, browser, check_context, check_page = await launch_browser_session(cookies_json, proxy_url=proxy_url)
     except Exception as exc:
         logger.error(f'Could not launch browser for parallel posting: {exc}')
         await asyncio.to_thread(_mark_cookie_session_used, cookies_json, False, str(exc))
@@ -10692,6 +10739,7 @@ async def _create_facebook_posts_parallel_browser(
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     max_parallel: Optional[int] = None,
+    proxy_url: str = '',
 ) -> List[Dict[str, Any]]:
     staged_paths: List[str] = []
     try:
@@ -10701,6 +10749,7 @@ async def _create_facebook_posts_parallel_browser(
             staged_posts,
             progress_callback,
             max_parallel,
+            proxy_url=proxy_url,
         )
     finally:
         await asyncio.to_thread(_cleanup_staged_batch_media, staged_paths)
@@ -10711,6 +10760,7 @@ async def create_facebook_posts_parallel(
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     max_parallel: Optional[int] = None,
+    proxy_url: str = '',
 ) -> List[Dict[str, Any]]:
     fast_results = await _try_create_facebook_posts_fast_http(
         cookies_json,
@@ -10721,11 +10771,13 @@ async def create_facebook_posts_parallel(
             fallback_posts,
             progress_callback,
             max_parallel,
+            proxy_url=proxy_url,
         ),
+        proxy_url,
     )
     if fast_results is not None:
         return fast_results
-    return await _create_facebook_posts_parallel_browser(cookies_json, posts, progress_callback, max_parallel)
+    return await _create_facebook_posts_parallel_browser(cookies_json, posts, progress_callback, max_parallel, proxy_url=proxy_url)
 
 
 def create_facebook_posts_sync(
@@ -10733,16 +10785,18 @@ def create_facebook_posts_sync(
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     posting_mode: str = 'sequential',
+    proxy_url: str = '',
 ) -> List[Dict[str, Any]]:
-    return asyncio.run(create_facebook_posts(cookies_json, posts, progress_callback, posting_mode=posting_mode))
+    return asyncio.run(create_facebook_posts(cookies_json, posts, progress_callback, posting_mode=posting_mode, proxy_url=proxy_url))
 
 
 def _create_facebook_posts_unstaged_sync(
     cookies_json: str,
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    proxy_url: str = '',
 ) -> List[Dict[str, Any]]:
-    return asyncio.run(_create_facebook_posts_unstaged(cookies_json, posts, progress_callback))
+    return asyncio.run(_create_facebook_posts_unstaged(cookies_json, posts, progress_callback, proxy_url=proxy_url))
 
 
 def create_facebook_posts_parallel_sync(
@@ -10750,8 +10804,9 @@ def create_facebook_posts_parallel_sync(
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     max_parallel: Optional[int] = None,
+    proxy_url: str = '',
 ) -> List[Dict[str, Any]]:
-    return asyncio.run(create_facebook_posts_parallel(cookies_json, posts, progress_callback, max_parallel))
+    return asyncio.run(create_facebook_posts_parallel(cookies_json, posts, progress_callback, max_parallel, proxy_url=proxy_url))
 
 
 def _create_facebook_posts_parallel_unstaged_sync(
@@ -10759,8 +10814,9 @@ def _create_facebook_posts_parallel_unstaged_sync(
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     max_parallel: Optional[int] = None,
+    proxy_url: str = '',
 ) -> List[Dict[str, Any]]:
-    return asyncio.run(_create_facebook_posts_parallel_unstaged(cookies_json, posts, progress_callback, max_parallel))
+    return asyncio.run(_create_facebook_posts_parallel_unstaged(cookies_json, posts, progress_callback, max_parallel, proxy_url=proxy_url))
 
 
 def _batch_has_mixed_media_modes(posts: List[Dict[str, Any]]) -> bool:
@@ -10774,6 +10830,7 @@ def _create_batch_posts_sync_browser_adaptive(
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     posting_mode: str = 'sequential',
+    proxy_url: str = '',
 ) -> List[Dict[str, Any]]:
     staged_paths: List[str] = []
     try:
@@ -10796,6 +10853,7 @@ def _create_batch_posts_sync_browser_adaptive(
                     staged_posts,
                     progress_callback,
                     max_parallel=MAX_PARALLEL_PAGES,
+                    proxy_url=proxy_url,
                 ),
                 timeout_result,
             )
@@ -10806,7 +10864,7 @@ def _create_batch_posts_sync_browser_adaptive(
                 f'mixed_media={_batch_has_mixed_media_modes(staged_posts)}'
             )
         return _run_with_post_operation_slot(
-            lambda: _create_facebook_posts_unstaged_sync(cookies_json, staged_posts, progress_callback),
+            lambda: _create_facebook_posts_unstaged_sync(cookies_json, staged_posts, progress_callback, proxy_url=proxy_url),
             timeout_result,
         )
     finally:
@@ -10818,7 +10876,11 @@ def _try_create_facebook_posts_fast_http_sync(
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
     browser_fallback: Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]],
+    proxy_url: str = '',
 ) -> Optional[List[Dict[str, Any]]]:
+    if proxy_url:
+        logger.info('Fast HTTP GraphQL sync tier skipped because an account proxy is configured.')
+        return None
     try:
         from fast_graphql_poster import create_facebook_posts_fast_sync, is_fast_graphql_enabled
     except Exception as exc:
@@ -10844,6 +10906,7 @@ def _create_batch_posts_sync_adaptive(
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     posting_mode: str = 'sequential',
+    proxy_url: str = '',
 ) -> List[Dict[str, Any]]:
     fast_results = _try_create_facebook_posts_fast_http_sync(
         cookies_json,
@@ -10854,11 +10917,13 @@ def _create_batch_posts_sync_adaptive(
             fallback_posts,
             progress_callback,
             posting_mode,
+            proxy_url=proxy_url,
         ),
+        proxy_url,
     )
     if fast_results is not None:
         return fast_results
-    return _create_batch_posts_sync_browser_adaptive(cookies_json, posts, progress_callback, posting_mode)
+    return _create_batch_posts_sync_browser_adaptive(cookies_json, posts, progress_callback, posting_mode, proxy_url=proxy_url)
 
 
 def _batch_operation_slot_timeout_results(posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

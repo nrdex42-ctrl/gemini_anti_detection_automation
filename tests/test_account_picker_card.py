@@ -22,6 +22,7 @@ def test_account_picker_card_has_activate_rename_and_delete_buttons():
     assert "acctsel:0" in callbacks
     assert "acctren:0" in callbacks
     assert "acctdel:0" in callbacks
+    assert "acctproxy:0" in callbacks
 
 
 def test_manage_accounts_dashboard_button_sends_inline_card_without_editing_user_message():
@@ -61,6 +62,85 @@ def test_manage_accounts_dashboard_button_sends_inline_card_without_editing_user
         assert "Select the account to make active." in sent[0]["text"]
         assert "inline_keyboard" in sent[0]["reply_markup"]
         assert "keyboard" not in sent[0]["reply_markup"]
+
+    asyncio.run(run())
+
+
+def test_account_picker_card_shows_clear_proxy_for_configured_accounts():
+    app = TelegramBotApp.__new__(TelegramBotApp)
+    accounts = [
+        {"account_id": "acct_1", "label": "Omar Mohamed", "cookie_status": "valid", "proxy_configured": True},
+    ]
+
+    text = app.account_picker_card("Select account.", accounts, "acct_1", lang="en")
+    markup = app.account_picker_markup(accounts, "acct_1", lang="en")
+    callbacks = [button["callback_data"] for row in markup["inline_keyboard"] for button in row]
+
+    assert "proxy set" in text
+    assert "acctproxy:0" in callbacks
+    assert "acctproxyclear:0" in callbacks
+
+
+def test_account_proxy_input_updates_storage_and_refreshes_accounts_card():
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.dashboard_sessions = {
+            "123:99": {
+                "action": "manage_accounts",
+                "step": "proxy_input",
+                "proxy_account_id": "acct_1",
+                "lang": "en",
+                "updated_at": time.time(),
+            }
+        }
+        calls = []
+        account_cards = []
+
+        class Storage:
+            def update_account_proxy(self, account_id, proxy_url, owner_id=None):
+                calls.append(("update_account_proxy", account_id, proxy_url, owner_id))
+                return True
+
+            def get_account(self, account_id, owner_id=None):
+                return {"account_id": account_id, "label": "Omar Mohamed", "proxy_configured": True}
+
+            def list_accounts(self, owner_id=None):
+                return [{"account_id": "acct_1", "label": "Omar Mohamed", "proxy_configured": True}]
+
+            def dashboard_summary(self, owner_id=None):
+                return {"job_status_counts": {}, "page_counts_by_account": {}}
+
+            def get_active_account(self, user_id, owner_id=None):
+                return "acct_1"
+
+        async def user_language(user_id=0):
+            return "en"
+
+        async def send_message(chat_id, text, reply_to_message_id=0, *, reply_markup=None, parse_mode=""):
+            account_cards.append(text)
+            return {"ok": True, "result": {"message_id": 777}}
+
+        app.storage = Storage()
+        app.user_language = user_language
+        app.send_message = send_message
+        app.account_owner_scope = lambda user_id: user_id
+        app.schedule_account_name_refresh = lambda *args, **kwargs: None
+
+        handled = await app.handle_dashboard_session(
+            123,
+            99,
+            456,
+            "http://user:pass@proxy.example.com:8080",
+            {},
+        )
+
+        assert handled is True
+        assert calls == [
+            ("update_account_proxy", "acct_1", "http://user:pass@proxy.example.com:8080", 99)
+        ]
+        assert account_cards
+        assert "Proxy updated for Omar Mohamed: http://proxy.example.com:8080" in account_cards[-1]
+        assert "123:99" in app.dashboard_sessions
 
     asyncio.run(run())
 

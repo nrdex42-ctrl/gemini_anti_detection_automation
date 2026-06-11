@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from page_name_utils import clean_facebook_page_name
+from proxy_utils import proxy_is_configured
 
 
 BUTTON_ADD_ACCOUNT = "➕ Add Account"
@@ -884,6 +885,10 @@ def _account_cookie_status_label(account: Dict[str, Any], lang: str = "en") -> s
     return tr(lang, "not verified", "لم يتم التحقق")
 
 
+def _account_proxy_status_label(account: Dict[str, Any], lang: str = "en") -> str:
+    return tr(lang, "set", "محدد") if proxy_is_configured(account) else tr(lang, "none", "بدون")
+
+
 def dashboard_text(
     *,
     accounts: List[Dict[str, Any]],
@@ -958,14 +963,15 @@ def dashboard_text(
             pages = int(page_counts.get(account_id, 0))
             display = account_display_name(account)
             cookie_status = _account_cookie_status_label(account, lang)
+            proxy_status = _account_proxy_status_label(account, lang)
             lines.append(
                 (
-                    f"{icon} {display} | pages: {pages} | cookies: {cookie_status}"
+                    f"{icon} {display} | pages: {pages} | cookies: {cookie_status} | proxy: {proxy_status}"
                     if normalize_lang(lang) == "en"
                     else status_detail_line(
                         icon,
                         display,
-                        f"صفحات: {pages} | الكوكيز: {cookie_status}",
+                        f"صفحات: {pages} | الكوكيز: {cookie_status} | البروكسي: {proxy_status}",
                     )
                 )
             )

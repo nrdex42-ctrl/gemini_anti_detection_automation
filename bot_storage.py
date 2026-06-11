@@ -210,6 +210,32 @@ class BotStorage:
             conn.commit()
         return changed
 
+    def update_account_proxy(self, account_id: str, proxy_url: str = "", owner_id: Optional[int] = None) -> bool:
+        proxy_ciphertext = self.cipher.encrypt(proxy_url.strip()) if str(proxy_url or "").strip() else ""
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                if owner_id is None:
+                    cur.execute(
+                        """
+                        update fb_accounts
+                        set proxy_ciphertext=%s, updated_at=now()
+                        where account_id=%s and active=true
+                        """,
+                        (proxy_ciphertext, account_id),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        update fb_accounts
+                        set proxy_ciphertext=%s, updated_at=now()
+                        where account_id=%s and created_by=%s and active=true
+                        """,
+                        (proxy_ciphertext, account_id, int(owner_id)),
+                    )
+                changed = cur.rowcount > 0
+            conn.commit()
+        return changed
+
     def set_active_account(self, telegram_user_id: int, account_id: str) -> None:
         with self.connect() as conn:
             with conn.cursor() as cur:
@@ -518,7 +544,8 @@ class BotStorage:
                     cur.execute(
                         """
                         select account_id, label, active, created_by, created_at, updated_at,
-                               cookie_status, cookie_status_detail, cookie_status_checked_at, cookie_status_updated_at
+                               cookie_status, cookie_status_detail, cookie_status_checked_at, cookie_status_updated_at,
+                               (coalesce(proxy_ciphertext, '') <> '') as proxy_configured
                         from fb_accounts
                         where active=true
                         order by greatest(coalesce(cookie_status_updated_at, updated_at), updated_at) desc
@@ -528,7 +555,8 @@ class BotStorage:
                     cur.execute(
                         """
                         select account_id, label, active, created_by, created_at, updated_at,
-                               cookie_status, cookie_status_detail, cookie_status_checked_at, cookie_status_updated_at
+                               cookie_status, cookie_status_detail, cookie_status_checked_at, cookie_status_updated_at,
+                               (coalesce(proxy_ciphertext, '') <> '') as proxy_configured
                         from fb_accounts
                         where created_by=%s and active=true
                         order by greatest(coalesce(cookie_status_updated_at, updated_at), updated_at) desc
@@ -542,7 +570,8 @@ class BotStorage:
             with conn.cursor() as cur:
                 sql = """
                     select account_id, label, active, created_by, created_at, updated_at,
-                           cookie_status, cookie_status_detail, cookie_status_checked_at, cookie_status_updated_at
+                           cookie_status, cookie_status_detail, cookie_status_checked_at, cookie_status_updated_at,
+                           (coalesce(proxy_ciphertext, '') <> '') as proxy_configured
                     from fb_accounts
                     where account_id=%s
                     """
@@ -580,6 +609,20 @@ class BotStorage:
         if not row:
             raise RuntimeError(f"Active account not found: {account_id}")
         return self.cipher.decrypt(str(row["cookie_ciphertext"]))
+
+    def get_account_proxy(self, account_id: str, owner_id: Optional[int] = None) -> str:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                sql = "select proxy_ciphertext from fb_accounts where account_id=%s and active=true"
+                params: List[Any] = [account_id]
+                if owner_id is not None:
+                    sql += " and created_by=%s"
+                    params.append(int(owner_id))
+                cur.execute(sql, params)
+                row = cur.fetchone()
+        if not row:
+            raise RuntimeError(f"Active account not found: {account_id}")
+        return self.cipher.decrypt(str(row.get("proxy_ciphertext") or ""))
 
     def upsert_pages(self, account_id: str, pages: List[Dict[str, str]]) -> None:
         normalized_pages: List[Dict[str, str]] = []

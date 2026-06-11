@@ -8,6 +8,7 @@ create table if not exists fb_accounts (
     active boolean not null default true,
     cookie_status text not null default 'unverified',
     cookie_status_detail text not null default '',
+    proxy_ciphertext text not null default '',
     cookie_status_checked_at timestamptz,
     cookie_status_updated_at timestamptz not null default now(),
     created_by bigint,
@@ -17,6 +18,7 @@ create table if not exists fb_accounts (
 
 alter table fb_accounts add column if not exists cookie_status text not null default 'unverified';
 alter table fb_accounts add column if not exists cookie_status_detail text not null default '';
+alter table fb_accounts add column if not exists proxy_ciphertext text not null default '';
 alter table fb_accounts add column if not exists cookie_status_checked_at timestamptz;
 alter table fb_accounts add column if not exists cookie_status_updated_at timestamptz not null default now();
 

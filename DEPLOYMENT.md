@@ -201,6 +201,8 @@ python3 scripts/set_telegram_webhook.py
 
 The dashboard Add Facebook Account button accepts raw cookie headers, JSON cookie arrays, `{cookies:[...]}` exports, uploaded JSON files, and multi-message JSON chunks followed by the `✅ Done` button.
 
+`My Accounts` -> `Set Proxy` stores an optional per-account proxy. Supported formats are `host:port`, `http://user:pass@host:port`, `https://host:port`, and `socks5://host:port`. The bot uses the configured proxy for cookie validation, page discovery, account-name lookup, and posting for that account. Proxy credentials are encrypted in `fb_accounts.proxy_ciphertext` and bot cards only show whether a proxy is set. A Facebook checkpoint still requires manual resolution in a browser followed by refreshed cookies.
+
 Page discovery is cached in `fb_pages`. Normal posting reads the saved page list and does not rediscover pages before each post. Use the `🔄 Refresh Pages` dashboard button when you want to refresh a selected account's cached pages.
 
 Normal users can use `/start` and the typing-area dashboard after approval. With `BOT_REQUIRE_USER_APPROVAL=true`, new users are saved as pending and cannot add accounts or post until an admin approves them from `🔒 Admin Dashboard` -> `👥 Users`.

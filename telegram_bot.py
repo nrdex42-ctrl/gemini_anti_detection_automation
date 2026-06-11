@@ -24,6 +24,7 @@ from aiohttp import ClientSession, web
 
 from bot_storage import BotStorage
 from facebook_cookie_parser import parse_account_cookie_payload
+from proxy_utils import normalize_proxy_url, playwright_proxy_config, proxy_display_url, proxy_is_configured
 from run_live_image_test import parse_cookies
 from run_live_matrix_test import cookies_json, discover_pages_from_browser
 from telegram_dashboard import (
@@ -998,7 +999,13 @@ class TelegramBotApp:
                 logger.info("Startup cookie validation: Checking %s...", display)
                 try:
                     cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, None)
-                    session_ok, detail = await self.validate_facebook_cookie_session(cookie_header, account_id, "en")
+                    proxy_url = await self.account_proxy_url(account_id, None)
+                    session_ok, detail = await self.validate_facebook_cookie_session(
+                        cookie_header,
+                        account_id,
+                        "en",
+                        proxy_url=proxy_url,
+                    )
                     status_text = "Facebook session is valid" if session_ok else detail
                     await asyncio.to_thread(
                         self.storage.update_account_cookie_validation,
@@ -1530,6 +1537,19 @@ class TelegramBotApp:
     async def active_account_id(self, user_id: int) -> str:
         return await asyncio.to_thread(self.storage.get_active_account, user_id, self.account_owner_scope(user_id))
 
+    async def account_proxy_url(self, account_id: str, owner_id: Optional[int] = None) -> str:
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            return ""
+        if hasattr(self.storage, "get_account_proxy"):
+            proxy_url = await asyncio.to_thread(self.storage.get_account_proxy, account_id, owner_id)
+            return normalize_proxy_url(proxy_url)
+        try:
+            account = await asyncio.to_thread(self.storage.get_account, account_id, owner_id)
+        except Exception:
+            return ""
+        return normalize_proxy_url(str((account or {}).get("proxy_url") or ""))
+
     async def dashboard_state(self, user_id: int = 0) -> Tuple[List[Dict[str, Any]], Dict[str, Any], str]:
         owner_scope = self.account_owner_scope(user_id)
         tasks: List[Awaitable[Any]] = [
@@ -1585,7 +1605,11 @@ class TelegramBotApp:
             cookie_string = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_id)
             from playwright_engine import get_facebook_account_name
 
-            resolved, resolved_name, error = await get_facebook_account_name(cookies_json(parse_cookies(cookie_string)))
+            proxy_url = await self.account_proxy_url(account_id, owner_id)
+            resolved, resolved_name, error = await get_facebook_account_name(
+                cookies_json(parse_cookies(cookie_string)),
+                proxy_url=proxy_url,
+            )
             if resolved and resolved_name:
                 changed = await asyncio.to_thread(self.storage.update_account_label, account_id, resolved_name, owner_id)
                 logger.info("Updated Facebook account label for %s to %s", account_id, resolved_name)
@@ -2419,6 +2443,10 @@ class TelegramBotApp:
                 status = {"valid": "كوكيز صالحة", "invalid": "كوكيز غير صالحة"}.get(cookie_status, "كوكيز غير مؤكدة")
             else:
                 status = {"valid": "cookies valid", "invalid": "cookies invalid"}.get(cookie_status, "cookies unverified")
+            proxy_status = "بروكسي محدد" if proxy_is_configured(item) and lang == "ar" else (
+                "proxy set" if proxy_is_configured(item) else ("بدون بروكسي" if lang == "ar" else "proxy none")
+            )
+            status = f"{status} | {proxy_status}"
             lines.append(status_detail_line(marker, f"{index}. {display}", status))
         lines.extend(
             [
@@ -2449,6 +2477,10 @@ class TelegramBotApp:
                     inline_button("🗑 حذف" if lang == "ar" else "🗑 Delete", f"acctdel:{index}"),
                 ]
             )
+            proxy_buttons = [inline_button("🌐 تغيير البروكسي" if lang == "ar" else "🌐 Set Proxy", f"acctproxy:{index}")]
+            if proxy_is_configured(item):
+                proxy_buttons.append(inline_button("🚫 مسح البروكسي" if lang == "ar" else "🚫 Clear Proxy", f"acctproxyclear:{index}"))
+            rows.append(proxy_buttons)
         rows.append([inline_button("⬅️ رجوع" if lang == "ar" else "⬅️ Back", "dash:back")])
         return inline_markup(rows)
 
@@ -3180,6 +3212,11 @@ class TelegramBotApp:
     def account_action_text(self, account: Dict[str, Any], pages: List[Dict[str, Any]], lang: str = "en") -> str:
         display = account_display_name(account, str(account.get("account_id") or ""))
         updated = self._format_dt(account.get("updated_at"))
+        proxy_line = (
+            "البروكسي: محدد" if proxy_is_configured(account) and lang == "ar" else (
+                "Proxy: set" if proxy_is_configured(account) else ("البروكسي: بدون" if lang == "ar" else "Proxy: none")
+            )
+        )
         if pages:
             newest_page_update = max((page.get("updated_at") for page in pages if page.get("updated_at")), default="")
             pages_line = (
@@ -3200,6 +3237,7 @@ class TelegramBotApp:
                     "━━━━━━━━━━━━━━━━━━",
                     f"الحالة: {'نشط' if account.get('active') else 'غير نشط'}",
                     f"آخر تحديث: {updated}",
+                    proxy_line,
                     pages_line,
                     "",
                     "تقدر تفحص كوكيز الحساب، تكمل بالصفحات المحفوظة، أو تحدّث كاش الصفحات.",
@@ -3211,6 +3249,7 @@ class TelegramBotApp:
                 "━━━━━━━━━━━━━━━━━━",
                 f"Status: {'active' if account.get('active') else 'inactive'}",
                 f"Updated: {updated}",
+                proxy_line,
                 pages_line,
                 "",
                 "You can check this account cookie shape before choosing pages, continue with cached pages, or refresh the page cache.",
@@ -3242,6 +3281,7 @@ class TelegramBotApp:
         cookie_header: str,
         account_id: str,
         lang: str = "en",
+        proxy_url: str = "",
     ) -> Tuple[bool, str]:
         from playwright_engine import validate_facebook_session
 
@@ -3250,7 +3290,9 @@ class TelegramBotApp:
         timeout_seconds = _env_float("BOT_COOKIE_VALIDATION_TIMEOUT_SECONDS", 8.0, minimum=1.0)
         try:
             return await asyncio.wait_for(
-                validate_facebook_session(cookie_payload),
+                validate_facebook_session(cookie_payload, proxy_url=proxy_url)
+                if proxy_url
+                else validate_facebook_session(cookie_payload),
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
@@ -3282,7 +3324,13 @@ class TelegramBotApp:
                 }
 
             cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
-            session_ok, detail = await self.validate_facebook_cookie_session(cookie_header, account_id, lang)
+            proxy_url = await self.account_proxy_url(account_id, owner_scope)
+            session_ok, detail = await self.validate_facebook_cookie_session(
+                cookie_header,
+                account_id,
+                lang,
+                proxy_url=proxy_url,
+            )
             icon, status_text = cookie_validation_summary(session_ok, detail)
             await asyncio.to_thread(
                 self.storage.update_account_cookie_validation,
@@ -3891,7 +3939,13 @@ class TelegramBotApp:
                 reply_to_message_id=message_id,
             )
             try:
-                session_ok, detail = await self.validate_facebook_cookie_session(parsed.cookie_header, parsed.account_id, lang)
+                proxy_url = await self.account_proxy_url(parsed.account_id, self.account_owner_scope(user_id))
+                session_ok, detail = await self.validate_facebook_cookie_session(
+                    parsed.cookie_header,
+                    parsed.account_id,
+                    lang,
+                    proxy_url=proxy_url,
+                )
                 icon, status_text = cookie_validation_summary(session_ok, detail)
                 owner_scope = self.account_owner_scope(user_id)
                 await asyncio.to_thread(
@@ -4131,6 +4185,57 @@ class TelegramBotApp:
             else:
                 prefix = "لم يتم العثور على الحساب." if lang == "ar" else "Account not found."
             await self.show_dashboard(chat_id, 0, prefix=prefix, user_id=user_id)
+            return True
+
+        if action == "manage_accounts" and step == "proxy_input":
+            account_id = str(session.get("proxy_account_id") or "")
+            if not account_id:
+                self.clear_dashboard_session(chat_id, user_id)
+                await self.command_accounts(chat_id, message_id, user_id)
+                return True
+            raw_value = text.strip()
+            try:
+                proxy_url = normalize_proxy_url(raw_value)
+            except Exception as exc:
+                await self.send_message(
+                    chat_id,
+                    (
+                        f"صيغة البروكسي غير صحيحة: {exc}\n\n"
+                        "ابعت البروكسي بصيغة http://user:pass@host:port أو socks5://host:port."
+                        if lang == "ar"
+                        else f"Invalid proxy format: {exc}\n\n"
+                        "Send the proxy as http://user:pass@host:port or socks5://host:port."
+                    ),
+                    message_id,
+                    reply_markup=cancel_markup(lang=lang),
+                )
+                return True
+            changed = await asyncio.to_thread(
+                self.storage.update_account_proxy,
+                account_id,
+                proxy_url,
+                self.account_owner_scope(user_id),
+            )
+            self.clear_dashboard_session(chat_id, user_id)
+            if changed:
+                account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
+                display = account_display_name(account or {}, account_id)
+                if proxy_url:
+                    proxy_label = proxy_display_url(proxy_url)
+                    prefix = (
+                        f"تم تحديث بروكسي {display}: {proxy_label}"
+                        if lang == "ar"
+                        else f"Proxy updated for {display}: {proxy_label}"
+                    )
+                else:
+                    prefix = (
+                        f"تم مسح بروكسي {display}."
+                        if lang == "ar"
+                        else f"Proxy cleared for {display}."
+                    )
+            else:
+                prefix = "لم يتم العثور على الحساب." if lang == "ar" else "Account not found."
+            await self.command_accounts(chat_id, message_id, user_id, prefix=prefix)
             return True
 
         if step == "account":
@@ -5247,6 +5352,81 @@ class TelegramBotApp:
             )
             return
 
+        if data.startswith("acctproxyclear:"):
+            choice_key = data.split(":", 1)[1]
+            choices = session.get("account_choices") if isinstance(session.get("account_choices"), dict) else {}
+            if not choices and isinstance(session.get("account_manage_choices"), dict):
+                choices = session.get("account_manage_choices") or {}
+            account_id = str(choices.get(choice_key) or "")
+            if not account_id:
+                await self.command_accounts(chat_id, message_id, user_id, edit=True)
+                return
+            changed = await asyncio.to_thread(
+                self.storage.update_account_proxy,
+                account_id,
+                "",
+                self.account_owner_scope(user_id),
+            )
+            account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
+            display = account_display_name(account or {}, account_id)
+            prefix = (
+                (f"تم مسح بروكسي {display}." if changed else "لم يتم العثور على الحساب.")
+                if lang == "ar"
+                else (f"Proxy cleared for {display}." if changed else "Account not found.")
+            )
+            await self.command_accounts(chat_id, message_id, user_id, edit=True, prefix=prefix)
+            return
+
+        if data.startswith("acctproxy:"):
+            choice_key = data.split(":", 1)[1]
+            choices = session.get("account_choices") if isinstance(session.get("account_choices"), dict) else {}
+            if not choices and isinstance(session.get("account_manage_choices"), dict):
+                choices = session.get("account_manage_choices") or {}
+            account_id = str(choices.get(choice_key) or "")
+            if not account_id:
+                await self.command_accounts(chat_id, message_id, user_id, edit=True)
+                return
+            account = await asyncio.to_thread(self.storage.get_account, account_id, self.account_owner_scope(user_id))
+            if not account:
+                await self.command_accounts(chat_id, message_id, user_id, edit=True)
+                return
+            session["action"] = "manage_accounts"
+            session["step"] = "proxy_input"
+            session["proxy_account_id"] = account_id
+            self.set_dashboard_session(chat_id, user_id, session)
+            display = account_display_name(account, account_id, include_id=True)
+            current_status = "محدد" if proxy_is_configured(account) else "بدون"
+            if lang == "ar":
+                lines = [
+                    "🌐 بروكسي الحساب",
+                    "━━━━━━━━━━━━━━━━━━",
+                    f"الحساب: {display}",
+                    f"الحالة الحالية: {current_status}",
+                    "",
+                    "ابعت رابط البروكسي الآن.",
+                    "الصيغ المقبولة: http://user:pass@host:port أو socks5://host:port",
+                    "ابعت clear لمسح البروكسي.",
+                ]
+            else:
+                current_status = "set" if proxy_is_configured(account) else "none"
+                lines = [
+                    "🌐 Account Proxy",
+                    "━━━━━━━━━━━━━━━━━━",
+                    f"Account: {display}",
+                    f"Current status: {current_status}",
+                    "",
+                    "Send the proxy URL now.",
+                    "Accepted formats: http://user:pass@host:port or socks5://host:port",
+                    "Send clear to remove the proxy.",
+                ]
+            await self.edit_message(
+                chat_id,
+                message_id,
+                "\n".join(lines),
+                reply_markup={"inline_keyboard": []},
+            )
+            return
+
         if data == "acctdel:confirm":
             account_id = str(session.get("delete_account_id") or "")
             if not account_id:
@@ -5691,7 +5871,15 @@ class TelegramBotApp:
             cookie_message_ids=cookie_message_ids,
         )
 
-    async def command_accounts(self, chat_id: int, message_id: int, user_id: int = 0, *, edit: bool = False) -> None:
+    async def command_accounts(
+        self,
+        chat_id: int,
+        message_id: int,
+        user_id: int = 0,
+        *,
+        edit: bool = False,
+        prefix: str = "",
+    ) -> None:
         lang = await self.user_language(user_id)
         accounts = await asyncio.to_thread(self.storage.list_accounts, self.account_owner_scope(user_id))
         if not accounts:
@@ -5729,6 +5917,8 @@ class TelegramBotApp:
             else "👤 My Accounts\nSelect the account to make active."
         )
         text = self.account_picker_card(prompt, accounts, active_account, lang=lang)
+        if prefix:
+            text = f"{prefix}\n\n{text}"
         markup = self.account_picker_markup(accounts, active_account, lang=lang)
         if edit:
             await self.edit_or_send_message(chat_id, message_id, text, reply_markup=markup)
@@ -5770,7 +5960,13 @@ class TelegramBotApp:
             )
             try:
                 cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
-                session_ok, detail = await self.validate_facebook_cookie_session(cookie_header, account_id, lang)
+                proxy_url = await self.account_proxy_url(account_id, owner_scope)
+                session_ok, detail = await self.validate_facebook_cookie_session(
+                    cookie_header,
+                    account_id,
+                    lang,
+                    proxy_url=proxy_url,
+                )
                 icon, status_text = cookie_validation_summary(session_ok, detail)
                 await asyncio.to_thread(
                     self.storage.update_account_cookie_validation,
@@ -5855,7 +6051,13 @@ class TelegramBotApp:
         progress_message_id = int((progress.get("result") or {}).get("message_id") or 0)
         try:
             cookie_header = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_scope)
-            session_ok, detail = await self.validate_facebook_cookie_session(cookie_header, account_id, lang)
+            proxy_url = await self.account_proxy_url(account_id, owner_scope)
+            session_ok, detail = await self.validate_facebook_cookie_session(
+                cookie_header,
+                account_id,
+                lang,
+                proxy_url=proxy_url,
+            )
             icon, status_text = cookie_validation_summary(session_ok, detail)
             await asyncio.to_thread(
                 self.storage.update_account_cookie_validation,
@@ -6150,10 +6352,14 @@ class TelegramBotApp:
         from playwright.async_api import async_playwright
 
         cookie_string = await asyncio.to_thread(self.storage.get_account_cookie, account_id, owner_id)
+        proxy_url = await self.account_proxy_url(account_id, owner_id)
         try:
             from playwright_engine import discover_facebook_pages
 
-            ok, pages, detail = await discover_facebook_pages(cookies_json(parse_cookies(cookie_string)))
+            ok, pages, detail = await discover_facebook_pages(
+                cookies_json(parse_cookies(cookie_string)),
+                proxy_url=proxy_url,
+            )
             if ok and pages:
                 return pages
             if detail:
@@ -6163,9 +6369,15 @@ class TelegramBotApp:
 
         cookies = parse_cookies(cookie_string)
         async with async_playwright() as pw:
+            launch_options: Dict[str, Any] = {
+                "headless": _env_bool("HEADLESS", True),
+                "args": ["--disable-dev-shm-usage", "--no-sandbox"],
+            }
+            proxy_config = playwright_proxy_config(proxy_url)
+            if proxy_config:
+                launch_options["proxy"] = proxy_config
             browser = await pw.chromium.launch(
-                headless=_env_bool("HEADLESS", True),
-                args=["--disable-dev-shm-usage", "--no-sandbox"],
+                **launch_options,
             )
             try:
                 return await discover_pages_from_browser(browser, cookies)
@@ -6743,6 +6955,7 @@ class TelegramBotApp:
             heartbeat_task = asyncio.create_task(self.account_lock_heartbeat(account_id, lock_owner))
             self.debug_event("post_job_cookie_load_start", trace_id, job_id=job_id, account_id=account_id)
             cookie_string = await asyncio.to_thread(self.storage.get_account_cookie, account_id, self.account_owner_scope(user_id))
+            proxy_url = await self.account_proxy_url(account_id, self.account_owner_scope(user_id))
             self.debug_event("post_job_cookie_loaded", trace_id, job_id=job_id, account_id=account_id)
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
@@ -6782,7 +6995,12 @@ class TelegramBotApp:
                 )
 
             results_task = asyncio.create_task(
-                create_facebook_posts(cookies_json(parse_cookies(cookie_string)), [post], progress_callback=progress_callback)
+                create_facebook_posts(
+                    cookies_json(parse_cookies(cookie_string)),
+                    [post],
+                    progress_callback=progress_callback,
+                    proxy_url=proxy_url,
+                )
             )
             self.debug_event("post_job_engine_start", trace_id, job_id=job_id, timeout_seconds=engine_timeout)
             results = await self.wait_for_task_with_heartbeat(
@@ -6958,6 +7176,7 @@ class TelegramBotApp:
             heartbeat_task = asyncio.create_task(self.account_lock_heartbeat(account_id, lock_owner))
             self.debug_event("batch_post_cookie_load_start", trace_id, batch_id=batch_id, account_id=account_id)
             cookie_string = await asyncio.to_thread(self.storage.get_account_cookie, account_id, self.account_owner_scope(user_id))
+            proxy_url = await self.account_proxy_url(account_id, self.account_owner_scope(user_id))
             self.debug_event("batch_post_cookie_loaded", trace_id, batch_id=batch_id, account_id=account_id)
             progress_message_id = await self.edit_or_send_message(
                 chat_id,
@@ -7087,6 +7306,7 @@ class TelegramBotApp:
                     posts,
                     progress_callback=progress_callback,
                     posting_mode=posting_mode,
+                    proxy_url=proxy_url,
                 )
             )
             self.debug_event(
