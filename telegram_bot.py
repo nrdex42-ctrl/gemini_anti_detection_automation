@@ -1685,7 +1685,7 @@ class TelegramBotApp:
             logger.exception("Dashboard rendering failed")
             lang = "en"
             text = f"{prefix + chr(10) + chr(10) if prefix else ''}Dashboard is available, but database status could not be loaded: {exc}"
-            reply_markup = dashboard_markup(has_accounts=False, lang=lang)
+            reply_markup = dashboard_markup(has_accounts=False, is_admin=self.is_admin_user(user_id), lang=lang)
         return await self.edit_or_send_message(
             chat_id,
             edit_message_id or message_id,
@@ -2460,7 +2460,7 @@ class TelegramBotApp:
                 chat_id,
                 "لا توجد حسابات محفوظة بعد. استخدم ضيف حساب أولاً." if lang == "ar" else "No accounts are stored yet. Use Add Account first.",
                 message_id,
-                reply_markup=dashboard_markup(has_accounts=False, lang=lang),
+                reply_markup=dashboard_markup(has_accounts=False, is_admin=self.is_admin_user(user_id), lang=lang),
             )
             return False
         active_account = ""
@@ -5544,7 +5544,7 @@ class TelegramBotApp:
             try:
                 reply_markup = await self.dashboard_reply_markup(user_id)
             except Exception:
-                reply_markup = dashboard_markup(has_accounts=False, lang=lang)
+                reply_markup = dashboard_markup(has_accounts=False, is_admin=self.is_admin_user(user_id), lang=lang)
             with suppress(Exception):
                 await self.send_message(
                     chat_id,
@@ -5696,7 +5696,12 @@ class TelegramBotApp:
         accounts = await asyncio.to_thread(self.storage.list_accounts, self.account_owner_scope(user_id))
         if not accounts:
             text = "لا توجد حسابات محفوظة." if lang == "ar" else "No accounts stored."
-            await self.send_message(chat_id, text, message_id, reply_markup=dashboard_markup(has_accounts=False, lang=lang))
+            await self.send_message(
+                chat_id,
+                text,
+                message_id,
+                reply_markup=dashboard_markup(has_accounts=False, is_admin=self.is_admin_user(user_id), lang=lang),
+            )
             return
         if user_id:
             self.schedule_account_name_refresh(user_id, accounts, chat_id)
@@ -5736,7 +5741,12 @@ class TelegramBotApp:
         accounts = await asyncio.to_thread(self.storage.list_accounts, owner_scope)
         if not accounts:
             text = "لا توجد حسابات محفوظة." if lang == "ar" else "No accounts stored."
-            await self.send_message(chat_id, text, message_id, reply_markup=dashboard_markup(has_accounts=False, lang=lang))
+            await self.send_message(
+                chat_id,
+                text,
+                message_id,
+                reply_markup=dashboard_markup(has_accounts=False, is_admin=self.is_admin_user(user_id), lang=lang),
+            )
             return
 
         total = len(accounts)

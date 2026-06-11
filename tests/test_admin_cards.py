@@ -54,6 +54,60 @@ def test_admin_user_dashboard_uses_only_admin_owned_accounts():
     asyncio.run(run())
 
 
+def test_admin_dashboard_fallback_keeps_admin_button():
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.admin_ids = {99}
+        captured = []
+
+        async def dashboard_state(user_id=0):
+            raise RuntimeError("database unavailable")
+
+        async def edit_or_send_message(chat_id, message_id, text, **kwargs):
+            captured.append(kwargs.get("reply_markup"))
+            return message_id or 777
+
+        app.dashboard_state = dashboard_state
+        app.edit_or_send_message = edit_or_send_message
+
+        await app.show_dashboard(123, 456, user_id=99)
+
+        labels = [button for row in captured[0]["keyboard"] for button in row]
+        assert "🔒 Admin Dashboard" in labels
+
+    asyncio.run(run())
+
+
+def test_admin_no_accounts_reply_keyboard_keeps_admin_button():
+    async def run():
+        app = TelegramBotApp.__new__(TelegramBotApp)
+        app.admin_ids = {99}
+        sent = []
+
+        class Storage:
+            def list_accounts(self, owner_scope=None):
+                return []
+
+        async def user_language(user_id=0):
+            return "en"
+
+        async def send_message(chat_id, text, reply_to_message_id=0, *, reply_markup=None, parse_mode=""):
+            sent.append(reply_markup)
+            return {"ok": True, "result": {"message_id": 777}}
+
+        app.storage = Storage()
+        app.user_language = user_language
+        app.send_message = send_message
+        app.account_owner_scope = lambda user_id: user_id
+
+        await app.command_accounts(123, 456, 99)
+
+        labels = [button for row in sent[0]["keyboard"] for button in row]
+        assert "🔒 Admin Dashboard" in labels
+
+    asyncio.run(run())
+
+
 class AdminStorage:
     def __init__(self):
         self.touched = []
