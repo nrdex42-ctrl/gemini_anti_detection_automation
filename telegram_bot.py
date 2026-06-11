@@ -382,9 +382,9 @@ def posting_result_card(
         while lines and lines[-1] == "":
             lines.pop()
         display = compact_text(account_name or account_id, 60)
-        lines.extend(["============", f"Facebook account: {display}"])
+        lines.extend(["============", f"FB account: {display}"])
         if account_id:
-            lines.append(f"Account ID: {compact_text(account_id, 80)}")
+            lines.append(f"ID: {compact_text(account_id, 80)}")
     return "\n".join(lines).rstrip()
 
 
