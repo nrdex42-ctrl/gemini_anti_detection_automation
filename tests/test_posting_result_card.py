@@ -63,7 +63,7 @@ def test_posting_result_card_includes_overall_elapsed_time():
     assert "████" not in card
     assert "Completed: 2026-06-07 08:54 PM" in card
     assert "Total time: 2m 05s" in card
-    assert "Facebook account: Omar Mohamed | ID: 61576466101916" in card
+    assert "============\nFacebook account: Omar Mohamed\nAccount ID: 61576466101916" in card
     assert POSTING_STATUS_SYNC_TEXT in card
     assert "Page status sync" not in card
     assert "Succeeded pages: 2" in card
@@ -78,6 +78,21 @@ def test_posting_result_card_includes_overall_elapsed_time():
     assert "caption accepted" not in card
     assert "image accepted" not in card
     assert "video rejected" not in card
+
+
+def test_posting_result_card_puts_account_footer_after_none_line():
+    card = posting_result_card(
+        [
+            {"page": "Huawei", "success": True, "result": "posted"},
+            {"page": "Oppo", "success": True, "result": "posted"},
+        ],
+        account_name="Omar Mohamed",
+        account_id="61576466101916",
+    )
+
+    expected_footer = "- none\n============\nFacebook account: Omar Mohamed\nAccount ID: 61576466101916"
+    assert expected_footer in card
+    assert card.rsplit("============", 1)[-1].strip() == "Facebook account: Omar Mohamed\nAccount ID: 61576466101916"
 
 
 def test_posting_live_status_card_uses_user_friendly_status_text_instead_of_debug_id():

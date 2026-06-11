@@ -342,12 +342,6 @@ def posting_result_card(
         lines.append(f"Completed: {format_display_datetime(completed_at)}")
     if elapsed_seconds is not None:
         lines.append(f"Total time: {format_elapsed_seconds(elapsed_seconds)}")
-    if account_name or account_id:
-        display = compact_text(account_name or account_id, 60)
-        if account_id:
-            lines.append(f"Facebook account: {display} | ID: {account_id}")
-        else:
-            lines.append(f"Facebook account: {display}")
     lines.append(POSTING_STATUS_SYNC_TEXT)
     lines.append("")
 
@@ -384,6 +378,13 @@ def posting_result_card(
 
     if omitted:
         lines.append(f"… {omitted} more result(s) omitted to keep the Telegram message deliverable.")
+    if account_name or account_id:
+        while lines and lines[-1] == "":
+            lines.pop()
+        display = compact_text(account_name or account_id, 60)
+        lines.extend(["============", f"Facebook account: {display}"])
+        if account_id:
+            lines.append(f"Account ID: {compact_text(account_id, 80)}")
     return "\n".join(lines).rstrip()
 
 
@@ -2667,7 +2668,7 @@ class TelegramBotApp:
             chat_id,
             self.multi_video_caption_prompt(session, prefix=prefix),
             reply_to_message_id,
-            reply_markup=cancel_markup(lang=lang),
+            reply_markup=post_stage_reply_markup("multi_caption", lang=lang),
         )
 
     async def validate_video_url_or_reply(self, chat_id: int, message_id: int, text: str, lang: str = "en") -> str:
@@ -4718,8 +4719,12 @@ class TelegramBotApp:
 
         if action == "post" and step == "multi_caption":
             done_values = {"Done", BUTTON_DONE, "✅ تم", "تم"}
+            skip_values = {"skip", "none", "⏭️ skip", "⏭️ تخطي", "تخطي"}
+            clean_text = text.strip().lower()
             if text.strip() in done_values:
                 session["caption"] = str(session.get("caption_draft") or "")
+            elif clean_text in skip_values:
+                session["caption"] = ""
             else:
                 session["caption"] = "" if not text.strip() else text
             session.pop("caption_draft", None)

@@ -471,6 +471,14 @@ def skip_cancel_markup(lang: str = "en") -> Dict[str, Any]:
     )
 
 
+def multi_caption_markup(lang: str = "en") -> Dict[str, Any]:
+    skip_text = "⏭️ تخطي" if normalize_lang(lang) == "ar" else "⏭️ Skip"
+    return reply_keyboard(
+        [[button_text("back", lang), button_text("cancel", lang), skip_text]],
+        placeholder=tr(lang, "Send caption or tap Skip", "ابعت الكابشن أو اضغط تخطي"),
+    )
+
+
 def cookie_input_markup(lang: str = "en") -> Dict[str, Any]:
     return reply_keyboard(
         [[button_text("done", lang)], [button_text("back", lang), button_text("cancel", lang)]],
@@ -543,7 +551,7 @@ def post_stage_reply_markup(stage: str, lang: str = "en") -> Dict[str, Any]:
             persistent=False,
         )
     if normalized_stage == "multi_caption":
-        return cancel_markup(lang=lang)
+        return multi_caption_markup(lang=lang)
     if normalized_stage == "caption_after_media":
         return skip_cancel_markup(lang=lang)
     return cancel_markup(lang=lang)
