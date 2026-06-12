@@ -111,9 +111,10 @@ FACEBOOK_IMAGE_RETRY_JPEG_ON_REJECTION = (
 )
 MEDIA_DOWNLOAD_TIMEOUT = _env_int('MEDIA_DOWNLOAD_TIMEOUT', 120)
 PAGE_DISCOVERY_TIMEOUT = _env_int('PAGE_DISCOVERY_TIMEOUT', 30)
-PAGE_DISCOVERY_SCROLLS = _env_int('PAGE_DISCOVERY_SCROLLS', 2)
+PAGE_DISCOVERY_SCROLLS = _env_int('PAGE_DISCOVERY_SCROLLS', 4, minimum=0)
 PAGE_DISCOVERY_RESOURCE_BLOCKING = os.getenv('PAGE_DISCOVERY_RESOURCE_BLOCKING', 'true').lower() == 'true'
 PAGE_DISCOVERY_GRAPHQL_WAIT_SECONDS = _env_float('PAGE_DISCOVERY_GRAPHQL_WAIT_SECONDS', 1.2, minimum=0.2)
+PAGE_DISCOVERY_GRAPHQL_SAMPLE_LIMIT = _env_int('PAGE_DISCOVERY_GRAPHQL_SAMPLE_LIMIT', 80, minimum=20)
 PAGE_DISCOVERY_WAIT_UNTIL = os.getenv('PAGE_DISCOVERY_WAIT_UNTIL', 'commit').strip() or 'commit'
 FACEBOOK_POST_TIMEOUT_SECONDS = _env_int('FACEBOOK_POST_TIMEOUT_SECONDS', 180, minimum=60)
 POST_BATCH_PAGE_TIMEOUT_SECONDS = _env_int('POST_BATCH_PAGE_TIMEOUT_SECONDS', 110, minimum=45)
@@ -4587,7 +4588,7 @@ async def discover_facebook_pages(cookies_json: str, proxy_url: str = '') -> Tup
                 if '/graphql' not in lowered_url and 'relay' not in lowered_url:
                     return
                 graphql_sampled += 1
-                if graphql_sampled > 20 and graphql_ready.is_set():
+                if graphql_sampled > PAGE_DISCOVERY_GRAPHQL_SAMPLE_LIMIT and graphql_ready.is_set():
                     return
                 body_text = await response.text()
                 if not body_text or len(body_text) < 80:
@@ -4624,6 +4625,87 @@ async def discover_facebook_pages(cookies_json: str, proxy_url: str = '') -> Tup
                 logger.debug(f'PAGE_DISCOVERY graphql capture skipped: {exc}')
 
         page.on('response', lambda response: asyncio.create_task(_capture_graphql_pages(response)))
+
+        def _merge_discovered_pages(items: List[Dict[str, str]]) -> int:
+            added = 0
+            for item in items or []:
+                if not isinstance(item, dict):
+                    continue
+                url = str(item.get('url') or '').strip()
+                if not url:
+                    continue
+                if url not in discovered:
+                    added += 1
+                discovered[url] = item
+            return added
+
+        async def _wait_for_graphql_growth(previous_count: int) -> bool:
+            deadline = asyncio.get_running_loop().time() + PAGE_DISCOVERY_GRAPHQL_WAIT_SECONDS
+            while asyncio.get_running_loop().time() < deadline:
+                if len(graphql_pages) > previous_count:
+                    return True
+                await asyncio.sleep(0.1)
+            return len(graphql_pages) > previous_count
+
+        async def _collect_discovery_sources(stage: str, include_links: bool = False) -> int:
+            extract_started = asyncio.get_running_loop().time()
+            before = len(discovered)
+            graphql_added = _merge_discovered_pages(graphql_pages) if graphql_pages else 0
+            try:
+                card_items = await _extract_page_cards(page)
+            except Exception as exc:
+                logger.debug(f'PAGE_DISCOVERY card extraction skipped: {exc}')
+                card_items = []
+            card_added = _merge_discovered_pages(card_items)
+            link_added = 0
+            if include_links and not discovered:
+                try:
+                    link_items = await _extract_page_links(page)
+                except Exception as exc:
+                    logger.debug(f'PAGE_DISCOVERY link extraction skipped: {exc}')
+                    link_items = []
+                link_added = _merge_discovered_pages(link_items)
+            total_added = len(discovered) - before
+            logger.info(
+                f'PAGE_DISCOVERY stage="{stage}" added={total_added} total={len(discovered)} '
+                f'graphql_added={graphql_added} card_added={card_added} link_added={link_added} '
+                f'hits={graphql_debug_hits} elapsed={asyncio.get_running_loop().time() - extract_started:.1f}s'
+            )
+            return total_added
+
+        async def _scroll_page_discovery_view(scroll_index: int) -> None:
+            try:
+                await page.evaluate(
+                    """
+                    index => {
+                        const amount = Math.max(900, Math.floor((window.innerHeight || 800) * 1.5));
+                        const candidates = Array.from(document.querySelectorAll('[role="main"], div'))
+                            .filter(el => {
+                                try {
+                                    return el.scrollHeight && el.clientHeight && el.scrollHeight > el.clientHeight + 40;
+                                } catch (_) {
+                                    return false;
+                                }
+                            })
+                            .sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight));
+                        for (const el of candidates.slice(0, 5)) {
+                            try {
+                                el.scrollTop = Math.min(el.scrollHeight, el.scrollTop + amount);
+                            } catch (_) {}
+                        }
+                        window.scrollBy(0, amount);
+                        if (index > 0 && document.scrollingElement) {
+                            document.scrollingElement.scrollTop = Math.min(
+                                document.scrollingElement.scrollHeight,
+                                document.scrollingElement.scrollTop + amount
+                            );
+                        }
+                    }
+                    """,
+                    scroll_index,
+                )
+            except Exception as exc:
+                logger.debug(f'PAGE_DISCOVERY scroll skipped: {exc}')
 
         for discovery_url in _PAGE_DISCOVERY_URLS:
             try:
@@ -4662,49 +4744,28 @@ async def discover_facebook_pages(cookies_json: str, proxy_url: str = '') -> Tup
                 diagnostic_path = await _save_diagnostics(page, 'page_discovery_security_checkpoint')
                 return False, [], _with_diagnostic(security_detail, diagnostic_path)
 
-            # Prefer GraphQL-captured pages first; fall back to DOM only if needed.
-            page_count_before = len(discovered)
-            extract_started = asyncio.get_running_loop().time()
-            if graphql_pages:
-                for item in graphql_pages:
-                    discovered[item['url']] = item
-                logger.info(
-                    f'PAGE_DISCOVERY stage="graphql_used" added={len(discovered) - page_count_before} '
-                    f'total={len(discovered)} hits={graphql_debug_hits}'
-                )
-            else:
-                for item in await _extract_page_cards(page):
-                    discovered[item['url']] = item
-                logger.info(
-                    f'PAGE_DISCOVERY stage="extract_cards" added={len(discovered) - page_count_before} '
-                    f'total={len(discovered)} elapsed={asyncio.get_running_loop().time() - extract_started:.1f}s'
-                )
+            await _collect_discovery_sources('extract_initial', include_links=False)
 
-            # Fallback: one limited scroll pass, still using only stable labels.
-            if len(discovered) < 2:
-                extract_started = asyncio.get_running_loop().time()
-                page_count_before = len(discovered)
-                if graphql_pages:
-                    for item in graphql_pages:
-                        discovered[item['url']] = item
-                else:
-                    for item in await _extract_page_cards(page):
-                        discovered[item['url']] = item
-                    if not discovered:
-                        for item in await _extract_page_links(page):
-                            discovered[item['url']] = item
-                if len(discovered) > page_count_before:
-                    logger.info(
-                        f'PAGE_DISCOVERY stage="extract" added={len(discovered) - page_count_before} '
-                        f'total={len(discovered)} elapsed={asyncio.get_running_loop().time() - extract_started:.1f}s'
-                    )
-                await page.evaluate('window.scrollBy(0, document.body.scrollHeight)')
+            empty_scrolls = 0
+            for scroll_index in range(PAGE_DISCOVERY_SCROLLS):
+                before_scroll_count = len(discovered)
+                before_graphql_count = len(graphql_pages)
+                await _scroll_page_discovery_view(scroll_index)
+                await _wait_for_graphql_growth(before_graphql_count)
                 await _smart_wait(
                     lambda: page.evaluate('document.readyState === "complete"'),
                     timeout_ms=300,
                     check_interval_ms=100,
                 )
-                if len(discovered) >= 2:
+                added = await _collect_discovery_sources(
+                    f'extract_scroll_{scroll_index + 1}',
+                    include_links=not discovered,
+                )
+                if len(discovered) <= before_scroll_count and added <= 0:
+                    empty_scrolls += 1
+                else:
+                    empty_scrolls = 0
+                if discovered and empty_scrolls >= 2:
                     break
 
             if discovered:
