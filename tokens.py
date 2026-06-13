@@ -10,7 +10,10 @@ from .utils import canonical_json, maybe_await, stable_hash
 
 
 class TokenVault:
-    TOKEN_TTL_SECONDS = 240
+    # Playwright cookie session is refreshed every ~30 min by SessionHeartbeatManager.
+    # Keep the vault TTL at 25 min so the local cache stays valid between
+    # refresh cycles without forcing unnecessary Playwright re-extractions.
+    TOKEN_TTL_SECONDS = 1500  # 25 minutes
 
     def __init__(self, redis_client: Any):
         self.redis = redis_client
@@ -22,18 +25,31 @@ class TokenVault:
     async def get(self, account_id: str) -> Optional[Dict[str, Any]]:
         now = time.time()
         local = self._local_cache.get(account_id)
-        if local and now - float(local.get('timestamp') or 0) <= self.TOKEN_TTL_SECONDS:
+        if (
+            local
+            and isinstance(local, dict)
+            and local.get('fb_dtsg')
+            and local.get('lsd')
+            and now - float(local.get('timestamp') or 0) <= self.TOKEN_TTL_SECONDS
+        ):
             return dict(local)
         raw = await maybe_await(self.redis.get(self._key(account_id))) if self.redis is not None else None
         if not raw:
             return None
         if isinstance(raw, bytes):
             raw = raw.decode('utf-8', errors='ignore')
-        parsed = json.loads(str(raw))
-        if now - float(parsed.get('timestamp') or 0) > self.TOKEN_TTL_SECONDS:
+        try:
+            parsed = json.loads(str(raw))
+            if not isinstance(parsed, dict):
+                return None
+            if not parsed.get('fb_dtsg') or not parsed.get('lsd'):
+                return None
+            if now - float(parsed.get('timestamp') or 0) > self.TOKEN_TTL_SECONDS:
+                return None
+            self._local_cache[account_id] = dict(parsed)
+            return dict(parsed)
+        except Exception:
             return None
-        self._local_cache[account_id] = dict(parsed)
-        return dict(parsed)
 
     async def set(self, account_id: str, tokens: Dict[str, Any]) -> None:
         payload = dict(tokens)
@@ -65,7 +81,10 @@ class TokenVault:
             raw_usage = await maybe_await(self.redis.get(f'{self._key(account_id)}:usage'))
             if raw_usage:
                 usage = int(raw_usage)
-        return age > 180 or usage > 20
+        # Use TOKEN_TTL_SECONDS as the age threshold so this aligns with the
+        # heartbeat refresh cycle (30 min) and the token vault expiry (25 min).
+        # Usage limit aligned with TokenRotationPolicy.MUTATION_COUNT_LIMIT (50).
+        return age > self.TOKEN_TTL_SECONDS or usage > 50
 
     def _hash_tokens(self, tokens: Dict[str, Any]) -> str:
         filtered = {key: value for key, value in tokens.items() if key not in {'token_hash', 'usage_count'}}

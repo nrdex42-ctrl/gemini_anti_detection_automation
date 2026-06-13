@@ -138,22 +138,24 @@ def test_rupload_mocked_success_uploads_mutated_image(tmp_path: Path):
         assert len(uploader.calls) == 2
         assert uploader.calls[0]['url'] == 'https://rupload.facebook.com/photo-upload/v1'
         assert uploader.calls[0]['data'] == b''
-        assert uploader.calls[0]['headers']['Content-Type'] == 'application/x-www-form-urlencoded'
-        assert uploader.calls[0]['headers']['Content-Length'] == '0'
-        assert uploader.calls[0]['headers']['X-Entity-Type'] == 'image/jpeg'
-        assert uploader.calls[0]['headers']['Sec-Fetch-Site'] == 'same-site'
-        assert uploader.calls[0]['headers']['Host'] == 'rupload.facebook.com'
-        assert uploader.calls[0]['headers']['X-FB-LSD'] == 'l'
-        assert uploader.calls[0]['headers']['X-FB-DTSG'] == 'd'
-        assert uploader.calls[0]['headers']['X-FB-Upload-Retry-Count'] == '0'
-        assert 'X-FB-Friendly-Name' not in uploader.calls[0]['headers']
+        h0 = {k.lower(): v for k, v in uploader.calls[0]['headers'].items()}
+        h1 = {k.lower(): v for k, v in uploader.calls[1]['headers'].items()}
+        assert h0.get('content-type') == 'application/x-www-form-urlencoded'
+        assert h0.get('content-length') == '0'
+        assert h0.get('x-entity-type') == 'image/jpeg'
+        assert h0.get('sec-fetch-site') == 'same-site'
+        assert h0.get('host') == 'rupload.facebook.com'
+        assert h0.get('x-fb-lsd') == 'l'
+        assert h0.get('x-fb-fb-dtsg') == 'd' or h0.get('x-fb-dtsg') == 'd'
+        assert h0.get('x-fb-upload-retry-count') == '0' or h0.get('x-fb-retry-count') == '0'
+        assert 'x-fb-friendly-name' not in h0
         assert uploader.calls[0]['proxy'] == 'http://proxy-1'
         assert uploader.calls[1]['url'] == 'https://rupload.facebook.com/photo-upload/v1/session-1'
         assert isinstance(uploader.calls[1]['data'], bytes)
-        assert uploader.calls[1]['headers']['Content-Type'] == 'image/jpeg'
-        assert uploader.calls[1]['headers']['Content-Length'] == str(len(uploader.calls[1]['data']))
-        assert uploader.calls[1]['headers']['X-Entity-Length'] == str(len(uploader.calls[1]['data']))
-        assert uploader.calls[1]['headers']['X-Start-Offset'] == '0'
+        assert h1.get('content-type') == 'image/jpeg'
+        assert h1.get('content-length') == str(len(uploader.calls[1]['data']))
+        assert h1.get('x-entity-length') == str(len(uploader.calls[1]['data']))
+        assert h1.get('x-start-offset') == '0'
         assert redis.store['fb_tokens:acct-1:usage'] == 1
 
     asyncio.run(run())

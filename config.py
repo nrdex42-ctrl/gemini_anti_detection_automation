@@ -49,10 +49,11 @@ class AppConfig(BaseSettings):  # type: ignore[misc]
     log_level: str = os.environ.get('LOG_LEVEL', 'INFO')
     worker_concurrency: int = _env_int('WORKER_CONCURRENCY', 4)
     worker_poll_interval_seconds: float = _env_float('WORKER_POLL_INTERVAL_SECONDS', 1.0)
-    enable_browser_fallback: bool = _env_bool('ENABLE_BROWSER_FALLBACK', True)
+    enable_browser_fallback: bool = _env_bool('ENABLE_BROWSER_FALLBACK', False)
     browser_fallback_errors: List[str] = ['TOKEN_EXPIRED', 'RUPLOAD_FAILED']
     max_browser_fallback_ratio: float = _env_float('MAX_BROWSER_FALLBACK_RATIO', 0.1)
-    enable_private_facebook_http: bool = _env_bool('FB_AUTOMATION_ENABLE_PRIVATE_HTTP', False)
+    enable_private_facebook_http: bool = _env_bool('FB_AUTOMATION_ENABLE_PRIVATE_HTTP', True)
+    require_proxy: bool = _env_bool('FB_AUTOMATION_REQUIRE_PROXY', True)
 
     if SettingsConfigDict is not None:
         model_config = SettingsConfigDict(env_prefix='', extra='ignore')
@@ -70,13 +71,14 @@ class AppConfig(BaseSettings):  # type: ignore[misc]
                 'log_level': os.environ.get('LOG_LEVEL', 'INFO'),
                 'worker_concurrency': _env_int('WORKER_CONCURRENCY', 4),
                 'worker_poll_interval_seconds': _env_float('WORKER_POLL_INTERVAL_SECONDS', 1.0),
-                'enable_browser_fallback': _env_bool('ENABLE_BROWSER_FALLBACK', True),
+                'enable_browser_fallback': _env_bool('ENABLE_BROWSER_FALLBACK', False),
                 'browser_fallback_errors': kwargs.get(
                     'browser_fallback_errors',
                     _env_list('BROWSER_FALLBACK_ERRORS') or ['TOKEN_EXPIRED', 'RUPLOAD_FAILED'],
                 ),
                 'max_browser_fallback_ratio': _env_float('MAX_BROWSER_FALLBACK_RATIO', 0.1),
-                'enable_private_facebook_http': _env_bool('FB_AUTOMATION_ENABLE_PRIVATE_HTTP', False),
+                'enable_private_facebook_http': _env_bool('FB_AUTOMATION_ENABLE_PRIVATE_HTTP', True),
+                'require_proxy': _env_bool('FB_AUTOMATION_REQUIRE_PROXY', True),
             }.items():
                 setattr(self, key, kwargs.get(key, value))
         else:
@@ -131,7 +133,7 @@ class EthicalGuardrails:
         media_path: Optional[str] = None,
     ) -> Tuple[bool, str]:
         text = str(caption or '').strip()
-        if len(text) < 3:
+        if not media_path and len(text) < 3:
             return False, 'content too short'
         if len(text) > 5000:
             return False, 'caption exceeds 5000 characters'

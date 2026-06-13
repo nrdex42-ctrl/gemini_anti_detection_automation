@@ -1,4 +1,4 @@
-"""Guarded image upload client.
+"""Guarded image and video upload client.
 
 The private Facebook HTTP upload path is disabled by default. This module keeps
 validation/mutation/test seams available without making private endpoint calls
@@ -16,19 +16,17 @@ import os
 import random
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, cast
+from typing import Any, Dict, Optional, Tuple
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from .config import AppConfig, SafetyConfig
 from .models import IdentityContext
-from .network import ProxyManager, StealthConnector
-from .header_forge import AdvancedHeaderForge
+from .network import HeaderForge, ProxyManager, StealthConnector
 from .timing import StochasticTimer
 from .tokens import TokenVault
 from .utils import classify_error, generate_client_id
-
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +37,9 @@ class PrivateEndpointDisabled(RuntimeError):
 
 _PHOTO_INIT_URL = 'https://rupload.facebook.com/photo-upload/v1'
 _PHOTO_TRANSFER_URL = 'https://rupload.facebook.com/photo-upload/v1/{session_id}'
+
+_VIDEO_INIT_URL = 'https://rupload.facebook.com/video-upload/v1'
+_VIDEO_TRANSFER_URL = 'https://rupload.facebook.com/video-upload/v1/{session_id}'
 
 
 class HardenedRupload:
@@ -68,8 +69,23 @@ class HardenedRupload:
         try:
             mutated_path, image_bytes = self._mutate_and_encode(image_path)
             tokens = await self.tokens.get(self.identity.account_id)
-            if not tokens:
+            if not tokens or not isinstance(tokens, dict) or not tokens.get('fb_dtsg') or not tokens.get('lsd'):
                 return False, None, 'TOKEN_EXPIRED'
+
+            # Use the live (most recently refreshed) cookie header so xs is current
+            tokens = dict(tokens)
+            try:
+                from .session_heartbeat import get_live_cookie_header
+                live_header = await get_live_cookie_header(
+                    self.identity.account_id,
+                    self.tokens,
+                    self.redis,
+                    fallback_cookie_header=str(tokens.get('cookie_header') or ''),
+                )
+                if live_header:
+                    tokens['cookie_header'] = live_header
+            except Exception as _lh_exc:
+                logger.debug('rupload: get_live_cookie_header skipped: %s', _lh_exc)
 
             proxy_url = await self.proxy.get_proxy_for_account(self.identity.account_id)
             await self._sleep(StochasticTimer.think_time(200, 800))
@@ -102,6 +118,167 @@ class HardenedRupload:
                     os.unlink(mutated_path)
                 except OSError:
                     pass
+
+    async def upload_video(self, video_path: str) -> Tuple[bool, Optional[str], str]:
+        if not self.config.enable_private_facebook_http:
+            return False, None, 'Private Facebook HTTP upload is disabled by configuration.'
+        if not self._validate_video(video_path):
+            return False, None, 'Video validation failed.'
+
+        proxy_url = ''
+        try:
+            with open(video_path, 'rb') as f:
+                video_bytes = f.read()
+
+            tokens = await self.tokens.get(self.identity.account_id)
+            if not tokens or not isinstance(tokens, dict) or not tokens.get('fb_dtsg') or not tokens.get('lsd'):
+                return False, None, 'TOKEN_EXPIRED'
+
+            # Use the live (most recently refreshed) cookie header so xs is current
+            tokens = dict(tokens)
+            try:
+                from .session_heartbeat import get_live_cookie_header
+                live_header = await get_live_cookie_header(
+                    self.identity.account_id,
+                    self.tokens,
+                    self.redis,
+                    fallback_cookie_header=str(tokens.get('cookie_header') or ''),
+                )
+                if live_header:
+                    tokens['cookie_header'] = live_header
+            except Exception as _lh_exc:
+                logger.debug('rupload: get_live_cookie_header skipped: %s', _lh_exc)
+
+            proxy_url = await self.proxy.get_proxy_for_account(self.identity.account_id)
+            await self._sleep(StochasticTimer.think_time(200, 800))
+
+            session_id, init_detail = await self._rupload_video_init(
+                tokens,
+                video_bytes,
+                proxy_url,
+            )
+            if not session_id:
+                return False, None, init_detail
+
+            media_fbid, transfer_detail = await self._rupload_video_transfer(
+                tokens,
+                video_bytes,
+                session_id,
+                proxy_url,
+            )
+            if not media_fbid:
+                return False, None, transfer_detail
+
+            await self.tokens.increment_usage(self.identity.account_id)
+            return True, str(media_fbid), 'Success'
+        except Exception as exc:
+            await self.proxy.report_failure(self.identity.account_id, proxy_url, str(exc))
+            return False, None, f'Exception: {str(exc)[:200]}'
+
+    def _validate_video(self, path: str) -> bool:
+        try:
+            size = os.path.getsize(path)
+            if size < 1024 or size > 100 * 1024 * 1024:
+                logger.warning(
+                    'Video validation failed for %s: size %s outside allowed range',
+                    path,
+                    size,
+                )
+                return False
+            return os.path.exists(path) and (path.lower().endswith('.mp4') or path.lower().endswith('.mov'))
+        except Exception as exc:
+            logger.warning('Video validation failed for %s: %s', path, exc)
+            return False
+
+    @staticmethod
+    def _video_entity_name(video_bytes: bytes) -> str:
+        return f'fb_vid_{hashlib.md5(video_bytes[:128]).hexdigest()[:12]}.mp4'
+
+    def _rupload_video_headers(
+        self,
+        tokens: Dict[str, Any],
+        video_bytes: bytes,
+        *,
+        init_request: bool,
+    ) -> Dict[str, str]:
+        content_length = len(video_bytes)
+        entity_name = self._video_entity_name(video_bytes)
+        headers = HeaderForge.forge_rupload_headers(tokens, self.identity, content_length, offset=0)
+        updates = {
+            'Content-Type': 'application/x-www-form-urlencoded' if init_request else 'video/mp4',
+            'Content-Length': '0' if init_request else str(content_length),
+            'X-Entity-Length': str(content_length),
+            'X-Entity-Type': 'video/mp4',
+            'X-Entity-Name': entity_name,
+            'X-Attempts-Count': '1',
+        }
+        cookie_header = str(tokens.get('cookie_header') or '').strip()
+        if cookie_header:
+            updates['Cookie'] = cookie_header
+        if not init_request:
+            updates['X-Start-Offset'] = '0'
+        return self._headers_with_updates(headers, updates)
+
+    async def _rupload_video_init(
+        self,
+        tokens: Dict[str, Any],
+        video_bytes: bytes,
+        proxy_url: str,
+    ) -> Tuple[Optional[str], str]:
+        headers = self._rupload_video_headers(tokens, video_bytes, init_request=True)
+        init_status, init_text = await self._post_form(
+            _VIDEO_INIT_URL,
+            b'',
+            headers,
+            proxy_url,
+            timeout_seconds=15,
+        )
+        if init_status >= 400:
+            detail = self._error_detail_from_text(init_text)
+            return None, f'RUPLOAD_INIT_HTTP_{init_status}: {detail or init_text[:300]}'
+        try:
+            init_data = self._loads_json(init_text)
+        except Exception:
+            return None, f'RUPLOAD_INIT_PARSE_FAILED: {init_text[:300]}'
+        session_id = None
+        if isinstance(init_data, dict):
+            session_id = init_data.get('upload_session_id') or init_data.get('h')
+        if not session_id:
+            detail = self._extract_error_detail(init_data)
+            return None, f'RUPLOAD_INIT_FAILED: {detail or self._response_excerpt(init_data)}'
+        return str(session_id), ''
+
+    async def _rupload_video_transfer(
+        self,
+        tokens: Dict[str, Any],
+        video_bytes: bytes,
+        session_id: str,
+        proxy_url: str,
+    ) -> Tuple[Optional[str], str]:
+        headers = self._rupload_video_headers(tokens, video_bytes, init_request=False)
+        result_status, result_text = await self._post_form(
+            _VIDEO_TRANSFER_URL.format(session_id=session_id),
+            video_bytes,
+            headers,
+            proxy_url,
+            timeout_seconds=90,
+        )
+        if result_status >= 400:
+            detail = self._error_detail_from_text(result_text)
+            return None, f'RUPLOAD_TRANSFER_HTTP_{result_status}: {detail or result_text[:300]}'
+        try:
+            result = self._loads_json(result_text)
+        except Exception:
+            return None, f'RUPLOAD_TRANSFER_PARSE_FAILED: {result_text[:300]}'
+        media_fbid = (
+            result.get('fbid') or result.get('media_fbid')
+            if isinstance(result, dict)
+            else None
+        )
+        if not media_fbid:
+            detail = self._extract_error_detail(result)
+            return None, f'{classify_error(detail or result_text)}: {detail or self._response_excerpt(result)}'
+        return str(media_fbid), ''
 
     def _validate_image(self, path: str) -> bool:
         try:
@@ -144,8 +321,7 @@ class HardenedRupload:
             raise RuntimeError(f'Pillow is required for image mutation: {exc}') from exc
 
         with Image.open(path) as original:
-            transposed = ImageOps.exif_transpose(original)
-            image = cast(Any, transposed if transposed is not None else original).copy()
+            image = ImageOps.exif_transpose(original)
             if image.mode in {'RGBA', 'LA'} or (image.mode == 'P' and 'transparency' in image.info):
                 rgba = image.convert('RGBA')
                 flattened = Image.new('RGB', rgba.size, (255, 255, 255))
@@ -163,17 +339,10 @@ class HardenedRupload:
         if (new_width, new_height) != image.size:
             image = image.resize((new_width, new_height), resampling)
 
-        pixels = cast(Any, image.load())
-        if pixels is None:
-            raise RuntimeError('Mutated JPEG pixel access is unavailable.')
+        pixels = image.load()
         x = random.randint(0, max(0, image.width - 1))
         y = random.randint(0, max(0, image.height - 1))
-        pixel = pixels[x, y]
-        if isinstance(pixel, tuple):
-            channels = list(pixel) + [0, 0, 0]
-            red, green, blue = int(channels[0]), int(channels[1]), int(channels[2])
-        else:
-            red = green = blue = int(pixel)
+        red, green, blue = pixels[x, y]
         pixels[x, y] = (
             max(0, min(255, red + random.randint(-2, 2))),
             max(0, min(255, green + random.randint(-2, 2))),
@@ -226,16 +395,7 @@ class HardenedRupload:
     ) -> Dict[str, str]:
         content_length = len(image_bytes)
         entity_name = self._entity_name(image_bytes)
-        
-        forge = AdvancedHeaderForge(
-            chrome_version=self.identity.chrome_version,
-            user_agent=self.identity.user_agent,
-            platform=self.identity.platform,
-            locale=self.identity.locale,
-        )
-        
-        cookie_header = str(tokens.get('cookie_header') or '').strip() or None
-        
+        headers = HeaderForge.forge_rupload_headers(tokens, self.identity, content_length, offset=0)
         updates = {
             'Content-Type': 'application/x-www-form-urlencoded' if init_request else 'image/jpeg',
             'Content-Length': '0' if init_request else str(content_length),
@@ -244,16 +404,12 @@ class HardenedRupload:
             'X-Entity-Name': entity_name,
             'X-Attempts-Count': '1',
         }
+        cookie_header = str(tokens.get('cookie_header') or '').strip()
+        if cookie_header:
+            updates['Cookie'] = cookie_header
         if not init_request:
             updates['X-Start-Offset'] = '0'
-            
-        return forge.build_rupload_headers(
-            tokens=tokens,
-            file_size=content_length,
-            offset=0,
-            cookies=cookie_header,
-            extra=updates,
-        )
+        return self._headers_with_updates(headers, updates)
 
     async def _rupload_init(
         self,
@@ -270,7 +426,8 @@ class HardenedRupload:
             timeout_seconds=15,
         )
         if init_status >= 400:
-            return None, f'RUPLOAD_INIT_HTTP_{init_status}: {init_text[:300]}'
+            detail = self._error_detail_from_text(init_text)
+            return None, f'RUPLOAD_INIT_HTTP_{init_status}: {detail or init_text[:300]}'
         try:
             init_data = self._loads_json(init_text)
         except Exception:
@@ -279,7 +436,8 @@ class HardenedRupload:
         if isinstance(init_data, dict):
             session_id = init_data.get('upload_session_id') or init_data.get('h')
         if not session_id:
-            return None, f'RUPLOAD_INIT_FAILED: {init_text[:300]}'
+            detail = self._extract_error_detail(init_data)
+            return None, f'RUPLOAD_INIT_FAILED: {detail or self._response_excerpt(init_data)}'
         return str(session_id), ''
 
     async def _rupload_transfer(
@@ -298,7 +456,8 @@ class HardenedRupload:
             timeout_seconds=45,
         )
         if result_status >= 400:
-            return None, f'RUPLOAD_TRANSFER_HTTP_{result_status}: {result_text[:300]}'
+            detail = self._error_detail_from_text(result_text)
+            return None, f'RUPLOAD_TRANSFER_HTTP_{result_status}: {detail or result_text[:300]}'
         try:
             result = self._loads_json(result_text)
         except Exception:
@@ -309,7 +468,8 @@ class HardenedRupload:
             else None
         )
         if not media_fbid:
-            return None, f'{classify_error(result_text)}: {result_text[:300]}'
+            detail = self._extract_error_detail(result)
+            return None, f'{classify_error(detail or result_text)}: {detail or self._response_excerpt(result)}'
         return str(media_fbid), ''
 
     def build_upload_init_payload(
@@ -350,49 +510,26 @@ class HardenedRupload:
         proxy: str,
         timeout_seconds: int,
     ) -> Tuple[int, str]:
-        # 1. Attempt to use StealthConnector (TLS fingerprint protection)
         try:
-            from .stealth_connector import get_stealth_connector
-            stealth_conn = get_stealth_connector()
-        except ImportError:
-            stealth_conn = None
-
-        if stealth_conn is not None:
-            try:
-                session = stealth_conn.get_http_session(proxy_url=proxy or None)
-                def _do_post() -> Tuple[int, str]:
-                    post_data = data
-                    req_headers = {str(k): str(v) for k, v in headers.items()}
-                    response = cast(
-                        Any,
-                        session.post(url, data=post_data, headers=req_headers, timeout=timeout_seconds),
-                    )
-                    return int(response.status_code), str(response.text)
-
-                loop = asyncio.get_running_loop()
-                return await loop.run_in_executor(None, _do_post)
-            except Exception as exc:
-                logger.warning(f"Failed to post via stealth connector: {exc}. Falling back to default HTTP client.")
-
-        # 2. Fallback to default asynchronous client (aiohttp)
-        try:
-            import aiohttp  # type: ignore[reportMissingImports]
+            import aiohttp
         except Exception:
             aiohttp = None
 
         if aiohttp is not None:
             connector = StealthConnector.create_connector()
+            cleaned_headers = dict(headers)
+            cleaned_headers['Accept-Encoding'] = 'gzip, deflate'
+            cleaned_headers['accept-encoding'] = 'gzip, deflate'
             async with aiohttp.ClientSession(connector=connector, trust_env=True) as session:
                 async with session.post(
                     url,
                     data=data,
-                    headers=headers,
+                    headers=cleaned_headers,
                     proxy=proxy or None,
                     timeout=aiohttp.ClientTimeout(total=timeout_seconds),
                 ) as resp:
                     return int(resp.status), await resp.text()
 
-        # 3. Fallback to synchronous standard library client (urllib)
         def _sync_post() -> Tuple[int, str]:
             request_headers = dict(headers)
             request_headers['accept-encoding'] = 'identity'
@@ -417,17 +554,95 @@ class HardenedRupload:
             except urllib_error.HTTPError as exc:
                 return int(exc.code), exc.read().decode('utf-8', errors='replace')
 
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _sync_post)
+        return await asyncio.to_thread(_sync_post)
 
     @staticmethod
     def _loads_json(text: str) -> Any:
+        cleaned = HardenedRupload._strip_json_prefix(text)
+        if not cleaned:
+            return {}
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            for line in cleaned.splitlines():
+                candidate = HardenedRupload._strip_json_prefix(line)
+                if candidate.startswith(('{', '[')):
+                    return json.loads(candidate)
+            raise
+
+    @staticmethod
+    def _strip_json_prefix(text: str) -> str:
         cleaned = str(text or '').strip()
         if cleaned.startswith('for(;;);'):
             cleaned = cleaned[len('for(;;);'):].strip()
         if cleaned.startswith('for (;;);'):
             cleaned = cleaned[len('for (;;);'):].strip()
-        return json.loads(cleaned or '{}')
+        return cleaned
+
+    @staticmethod
+    def _extract_error_detail(value: Any) -> str:
+        direct_keys = (
+            'errorSummary',
+            'error_summary',
+            'errorDescription',
+            'error_description',
+            'message',
+            'summary',
+            'description',
+        )
+
+        def _walk(item: Any, depth: int = 0) -> List[str]:
+            if depth > 5:
+                return []
+            if isinstance(item, dict):
+                parts: List[str] = []
+                error_type = str(item.get('type') or item.get('errorType') or '').strip()
+                error_code = item.get('error') or item.get('code') or item.get('error_code')
+                if error_type:
+                    parts.append(error_type)
+                if error_code:
+                    parts.append(f'error={error_code}')
+                for key in direct_keys:
+                    candidate = item.get(key)
+                    if isinstance(candidate, str) and candidate.strip():
+                        parts.append(candidate.strip())
+                for key in ('debug_info', 'error', 'errors', 'payload', 'data'):
+                    if key in item:
+                        parts.extend(_walk(item.get(key), depth + 1))
+                return parts
+            if isinstance(item, list):
+                parts = []
+                for child in item[:5]:
+                    parts.extend(_walk(child, depth + 1))
+                return parts
+            if isinstance(item, str) and item.strip():
+                return [item.strip()]
+            return []
+
+        seen = set()
+        details = []
+        for detail in _walk(value):
+            detail = ' '.join(str(detail).split())
+            if detail and detail not in seen:
+                seen.add(detail)
+                details.append(detail)
+            if len(details) >= 4:
+                break
+        return '; '.join(details)
+
+    @classmethod
+    def _error_detail_from_text(cls, text: str) -> str:
+        try:
+            return cls._extract_error_detail(cls._loads_json(text))
+        except Exception:
+            return ''
+
+    @staticmethod
+    def _response_excerpt(value: Any) -> str:
+        try:
+            return json.dumps(value, ensure_ascii=False, separators=(',', ':'))[:300]
+        except Exception:
+            return str(value)[:300]
 
     @staticmethod
     async def _sleep(seconds: float) -> None:

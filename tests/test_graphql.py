@@ -134,7 +134,8 @@ def test_graphql_mocked_success_records_idempotency_and_usage():
                 )
             ],
         )
-        ok, status, post_id = await poster.post_to_page('page-1', 'valid caption')
+        ok, status, post_id = await poster.post_to_page('12345', 'valid caption')
+        print(f"DEBUG: ok={ok}, status={status}, post_id={post_id}")
         assert ok
         assert status == 'SUCCESS'
         assert post_id == 'post-123'
@@ -163,7 +164,7 @@ def test_graphql_mocked_checkpoint_quarantines_and_releases_idempotency():
             AppConfig(enable_private_facebook_http=True),
             responses=[(200, json.dumps({'errors': [{'message': 'security checkpoint required'}]}))],
         )
-        ok, status, post_id = await poster.post_to_page('page-1', 'valid caption')
+        ok, status, post_id = await poster.post_to_page('12345', 'valid caption')
         assert not ok
         assert status == 'SECURITY_CHECKPOINT'
         assert post_id is None
@@ -171,3 +172,80 @@ def test_graphql_mocked_checkpoint_quarantines_and_releases_idempotency():
         assert not [key for key, value in redis.store.items() if key.startswith('fb_post_idemp:') and value == 'PENDING']
 
     asyncio.run(run())
+
+
+def test_graphql_prefixed_facebook_error_envelope_is_parsed_as_failure():
+    async def run():
+        redis = FakeRedis()
+        identity = IdentityContext(account_id='acct-1', proxy_url='http://proxy-1', facebook_user_id='user-1')
+        vault = TokenVault(redis)
+        await vault.set('acct-1', {'fb_dtsg': 'd', 'lsd': 'l', 'user_id': 'user-1'})
+        await redis.set('fb_graphql_doc_id', 'doc-1')
+        poster = MockGraphQLPoster(
+            vault,
+            identity,
+            redis,
+            ProxyManager(['http://proxy-1'], redis),
+            AppConfig(enable_private_facebook_http=True),
+            responses=[
+                (
+                    200,
+                    'for (;;);{"__ar":1,"error":1357004,'
+                    '"errorSummary":"Sorry, something went wrong",'
+                    '"errorDescription":"Please try closing and re-opening your browser window.",'
+                    '"payload":null}',
+                )
+            ],
+        )
+        ok, status, post_id = await poster.post_to_page('12345', 'valid caption')
+        assert not ok
+        assert post_id is None
+        assert status.startswith('GRAPHQL_ERROR: FACEBOOK_ERROR_1357004')
+        assert 'NON_JSON_RESPONSE' not in status
+        assert 'fb_tokens:acct-1:usage' not in redis.store
+
+    asyncio.run(run())
+
+
+def test_graphql_nested_error_and_alternate_post_id_shapes():
+    poster = HardenedGraphQLPoster(
+        TokenVault(None),
+        IdentityContext(account_id='acct-1', proxy_url=''),
+        None,
+        ProxyManager([], None, require_proxy=False),
+        AppConfig(enable_private_facebook_http=False),
+    )
+
+    assert poster._extract_post_id({
+        'payload': {
+            'story': {'legacy_story_hideable_id': 'post-nested'}
+        }
+    }) == 'post-nested'
+    assert poster._extract_post_id({
+        'data': {
+            'some_wrapper': {
+                'story_id': 'story-nested'
+            }
+        }
+    }) == 'story-nested'
+    assert poster._extract_response_error({
+        'data': {
+            'mutation': {
+                'errorSummary': 'Nested Facebook error',
+                'errorDescription': 'Try again later',
+            }
+        }
+    }) == 'Nested Facebook error: Try again later'
+
+
+def test_graphql_loader_handles_no_space_prefix_and_multiline_payload():
+    poster = HardenedGraphQLPoster(
+        TokenVault(None),
+        IdentityContext(account_id='acct-1', proxy_url=''),
+        None,
+        ProxyManager([], None, require_proxy=False),
+        AppConfig(enable_private_facebook_http=False),
+    )
+
+    assert poster._loads_json('for(;;);{"data":{"post_id":"post-1"}}')['data']['post_id'] == 'post-1'
+    assert poster._loads_json('noise\nfor(;;);{"data":{"post_id":"post-2"}}')['data']['post_id'] == 'post-2'

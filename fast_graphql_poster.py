@@ -1,130 +1,241 @@
-"""Fast HTTP/GraphQL batch posting orchestration interface.
-
-Bridges the Playwright engine routing with the HardenedGraphQLPoster and HardenedRupload
-APIs. Integrates pre-flight safety checks, proxy sticky routing, token extraction, and 
-fails back to Playwright if needed.
-"""
+"""Bridge between playwright_engine and http_worker."""
 
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+import os
+import time
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from .config import AppConfig
-from .models import IdentityContext
-from .tokens import TokenVault
-from .network import ProxyManager
-from .graphql_poster import HardenedGraphQLPoster
-from .rupload import HardenedRupload
-from .identity import IdentityRegistry
-from .facebook_cookie_parser import parse_account_cookie_payload
-from .utils import extract_page_id, maybe_await
+from fb_automation.facebook_cookie_parser import parse_cookie_payload, cookies_to_header, extract_account_id
+from fb_automation.models import IdentityContext, PostJob
+from fb_automation.tokens import TokenVault
+from fb_automation.worker import HTTPWorker
+from fb_automation.browser_fallback import BrowserTokenExtractor
+from fb_automation.utils import maybe_await
 
 logger = logging.getLogger(__name__)
 
 
+_UPLOAD_AUTH_FAILURE_MARKERS = (
+    'rupload_init_http_400',
+    'rupload_transfer_http_400',
+    'notauthorizederror',
+    'not authorized',
+    'upload_blocked',
+    'upload rejected',
+    'http_image_upload_failed',
+)
+
+_TOKEN_EXTRACTION_RECOVERABLE_MARKERS = (
+    'page.goto',
+    'timeout',
+    'navigation',
+    'domcontentloaded',
+    'net::',
+)
+
+_GRAPHQL_RECOVERABLE_MARKERS = (
+    'graphql_error',
+    'facebook_error_1357004',
+    'error 1357004',
+    'sorry, something went wrong',
+    'closing and re-opening your browser',
+    'non_json_response',
+)
+
+
 def is_fast_graphql_enabled() -> bool:
-    """Return whether the private GraphQL tier is enabled by environment configuration."""
-    config = AppConfig()
-    return bool(config.enable_private_facebook_http)
+    return True
 
 
-async def _get_redis_client() -> Optional[Any]:
-    """Connect to Redis and return the async client."""
-    config = AppConfig()
-    if not config.redis_url:
-        return None
-    try:
-        import redis.asyncio as aioredis
-        client = aioredis.from_url(config.redis_url)
-        return client
-    except Exception as exc:
-        logger.warning(f"GraphQL Poster could not connect to Redis: {exc}")
-        return None
-
-
-async def _post_one_fast(
-    post: Dict[str, Any],
-    cookies_json: str,
-    identity: IdentityContext,
-    token_vault: TokenVault,
-    proxy_manager: ProxyManager,
-    redis_client: Any,
-    config: AppConfig,
-) -> Tuple[bool, str, Optional[str]]:
-    """Execute a single fast GraphQL/rupload post."""
-    account_id = identity.account_id
-    page_id_or_url = post.get('page_id_or_url', '')
-    page_id = extract_page_id(page_id_or_url) or page_id_or_url
-    
-    post_type = post.get('post_type', 'text')
-    caption = post.get('caption', '')
-    media_url = post.get('media_url', '')
-    
-    # Check rate limits / safety pre-flight
-    from .safety import SafetyGuard, SafetyStatus
-    safety = SafetyGuard(redis_client, identity, token_vault)
-    status, message = await safety.pre_flight_check()
-    if status != SafetyStatus.CLEAR:
-        return False, f"Safety check failed: {message}", None
-        
-    # Get tokens
-    tokens = await token_vault.get(account_id)
-    if not tokens or await token_vault.is_rotation_needed(account_id):
-        from .browser_fallback import BrowserTokenExtractor
-        extractor = BrowserTokenExtractor(token_vault, identity)
-        try:
-            tokens = await extractor.extract_with_retry(cookies_json)
-        except Exception as exc:
-            return False, f"Token extraction failed: {exc}", None
-            
-    if not tokens:
-        return False, "No valid tokens found", None
-        
-    media_fbid = None
-    # If it is an image, upload first
-    if post_type == 'image' and media_url:
-        uploader = HardenedRupload(token_vault, identity, redis_client, proxy_manager, config)
-        upload_success, fbid, upload_err = await uploader.upload_image(media_url)
-        if not upload_success:
-            return False, f"Image upload failed: {upload_err}", None
-        media_fbid = fbid
-        
-    # Post via GraphQL
-    poster = HardenedGraphQLPoster(token_vault, identity, redis_client, proxy_manager, config)
-    success, status_code, post_id = await poster.post_to_page(
-        page_id=page_id,
-        caption=caption,
-        media_fbid=media_fbid,
-        cookie_header=tokens.get('cookie_header'),
+def _result_text(result: Dict[str, Any]) -> str:
+    return ' '.join(
+        str(result.get(key) or '')
+        for key in ('status', 'error', 'result')
     )
-    
-    # Auto-healing: if the GraphQL post failed due to token, query, doc_id, or general errors,
-    # perform a dynamic browser token/doc_id extraction refresh and retry once.
-    if not success and status_code not in {'RATE_LIMITED', 'PRIVATE_HTTP_DISABLED', 'IDEMPOTENCY_TIMEOUT'}:
-        logger.info(f"GraphQL post failed with {status_code}. Executing dynamic token and doc_id refresh...")
-        from .browser_fallback import BrowserTokenExtractor
-        extractor = BrowserTokenExtractor(token_vault, identity)
-        try:
-            tokens = await extractor.extract_with_retry(cookies_json)
-            if tokens:
-                logger.info("Dynamic refresh successful. Retrying GraphQL post...")
-                success, status_code, post_id = await poster.post_to_page(
-                    page_id=page_id,
-                    caption=caption,
-                    media_fbid=media_fbid,
-                    cookie_header=tokens.get('cookie_header'),
-                )
-        except Exception as exc:
-            logger.warning(f"GraphQL token refresh retry failed: {exc}")
-            
-    # Run post flight validation
-    await safety.post_flight_validation(success, 200 if success else 400, status_code)
-    
-    return success, status_code, post_id
+
+
+def _is_upload_auth_failure(result: Dict[str, Any]) -> bool:
+    text = _result_text(result).lower()
+    return any(marker in text for marker in _UPLOAD_AUTH_FAILURE_MARKERS)
+
+
+def _normalize_browser_fallback_result(
+    row: Any,
+    original_result: Dict[str, Any],
+    fallback_reason: str = 'FAST_HTTP_UPLOAD_NOT_AUTHORIZED',
+) -> Dict[str, Any]:
+    if not isinstance(row, dict):
+        fallback_error = 'Browser fallback returned an invalid result.'
+        return {
+            **original_result,
+            'success': False,
+            'result': f"{fallback_error} Original fast HTTP error: {original_result.get('result') or original_result.get('error') or original_result.get('status')}",
+            'status': 'BROWSER_FALLBACK_INVALID',
+            'post_id': None,
+            'error': fallback_error,
+        }
+
+    success = bool(row.get('success'))
+    fallback_detail = str(row.get('result') or row.get('error') or row.get('status') or '').strip()
+    fallback_status = str(
+        row.get('status')
+        or ('BROWSER_FALLBACK_SUCCESS' if success else 'BROWSER_FALLBACK_FAILED')
+    )
+    post_id = row.get('post_id') or row.get('id')
+    normalized = {
+        **original_result,
+        'success': success,
+        'result': post_id or fallback_detail or fallback_status,
+        'status': fallback_status,
+        'post_id': post_id,
+        'error': None if success else fallback_detail or fallback_status,
+        'transport': row.get('transport') or 'browser_fallback',
+        'fallback_reason': fallback_reason,
+    }
+    if not success:
+        original_detail = str(original_result.get('result') or original_result.get('error') or original_result.get('status') or '').strip()
+        if original_detail:
+            normalized['original_fast_error'] = original_detail
+            normalized['error'] = (
+                f"{normalized['error']} Original fast HTTP error: {original_detail}"
+                if normalized.get('error')
+                else original_detail
+            )
+            normalized['result'] = normalized['error']
+    return normalized
+
+
+def _is_recoverable_token_extraction_failure(error_text: str) -> bool:
+    text = str(error_text or '').lower()
+    return any(marker in text for marker in _TOKEN_EXTRACTION_RECOVERABLE_MARKERS)
+
+
+def _is_recoverable_graphql_failure(result: Dict[str, Any]) -> bool:
+    text = _result_text(result).lower()
+    return any(marker in text for marker in _GRAPHQL_RECOVERABLE_MARKERS)
+
+
+def _token_extraction_failure_results(posts: List[Dict[str, Any]], exc: Exception) -> List[Dict[str, Any]]:
+    return [
+        {
+            'success': False,
+            'result': f'TOKEN_EXTRACTION_FAILED: {exc}',
+            'status': 'TOKEN_EXTRACTION_FAILED',
+            'post_id': None,
+            'error': str(exc),
+        }
+        for _ in posts
+    ]
+
+
+async def _recover_all_with_browser_fallback(
+    posts: List[Dict[str, Any]],
+    results: List[Dict[str, Any]],
+    browser_fallback: Optional[Any],
+    fallback_reason: str,
+    log_message: str,
+) -> List[Dict[str, Any]]:
+    if not callable(browser_fallback):
+        return results
+    logger.warning(log_message, len(posts))
+    try:
+        fallback_rows = await maybe_await(browser_fallback(posts))
+    except Exception as exc:
+        logger.warning("Browser fallback after fast HTTP failure raised: %s", exc)
+        return results
+
+    if not isinstance(fallback_rows, list):
+        fallback_rows = [fallback_rows]
+
+    merged = list(results)
+    for index, original in enumerate(results):
+        row = fallback_rows[index] if index < len(fallback_rows) else None
+        merged[index] = _normalize_browser_fallback_result(row, original, fallback_reason=fallback_reason)
+    return merged
+
+
+async def _recover_graphql_failures_with_browser_fallback(
+    posts: List[Dict[str, Any]],
+    results: List[Dict[str, Any]],
+    browser_fallback: Optional[Any],
+) -> List[Dict[str, Any]]:
+    if not callable(browser_fallback):
+        return results
+
+    recoverable_indices = [
+        index
+        for index, result in enumerate(results)
+        if not bool(result.get('success')) and _is_recoverable_graphql_failure(result)
+    ]
+    if not recoverable_indices:
+        return results
+
+    fallback_posts = [posts[index] for index in recoverable_indices]
+    logger.warning(
+        "Fast HTTP GraphQL mutation failed for %d/%d post(s); trying browser fallback.",
+        len(fallback_posts),
+        len(posts),
+    )
+    try:
+        fallback_rows = await maybe_await(browser_fallback(fallback_posts))
+    except Exception as exc:
+        logger.warning("Browser fallback after fast GraphQL failure raised: %s", exc)
+        return results
+
+    if not isinstance(fallback_rows, list):
+        fallback_rows = [fallback_rows]
+
+    merged = list(results)
+    for offset, index in enumerate(recoverable_indices):
+        row = fallback_rows[offset] if offset < len(fallback_rows) else None
+        merged[index] = _normalize_browser_fallback_result(
+            row,
+            results[index],
+            fallback_reason='FAST_HTTP_GRAPHQL_ERROR',
+        )
+    return merged
+
+
+async def _recover_upload_auth_failures_with_browser_fallback(
+    posts: List[Dict[str, Any]],
+    results: List[Dict[str, Any]],
+    browser_fallback: Optional[Any],
+) -> List[Dict[str, Any]]:
+    if not callable(browser_fallback):
+        return results
+
+    recoverable_indices = [
+        index
+        for index, result in enumerate(results)
+        if not bool(result.get('success')) and _is_upload_auth_failure(result)
+    ]
+    if not recoverable_indices:
+        return results
+
+    fallback_posts = [posts[index] for index in recoverable_indices]
+    logger.warning(
+        "Fast HTTP upload was not authorized for %d/%d post(s); trying browser fallback.",
+        len(fallback_posts),
+        len(posts),
+    )
+    try:
+        fallback_rows = await maybe_await(browser_fallback(fallback_posts))
+    except Exception as exc:
+        logger.warning("Browser fallback after fast upload authorization failure raised: %s", exc)
+        return results
+
+    if not isinstance(fallback_rows, list):
+        fallback_rows = [fallback_rows]
+
+    merged = list(results)
+    for offset, index in enumerate(recoverable_indices):
+        row = fallback_rows[offset] if offset < len(fallback_rows) else None
+        merged[index] = _normalize_browser_fallback_result(row, results[index])
+    return merged
 
 
 async def create_facebook_posts_fast(
@@ -132,115 +243,176 @@ async def create_facebook_posts_fast(
     posts: List[Dict[str, Any]],
     progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     launch_browser_session: Optional[Any] = None,
-    browser_fallback: Optional[Callable[[List[Dict[str, Any]]], Awaitable[List[Dict[str, Any]]]]] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Main asynchronous entry point to create Facebook posts fast via direct GraphQL/HTTP.
-    """
-    if not is_fast_graphql_enabled():
-        logger.debug("Fast GraphQL tier is disabled. Falling back directly.")
-        if browser_fallback:
-            return await browser_fallback(posts)
-        return [{'page': str(p.get('page_name') or p.get('page_id_or_url')), 'success': False, 'result': 'GraphQL posting disabled'} for p in posts]
-
+    browser_fallback: Optional[Any] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    logger.info("Direct HTTP/GraphQL posting tier initiated.")
     try:
-        parsed_cookie = parse_account_cookie_payload(cookies_json)
-        account_id = parsed_cookie.account_id
+        cookies = parse_cookie_payload(cookies_json)
+        account_id = extract_account_id(cookies)
+        if not account_id:
+            logger.error("Could not extract account_id from cookies.")
+            return None
     except Exception as exc:
-        logger.warning(f"Could not parse account cookies for GraphQL posting: {exc}")
-        if browser_fallback:
-            return await browser_fallback(posts)
-        return [{'page': str(p.get('page_name') or p.get('page_id_or_url')), 'success': False, 'result': f'Cookie parse failure: {exc}'} for p in posts]
+        logger.error(f"Failed to parse cookies: {exc}")
+        return None
 
-    redis_client = await _get_redis_client()
-    if not redis_client:
-        logger.warning("Redis client unavailable; fallback to browser.")
-        if browser_fallback:
-            return await browser_fallback(posts)
-        return [{'page': str(p.get('page_name') or p.get('page_id_or_url')), 'success': False, 'result': 'Redis unavailable'} for p in posts]
+    # Retrieve or setup proxy URL
+    proxy_url = os.environ.get('PROXY_URL') or os.environ.get('FB_PROXY_URL') or ''
 
+    # Use the User-Agent that matches the browser the cookies were exported from.
+    # If not set, IdentityContext will use its own Chrome 126 default — which is
+    # fine as long as FB_USER_AGENT is set in .env to match the export browser.
+    _ua_override = os.environ.get('FB_USER_AGENT', '').strip()
+    _identity_kwargs = dict(account_id=account_id, proxy_url=proxy_url)
+    if _ua_override:
+        import re as _re
+        _chrome_m = _re.search(r'Chrome/(\d+\.\d+\.\d+\.\d+)', _ua_override)
+        if _chrome_m:
+            _identity_kwargs['user_agent'] = _ua_override
+            _identity_kwargs['chrome_version'] = _chrome_m.group(1)
+
+    identity = IdentityContext(**_identity_kwargs)
+
+    # Initialize redis if configured
+    redis_client = None
     try:
-        registry = IdentityRegistry(redis_client)
-        identity = await registry.get(account_id)
-        if not identity:
-            logger.warning(f"No identity context registered for account {account_id}. Falling back to browser.")
-            if browser_fallback:
-                return await browser_fallback(posts)
-            return [{'page': str(p.get('page_name') or p.get('page_id_or_url')), 'success': False, 'result': f'No identity registered for {account_id}'} for p in posts]
+        import redis.asyncio as aioredis
+        redis_url = os.environ.get('REDIS_URL')
+        if redis_url:
+            redis_client = aioredis.from_url(redis_url)
+    except Exception as exc:
+        logger.warning(f"Failed to initialize Redis client: {exc}")
 
-        config = AppConfig()
-        token_vault = TokenVault(redis_client)
-        proxy_manager = ProxyManager(config.proxy_pool, redis_client)
+    vault = TokenVault(redis_client)
 
-        results: List[Dict[str, Any]] = []
-        fallback_posts: List[Dict[str, Any]] = []
+    # Make sure we have tokens. If not, extract them.
+    try:
+        tokens = await vault.get(account_id)
+        if not tokens:
+            logger.info(f"Tokens missing or expired for account {account_id}. Extracting tokens via headless browser.")
+            extractor = BrowserTokenExtractor(vault, identity)
+            tokens = await extractor.extract_tokens(cookies_json)
+            logger.info(f"Successfully extracted tokens for account {account_id}.")
+        if not tokens or not isinstance(tokens, dict) or not tokens.get('fb_dtsg') or not tokens.get('lsd'):
+            raise RuntimeError("Tokens are invalid or expired")
+    except Exception as exc:
+        logger.error(f"Token extraction failed: {exc}")
+        failed_results = _token_extraction_failure_results(posts, exc)
+        if _is_recoverable_token_extraction_failure(str(exc)):
+            return await _recover_all_with_browser_fallback(
+                posts,
+                failed_results,
+                browser_fallback,
+                fallback_reason='FAST_HTTP_TOKEN_EXTRACTION_TIMEOUT',
+                log_message=(
+                    "Fast HTTP token extraction navigation failed for %d post(s); "
+                    "trying browser fallback."
+                ),
+            )
+        return failed_results
 
-        for post in posts:
-            page_label = post.get('page_name') or post.get('page_id_or_url') or 'Unknown page'
-            post_type = post.get('post_type', 'text')
+    worker = HTTPWorker(redis_client, identity)
+    worker_token_vault = getattr(worker, 'token_vault', None)
+    set_worker_tokens = getattr(worker_token_vault, 'set', None)
+    if callable(set_worker_tokens):
+        await maybe_await(set_worker_tokens(account_id, tokens))
 
-            # Videos must always fall back to browser uploader
-            if post_type == 'video':
-                fallback_posts.append(post)
-                continue
+    # -----------------------------------------------------------------------
+    # Background: keep the session alive and pre-warm doc_id while posting
+    # -----------------------------------------------------------------------
+    _background_tasks = []
+    try:
+        from fb_automation.session_heartbeat import SessionHeartbeatManager
+        _hb_mgr = SessionHeartbeatManager(
+            cookies_json=cookies_json,
+            account_id=account_id,
+            token_vault=vault,
+            identity=identity,
+            redis_client=redis_client,
+            # Use shorter intervals for the duration of a batch post
+            heartbeat_interval=300,   # 5 min keep-alive during active session
+            refresh_interval=1800,    # 30 min full Playwright refresh
+        )
+        _hb_task = asyncio.ensure_future(_hb_mgr.run_forever())
+        _background_tasks.append(_hb_task)
+    except Exception as _hb_exc:
+        logger.debug("SessionHeartbeatManager could not be started (non-fatal): %s", _hb_exc)
 
-            try:
-                success, status_msg, post_id = await _post_one_fast(
-                    post, cookies_json, identity, token_vault, proxy_manager, redis_client, config
-                )
-                if success:
-                    results.append({
-                        'page': page_label,
-                        'success': True,
-                        'result': f"Post accepted by Facebook via direct GraphQL. ID: {post_id}" if post_id else "Post accepted by Facebook via direct GraphQL."
-                    })
-                else:
-                    logger.info(f"GraphQL post attempt failed for {page_label}: {status_msg}. Adding to fallback queue.")
-                    fallback_posts.append(post)
-            except Exception as exc:
-                logger.error(f"Error during fast GraphQL post to {page_label}: {exc}", exc_info=True)
-                fallback_posts.append(post)
+    # Warm the doc_id cache if not already set — fire-and-forget
+    try:
+        from fb_automation.doc_id_scraper import DocIdScraper
+        _scraper = DocIdScraper(redis_client=redis_client)
+        cached_doc_id = await _scraper.get_cached()
+        if not cached_doc_id:
+            logger.info("doc_id cache empty; starting background doc_id scrape.")
+            _doc_task = asyncio.ensure_future(
+                _scraper.scrape(cookies_json=cookies_json, identity=identity)
+            )
+            _background_tasks.append(_doc_task)
+        else:
+            logger.debug("doc_id already cached: %s.", cached_doc_id)
+    except Exception as _doc_exc:
+        logger.debug("DocIdScraper warm-up skipped (non-fatal): %s", _doc_exc)
 
-        if fallback_posts and browser_fallback:
-            logger.info(f"Routing {len(fallback_posts)} posts to browser fallback.")
-            fallback_results = await browser_fallback(fallback_posts)
-            results.extend(fallback_results)
-        elif fallback_posts:
-            for fp in fallback_posts:
-                results.append({
-                    'page': fp.get('page_name') or fp.get('page_id_or_url') or 'Unknown page',
-                    'success': False,
-                    'result': 'GraphQL posting failed and browser fallback is unavailable.'
-                })
+    results = []
 
-        return results
+    for post in posts:
+        post_type = post.get('post_type') or 'text'
+        if post_type not in {'text', 'image', 'video'}:
+            post_type = 'text'
 
-    finally:
+        media_url = post.get('media_url') or post.get('media_path')
+
+        job = PostJob(
+            account_id=account_id,
+            page_id=post.get('page_id_or_url') or '',
+            caption=post.get('caption') or '',
+            media_url=media_url,
+            post_type=post_type,
+        )
+
         try:
-            await redis_client.aclose()
-        except Exception:
-            pass
+            logger.info(f"Processing post job for page {job.page_id} via private HTTP worker...")
+            res = await worker.process_job(job)
+            results.append({
+                'success': res.success,
+                'result': res.post_id if res.success else res.error_message or res.status,
+                'status': res.status,
+                'post_id': res.post_id,
+                'error': res.error_message
+            })
+        except Exception as exc:
+            logger.error(f"Worker exception during posting: {exc}")
+            results.append({
+                'success': False,
+                'result': f'WORKER_EXCEPTION: {exc}',
+                'status': 'WORKER_EXCEPTION',
+                'post_id': None,
+                'error': str(exc)
+            })
+
+    results = await _recover_upload_auth_failures_with_browser_fallback(posts, results, browser_fallback)
+    final_results = await _recover_graphql_failures_with_browser_fallback(posts, results, browser_fallback)
+
+    # Clean up background tasks (heartbeat runs indefinitely; cancel it now)
+    for _task in _background_tasks:
+        if not _task.done():
+            _task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(_task), timeout=2)
+            except Exception:
+                pass
+
+    return final_results
 
 
 def create_facebook_posts_fast_sync(
     cookies_json: str,
     posts: List[Dict[str, Any]],
-    progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], Any]] = None,
     launch_browser_session: Optional[Any] = None,
-    browser_fallback: Optional[Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Synchronous wrapper to orchestrate create_facebook_posts_fast.
-    """
-    async def async_browser_fallback(fallback_posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        if not browser_fallback:
-            return []
-        if inspect.iscoroutinefunction(browser_fallback):
-            return await browser_fallback(fallback_posts)
-        else:
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, browser_fallback, fallback_posts)
-
+    browser_fallback: Optional[Any] = None,
+) -> Optional[List[Dict[str, Any]]]:
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
@@ -252,13 +424,12 @@ def create_facebook_posts_fast_sync(
         posts,
         progress_callback,
         launch_browser_session,
-        async_browser_fallback,
+        browser_fallback,
     )
-
     if loop.is_running():
         import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            future = pool.submit(asyncio.run, coro)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(lambda: asyncio.run(coro))
             return future.result()
     else:
         return loop.run_until_complete(coro)

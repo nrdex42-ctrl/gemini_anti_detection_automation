@@ -15,7 +15,7 @@ def test_worker_rejects_content_without_recording_post_activity():
         worker = HTTPWorker(
             redis,
             IdentityContext(account_id='acct-1', proxy_url='http://proxy-1'),
-            AppConfig(enable_private_facebook_http=False),
+            AppConfig(enable_private_facebook_http=False, require_proxy=False),
         )
         result = await worker.process_job(PostJob(account_id='acct-1', page_id='123', caption='hi'))
         assert not result.success
@@ -33,7 +33,7 @@ def test_worker_private_http_disabled_fails_closed():
         worker = HTTPWorker(
             redis,
             IdentityContext(account_id='acct-1', proxy_url='http://proxy-1'),
-            AppConfig(enable_private_facebook_http=False),
+            AppConfig(enable_private_facebook_http=False, require_proxy=False),
         )
         result = await worker.process_job(PostJob(account_id='acct-1', page_id='123', caption='valid caption'))
         assert not result.success
@@ -52,7 +52,7 @@ def test_worker_records_runtime_profile_observation():
         worker = HTTPWorker(
             redis,
             identity,
-            AppConfig(enable_private_facebook_http=False),
+            AppConfig(enable_private_facebook_http=False, require_proxy=False),
         )
         result = await worker.process_job(PostJob(account_id='acct-1', page_id='123', caption='valid caption'))
         assert not result.success

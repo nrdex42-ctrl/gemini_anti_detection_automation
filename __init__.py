@@ -28,9 +28,12 @@ if __package__:
     from .proxy_manager import AdvancedProxyManager, ProxyManagerConfig
     from .stealth_connector import AdvancedStealthConnector, StealthConnectorConfig, get_stealth_connector
     from .stochastic_timer import AdvancedStochasticTimer, TimingProfile, BezierCurve
+    from .session_heartbeat import SessionHeartbeatManager, get_live_cookie_header
+    from .doc_id_scraper import DocIdScraper, run_doc_id_refresh_loop
 
     from .smart_poster import (
         smart_image_post,
+        smart_video_post,
         looks_like_upload_block,
         mark_upload_blocked,
         is_upload_blocked,
@@ -73,7 +76,12 @@ if __package__:
         "AdvancedStochasticTimer",
         "TimingProfile",
         "BezierCurve",
+        "SessionHeartbeatManager",
+        "get_live_cookie_header",
+        "DocIdScraper",
+        "run_doc_id_refresh_loop",
         "smart_image_post",
+        "smart_video_post",
         "looks_like_upload_block",
         "mark_upload_blocked",
         "is_upload_blocked",
