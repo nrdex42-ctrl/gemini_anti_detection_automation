@@ -13,18 +13,28 @@ def _page_node(index):
     }
 
 
-def _graphql_payload(nodes):
-    return {
-        "__typename": "PagesCometLaunchpointUnifiedQueryPagesListRedesignedQuery",
-        "nodes": nodes,
-    }
+def _graphql_payload(nodes, include_marker=True):
+    payload = {"nodes": nodes}
+    if include_marker:
+        payload["__typename"] = "PagesCometLaunchpointUnifiedQueryPagesListRedesignedQuery"
+    return payload
+
+
+class FakeRequest:
+    def __init__(self, friendly_name=""):
+        self.headers = {"x-fb-friendly-name": friendly_name} if friendly_name else {}
+        self.post_data = ""
+
+    async def all_headers(self):
+        return dict(self.headers)
 
 
 class FakeResponse:
     url = "https://www.facebook.com/api/graphql/"
 
-    def __init__(self, payload):
+    def __init__(self, payload, friendly_name=""):
         self.payload = payload
+        self.request = FakeRequest(friendly_name)
 
     async def text(self):
         return json.dumps(self.payload)
@@ -44,9 +54,14 @@ class FakePage:
     async def _emit_next_batch(self):
         if self.response_handler is None or self.batch_index >= len(self.batches):
             return
-        payload = _graphql_payload(self.batches[self.batch_index])
+        batch = self.batches[self.batch_index]
         self.batch_index += 1
-        task = self.response_handler(FakeResponse(payload))
+        if isinstance(batch, tuple):
+            nodes, include_marker, friendly_name = batch
+        else:
+            nodes, include_marker, friendly_name = batch, True, ""
+        payload = _graphql_payload(nodes, include_marker=include_marker)
+        task = self.response_handler(FakeResponse(payload, friendly_name=friendly_name))
         if task is not None:
             await task
 
@@ -80,7 +95,16 @@ def test_page_discovery_collects_graphql_pages_after_scroll(monkeypatch):
     async def run():
         first_batch = [_page_node(index) for index in range(1, 21)]
         second_batch = [_page_node(index) for index in range(21, 31)]
-        fake_page = FakePage([first_batch, second_batch])
+        fake_page = FakePage(
+            [
+                first_batch,
+                (
+                    second_batch,
+                    False,
+                    "PagesCometLaunchpointUnifiedQueryPagesListRedesignedQuery",
+                ),
+            ]
+        )
 
         async def launch_browser_session(cookies_json, proxy_url=""):
             return FakePlaywright(), FakeBrowser(), object(), fake_page

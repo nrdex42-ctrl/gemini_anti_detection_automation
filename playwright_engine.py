@@ -111,10 +111,10 @@ FACEBOOK_IMAGE_RETRY_JPEG_ON_REJECTION = (
 )
 MEDIA_DOWNLOAD_TIMEOUT = _env_int('MEDIA_DOWNLOAD_TIMEOUT', 120)
 PAGE_DISCOVERY_TIMEOUT = _env_int('PAGE_DISCOVERY_TIMEOUT', 30)
-PAGE_DISCOVERY_SCROLLS = _env_int('PAGE_DISCOVERY_SCROLLS', 4, minimum=0)
+PAGE_DISCOVERY_SCROLLS = _env_int('PAGE_DISCOVERY_SCROLLS', 8, minimum=0)
 PAGE_DISCOVERY_RESOURCE_BLOCKING = os.getenv('PAGE_DISCOVERY_RESOURCE_BLOCKING', 'true').lower() == 'true'
-PAGE_DISCOVERY_GRAPHQL_WAIT_SECONDS = _env_float('PAGE_DISCOVERY_GRAPHQL_WAIT_SECONDS', 1.2, minimum=0.2)
-PAGE_DISCOVERY_GRAPHQL_SAMPLE_LIMIT = _env_int('PAGE_DISCOVERY_GRAPHQL_SAMPLE_LIMIT', 80, minimum=20)
+PAGE_DISCOVERY_GRAPHQL_WAIT_SECONDS = _env_float('PAGE_DISCOVERY_GRAPHQL_WAIT_SECONDS', 2.0, minimum=0.2)
+PAGE_DISCOVERY_GRAPHQL_SAMPLE_LIMIT = _env_int('PAGE_DISCOVERY_GRAPHQL_SAMPLE_LIMIT', 200, minimum=20)
 PAGE_DISCOVERY_WAIT_UNTIL = os.getenv('PAGE_DISCOVERY_WAIT_UNTIL', 'commit').strip() or 'commit'
 FACEBOOK_POST_TIMEOUT_SECONDS = _env_int('FACEBOOK_POST_TIMEOUT_SECONDS', 180, minimum=60)
 POST_BATCH_PAGE_TIMEOUT_SECONDS = _env_int('POST_BATCH_PAGE_TIMEOUT_SECONDS', 110, minimum=45)
@@ -4590,10 +4590,16 @@ async def discover_facebook_pages(cookies_json: str, proxy_url: str = '') -> Tup
                 graphql_sampled += 1
                 if graphql_sampled > PAGE_DISCOVERY_GRAPHQL_SAMPLE_LIMIT and graphql_ready.is_set():
                     return
+                friendly_name = ''
+                try:
+                    friendly_name = await _graphql_friendly_name_from_response(response)
+                except Exception:
+                    friendly_name = ''
                 body_text = await response.text()
                 if not body_text or len(body_text) < 80:
                     return
                 lowered = body_text.lower()
+                lowered_friendly_name = friendly_name.lower()
                 interesting = (
                     'pagescometlaunchpointunifiedquerypageslistredesignedquery',
                     'pagecometlaunchpointleftnavmenurootquery',
@@ -4602,11 +4608,11 @@ async def discover_facebook_pages(cookies_json: str, proxy_url: str = '') -> Tup
                     'pageslist',
                     'launchpoint',
                 )
-                if not any(marker in lowered for marker in interesting):
+                if not any(marker in lowered or marker in lowered_friendly_name for marker in interesting):
                     return
                 graphql_debug_hits += 1
                 try:
-                    payload = json.loads(body_text)
+                    payload = _parse_graphql_payload(body_text)
                 except JSONDecodeError:
                     return
 
@@ -4674,11 +4680,11 @@ async def discover_facebook_pages(cookies_json: str, proxy_url: str = '') -> Tup
             return total_added
 
         async def _scroll_page_discovery_view(scroll_index: int) -> None:
+            amount = 1800
             try:
                 await page.evaluate(
                     """
-                    index => {
-                        const amount = Math.max(900, Math.floor((window.innerHeight || 800) * 1.5));
+                    ({index, amount}) => {
                         const candidates = Array.from(document.querySelectorAll('[role="main"], div'))
                             .filter(el => {
                                 try {
@@ -4702,10 +4708,22 @@ async def discover_facebook_pages(cookies_json: str, proxy_url: str = '') -> Tup
                         }
                     }
                     """,
-                    scroll_index,
+                    {'index': scroll_index, 'amount': amount},
                 )
             except Exception as exc:
                 logger.debug(f'PAGE_DISCOVERY scroll skipped: {exc}')
+            try:
+                mouse = getattr(page, 'mouse', None)
+                if mouse is not None:
+                    await mouse.wheel(0, amount)
+            except Exception as exc:
+                logger.debug(f'PAGE_DISCOVERY wheel scroll skipped: {exc}')
+            try:
+                keyboard = getattr(page, 'keyboard', None)
+                if keyboard is not None:
+                    await keyboard.press('PageDown')
+            except Exception as exc:
+                logger.debug(f'PAGE_DISCOVERY keyboard scroll skipped: {exc}')
 
         for discovery_url in _PAGE_DISCOVERY_URLS:
             try:
@@ -4746,7 +4764,6 @@ async def discover_facebook_pages(cookies_json: str, proxy_url: str = '') -> Tup
 
             await _collect_discovery_sources('extract_initial', include_links=False)
 
-            empty_scrolls = 0
             for scroll_index in range(PAGE_DISCOVERY_SCROLLS):
                 before_scroll_count = len(discovered)
                 before_graphql_count = len(graphql_pages)
@@ -4762,11 +4779,7 @@ async def discover_facebook_pages(cookies_json: str, proxy_url: str = '') -> Tup
                     include_links=not discovered,
                 )
                 if len(discovered) <= before_scroll_count and added <= 0:
-                    empty_scrolls += 1
-                else:
-                    empty_scrolls = 0
-                if discovered and empty_scrolls >= 2:
-                    break
+                    await asyncio.sleep(0.2)
 
             if discovered:
                 break
