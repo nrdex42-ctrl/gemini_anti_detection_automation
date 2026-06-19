@@ -564,20 +564,21 @@ async def extract_tokens_and_pages(cookies: List[Dict[str, str]], identity: Iden
         tokens = await page.evaluate(
             """() => {
                 const get = (name) => { try { return require(name); } catch (_) { return {}; } };
-                const cookie = document.cookie || '';
-                const xs = (cookie.match(/(?:^|; )xs=([^;]+)/) || [])[1] || '';
                 const initial = get('CurrentUserInitialData');
                 return {
                     fb_dtsg: get('DTSGInitialData').token || get('DTSGInitData').token || document.querySelector('input[name="fb_dtsg"]')?.value || '',
                     lsd: get('LSD').token || document.querySelector('input[name="lsd"]')?.value || '',
                     user_id: get('CurrentUserInitialData').USER_ID || '',
-                    xs,
                     revision: String(get('SiteData').client_revision || ''),
                     user_access_token: (window.__accessToken || (initial && initial.ACCESS_TOKEN) || ''),
                     timestamp: Date.now() / 1000
                 };
             }"""
         )
+        # Use context.cookies() to get ALL cookies including HttpOnly
+        all_cookies = await page.context.cookies()
+        xs = next((c.get('value', '') for c in all_cookies if c.get('name') == 'xs'), '')
+        tokens['xs'] = xs
         
         try:
             tokens["cookie_header"] = cookies_json_to_header(json.dumps(cookies, ensure_ascii=False))

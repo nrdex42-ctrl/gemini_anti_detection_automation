@@ -333,10 +333,9 @@ def generate_video_artifact(timestamp: str, run_dir: Path, source_image_path: Op
 
 
 async def extract_tokens(page) -> Dict[str, Any]:
-    return await page.evaluate(
+    tokens = await page.evaluate(
         """() => {
             const get = (name) => { try { return require(name); } catch (_) { return {}; } };
-            const cookie = document.cookie || '';
             return {
                 fb_dtsg: get('DTSGInitialData').token ||
                     get('DTSGInitData').token ||
@@ -344,11 +343,14 @@ async def extract_tokens(page) -> Dict[str, Any]:
                 lsd: get('LSD').token || document.querySelector('input[name="lsd"]')?.value || '',
                 user_id: get('CurrentUserInitialData').USER_ID || '',
                 revision: String(get('SiteData').client_revision || ''),
-                xs_present: /(?:^|;\\s*)xs=/.test(cookie),
                 timestamp: Date.now() / 1000
             };
         }"""
     )
+    # context.cookies() includes HttpOnly cookies not visible to document.cookie
+    all_cookies = await page.context.cookies()
+    tokens['xs_present'] = any(c.get('name') == 'xs' for c in all_cookies)
+    return tokens
 
 
 async def discover_pages_from_browser(browser, cookies: List[Dict[str, str]]) -> List[Dict[str, str]]:

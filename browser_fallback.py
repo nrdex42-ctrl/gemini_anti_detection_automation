@@ -119,18 +119,19 @@ class BrowserTokenExtractor:
                 tokens = await page.evaluate(
                     """() => {
                         const get = (name) => { try { return require(name); } catch (_) { return {}; } };
-                        const cookie = document.cookie || '';
-                        const xs = (cookie.match(/(?:^|; )xs=([^;]+)/) || [])[1] || '';
                         return {
                             fb_dtsg: get('DTSGInitialData').token || get('DTSGInitData').token || document.querySelector('input[name="fb_dtsg"]')?.value || '',
                             lsd: get('LSD').token || document.querySelector('input[name="lsd"]')?.value || '',
                             user_id: get('CurrentUserInitialData').USER_ID || '',
-                            xs,
                             revision: String(get('SiteData').client_revision || ''),
                             timestamp: Date.now() / 1000
                         };
                     }"""
                 )
+                # Use context.cookies() to get ALL cookies including HttpOnly
+                all_cookies = await page.context.cookies()
+                xs = next((c.get('value', '') for c in all_cookies if c.get('name') == 'xs'), '')
+                tokens['xs'] = xs
                 if not tokens.get('fb_dtsg') or not tokens.get('lsd'):
                     raise RuntimeError('required Facebook tokens were not found')
                 try:

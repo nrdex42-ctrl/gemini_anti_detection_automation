@@ -129,11 +129,11 @@ async def test_token_vault_rotation_needed(mock_redis):
     await vault.set('account5', {'fb_dtsg': 'dtsg1'})
     assert await vault.is_rotation_needed('account5') is False
     
-    # Old tokens (> 180s) = rotation needed
-    vault._local_cache['account5']['timestamp'] = time.time() - 181
+    # Old tokens (> 300s) = rotation needed
+    vault._local_cache['account5']['timestamp'] = time.time() - 301
     assert await vault.is_rotation_needed('account5') is True
     
-    # High usage (> 20) = rotation needed
+    # High usage (> 50) = rotation needed
     vault._local_cache['account5']['timestamp'] = time.time()
-    mock_redis.get.return_value = '21'  # Return high usage from redis
+    mock_redis.get.return_value = '51'  # Return high usage from redis
     assert await vault.is_rotation_needed('account5') is True

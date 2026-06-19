@@ -10,10 +10,7 @@ from .utils import canonical_json, maybe_await, stable_hash
 
 
 class TokenVault:
-    # Playwright cookie session is refreshed every ~30 min by SessionHeartbeatManager.
-    # Keep the vault TTL at 25 min so the local cache stays valid between
-    # refresh cycles without forcing unnecessary Playwright re-extractions.
-    TOKEN_TTL_SECONDS = 1500  # 25 minutes
+    TOKEN_TTL_SECONDS = 1500  # 25 minutes  (was 60s — aligned with SessionHeartbeatManager ~30 min refresh)
 
     def __init__(self, redis_client: Any):
         self.redis = redis_client
@@ -81,9 +78,6 @@ class TokenVault:
             raw_usage = await maybe_await(self.redis.get(f'{self._key(account_id)}:usage'))
             if raw_usage:
                 usage = int(raw_usage)
-        # Use TOKEN_TTL_SECONDS as the age threshold so this aligns with the
-        # heartbeat refresh cycle (30 min) and the token vault expiry (25 min).
-        # Usage limit aligned with TokenRotationPolicy.MUTATION_COUNT_LIMIT (50).
         return age > self.TOKEN_TTL_SECONDS or usage > 50
 
     def _hash_tokens(self, tokens: Dict[str, Any]) -> str:

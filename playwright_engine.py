@@ -4020,7 +4020,15 @@ async def launch_browser_session(cookies_json: str, proxy_url: str = '') -> Tupl
             'headless': HEADLESS,
             'args': launch_args,
         }
-        proxy_config = playwright_proxy_config(proxy_url)
+        proxy_config = None
+        try:
+            proxy_config = playwright_proxy_config(proxy_url)
+        except Exception as exc:
+            logger.warning(
+                'Token extraction / cookie refresh: invalid proxy config (%s), '
+                'falling back to direct connection',
+                exc,
+            )
         if proxy_config:
             launch_options['proxy'] = proxy_config
             logger.info('Launching Facebook browser session with account proxy %s', proxy_display_url(proxy_url))
@@ -8259,7 +8267,6 @@ async def _refresh_facebook_upload_tokens(page: Page, label: str) -> Dict[str, A
                     } catch (_) {}
                     return {};
                 };
-                const cookie = document.cookie || '';
                 return {
                     fb_dtsg: get('DTSGInitialData').token ||
                         get('DTSGInitData').token ||
@@ -8268,12 +8275,17 @@ async def _refresh_facebook_upload_tokens(page: Page, label: str) -> Dict[str, A
                         document.querySelector('input[name="lsd"]')?.value || '',
                     user_id: get('CurrentUserInitialData').USER_ID || '',
                     revision: String(get('SiteData').client_revision || ''),
-                    xs_present: /(?:^|;\\s*)xs=/.test(cookie),
                 };
             }"""
         )
         if not isinstance(tokens, dict):
             tokens = {}
+        # context.cookies() returns ALL cookies including HttpOnly
+        xs_present = any(
+            c.get('name') == 'xs'
+            for c in await page.context.cookies()
+        )
+        tokens['xs_present'] = xs_present
         logger.info(
             f'POST_STEP page="{label}" stage="Upload token refresh" | '
             f'fb_dtsg={"present" if tokens.get("fb_dtsg") else "missing"} '

@@ -6768,7 +6768,15 @@ class TelegramBotApp:
                 "headless": _env_bool("HEADLESS", True),
                 "args": ["--disable-dev-shm-usage", "--no-sandbox"],
             }
-            proxy_config = playwright_proxy_config(proxy_url)
+            proxy_config = None
+            try:
+                proxy_config = playwright_proxy_config(proxy_url)
+            except Exception as exc:
+                logger.warning(
+                    'Page discovery: invalid proxy config (%s), '
+                    'falling back to direct connection',
+                    exc,
+                )
             if proxy_config:
                 launch_options["proxy"] = proxy_config
             browser = await pw.chromium.launch(
