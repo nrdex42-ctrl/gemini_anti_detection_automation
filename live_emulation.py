@@ -566,12 +566,14 @@ async def extract_tokens_and_pages(cookies: List[Dict[str, str]], identity: Iden
                 const get = (name) => { try { return require(name); } catch (_) { return {}; } };
                 const cookie = document.cookie || '';
                 const xs = (cookie.match(/(?:^|; )xs=([^;]+)/) || [])[1] || '';
+                const initial = get('CurrentUserInitialData');
                 return {
                     fb_dtsg: get('DTSGInitialData').token || get('DTSGInitData').token || document.querySelector('input[name="fb_dtsg"]')?.value || '',
                     lsd: get('LSD').token || document.querySelector('input[name="lsd"]')?.value || '',
                     user_id: get('CurrentUserInitialData').USER_ID || '',
                     xs,
                     revision: String(get('SiteData').client_revision || ''),
+                    user_access_token: (window.__accessToken || (initial && initial.ACCESS_TOKEN) || ''),
                     timestamp: Date.now() / 1000
                 };
             }"""
@@ -607,6 +609,38 @@ async def extract_tokens_and_pages(cookies: List[Dict[str, str]], identity: Iden
         page_ids = list(set(matches))
         logger.info(f"Extracted Page IDs from source: {page_ids}")
         
+        page_access_tokens: Dict[str, str] = {}
+        if page_ids:
+            logger.info("Extracting page access tokens...")
+            for pid in page_ids:
+                try:
+                    await page.goto(
+                        f"https://www.facebook.com/profile.php?id={pid}",
+                        wait_until="domcontentloaded",
+                        timeout=20000,
+                    )
+                    await asyncio.sleep(0.5)
+                    token = await page.evaluate(
+                        """() => {
+                            const get = (name) => { try { return require(name); } catch (_) { return {}; } };
+                            const ls = get('LSD');
+                            const initial = get('CurrentUserInitialData');
+                            const accessToken = window.__accessToken
+                                || (initial && initial.ACCESS_TOKEN)
+                                || (ls && ls.token)
+                                || '';
+                            return accessToken;
+                        }"""
+                    )
+                    if token and len(str(token)) > 20:
+                        page_access_tokens[pid] = str(token)
+                        logger.info(f"  Page {pid}: access token extracted")
+                    else:
+                        logger.info(f"  Page {pid}: no access token found in page JS")
+                except Exception as exc:
+                    logger.warning(f"  Page {pid}: failed to extract token: {exc}")
+            tokens["page_access_tokens"] = page_access_tokens
+
         if not page_ids:
             logger.warning("Could not find page IDs. Facebook's UI may have changed or the account manages no pages.")
             

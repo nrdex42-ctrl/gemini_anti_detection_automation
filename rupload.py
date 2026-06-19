@@ -41,6 +41,7 @@ _PHOTO_TRANSFER_URL = 'https://rupload.facebook.com/photo-upload/v1/{session_id}
 _VIDEO_INIT_URL = 'https://vupload2.facebook.com/ajax/video/upload/requests/start/'
 _VIDEO_RECEIVE_URL = 'https://vupload2.facebook.com/ajax/video/upload/requests/receive/'
 _GRAPH_VIDEO_URL = 'https://graph.facebook.com/v19.0/{page_id}/videos'
+_VIDEO_TRANSFER_URL_TEMPLATE = 'https://rupload.facebook.com/fb_video/{md5}-0-{size}'
 
 
 class HardenedRupload:
@@ -577,6 +578,8 @@ class HardenedRupload:
         video_path: str,
         proxy_url: str,
     ) -> Tuple[Optional[str], Optional[str], str]:
+        upload_session_id = hashlib.md5(video_bytes).hexdigest()
+
         payload = {
             'fb_dtsg': str(tokens.get('fb_dtsg') or ''),
             'lsd': str(tokens.get('lsd') or ''),
@@ -584,6 +587,7 @@ class HardenedRupload:
             'media_type': 'video/mp4',
             'file_name': os.path.basename(video_path) or 'video.mp4',
             'client_id': generate_client_id(self.identity.account_id),
+            'upload_session_id': upload_session_id,
         }
         if tokens.get('user_id'):
             payload['user_id'] = str(tokens['user_id'])
@@ -596,7 +600,7 @@ class HardenedRupload:
             locale=self.identity.locale,
         )
         headers = forge.build_xhr_headers(
-            host='vupload2.facebook.com',
+            host='www.facebook.com',
             origin='https://www.facebook.com',
             referer='https://www.facebook.com/',
             content_type='application/x-www-form-urlencoded',
@@ -613,27 +617,11 @@ class HardenedRupload:
         )
         if init_status >= 400:
             return None, None, f'VUPLOAD_INIT_HTTP_{init_status}: {init_text[:300]}'
-        try:
-            init_data = self._loads_json(init_text)
-        except Exception:
-            return None, None, f'VUPLOAD_INIT_PARSE_FAILED: {init_text[:300]}'
 
-        payload_data = init_data
-        if isinstance(payload_data, dict):
-            raw_payload = payload_data.get('payload')
-            if isinstance(raw_payload, dict):
-                upload_url = raw_payload.get('upload_url') or raw_payload.get('url') or ''
-                session_id = raw_payload.get('upload_session_id') or raw_payload.get('session_id') or ''
-            else:
-                upload_url = payload_data.get('upload_url') or payload_data.get('url') or ''
-                session_id = payload_data.get('upload_session_id') or payload_data.get('session_id') or ''
+        upload_session_id = hashlib.md5(video_bytes).hexdigest()
+        upload_url = f'https://rupload-hbe1-2.up.facebook.com/fb_video/{upload_session_id}-0-{len(video_bytes)}'
 
-        if not upload_url:
-            return None, None, f'VUPLOAD_INIT_NO_URL: {init_text[:300]}'
-        if not session_id:
-            return None, None, f'VUPLOAD_INIT_NO_SESSION: {init_text[:300]}'
-
-        return str(upload_url), str(session_id), ''
+        return str(upload_url), str(upload_session_id), ''
 
     async def _vupload_transfer(
         self,
@@ -688,7 +676,7 @@ class HardenedRupload:
             locale=self.identity.locale,
         )
         headers = forge.build_xhr_headers(
-            host='vupload2.facebook.com',
+            host='www.facebook.com',
             origin='https://www.facebook.com',
             referer='https://www.facebook.com/',
             content_type='application/x-www-form-urlencoded',
@@ -900,3 +888,61 @@ class HardenedRupload:
         import asyncio
 
         await asyncio.sleep(max(0.0, seconds))
+
+    async def upload_video_via_graph_api(
+        self,
+        video_path: str,
+        page_access_token: str,
+        page_id: str,
+        description: str = '',
+    ) -> Tuple[bool, Optional[str], str]:
+        if not page_access_token or not page_id:
+            return False, None, 'MISSING_GRAPH_API_CREDENTIALS'
+
+        proxy_url = ''
+        try:
+            if not self._validate_video(video_path):
+                return False, None, 'Video validation failed.'
+
+            video_bytes = self._read_video_bytes(video_path)
+            proxy_url = await self.proxy.get_proxy_for_account(self.identity.account_id)
+            await self._sleep(StochasticTimer.think_time(200, 800))
+
+            url = f'https://graph.facebook.com/v19.0/{page_id}/videos?access_token={page_access_token}'
+
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            }
+
+            import aiohttp
+            connector = StealthConnector.create_connector()
+            async with aiohttp.ClientSession(connector=connector, trust_env=True) as session:
+                data = aiohttp.FormData()
+                data.add_field('source', video_bytes, filename='video.mp4', content_type='video/mp4')
+                if description:
+                    data.add_field('description', description)
+
+                async with session.post(
+                    url,
+                    data=data,
+                    headers=headers,
+                    proxy=proxy_url or None,
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    status = resp.status
+                    body = await resp.text()
+
+            if status >= 400:
+                return False, None, f'GRAPH_API_HTTP_{status}: {body[:200]}'
+
+            result = json.loads(body)
+            video_id = result.get('id')
+            if not video_id:
+                return False, None, f'GRAPH_API_NO_ID: {body[:200]}'
+
+            await self.tokens.increment_usage(self.identity.account_id)
+            return True, str(video_id), 'Success'
+
+        except Exception as exc:
+            await self.proxy.report_failure(self.identity.account_id, proxy_url, str(exc))
+            return False, None, f'Graph API exception: {str(exc)[:200]}'

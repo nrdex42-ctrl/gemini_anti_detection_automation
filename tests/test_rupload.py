@@ -249,9 +249,9 @@ def test_rupload_video_mocked_success(tmp_path: Path):
         assert media_id == 'vmedia-1'
         assert detail == 'Success'
         assert len(uploader.calls) == 3
-        assert 'vupload2.facebook.com/ajax/video/upload/requests/start/' in uploader.calls[0]['url']
-        assert 'rupload-test.up.facebook.com' in uploader.calls[1]['url']
-        assert 'vupload2.facebook.com/ajax/video/upload/requests/receive/' in uploader.calls[2]['url']
+        assert 'www.facebook.com/ajax/video/upload/requests/start/' in uploader.calls[0]['url']
+        assert 'rupload' in uploader.calls[1]['url'] and 'fb_video' in uploader.calls[1]['url']
+        assert 'www.facebook.com/ajax/video/upload/requests/receive/' in uploader.calls[2]['url']
         assert uploader.calls[1]['headers']['X-Entity-Type'] == 'video/mp4'
         assert uploader.calls[1]['headers']['X-Start-Offset'] == '0'
         assert isinstance(uploader.calls[1]['data'], bytes)
@@ -340,5 +340,47 @@ def test_rupload_video_receive_failure(tmp_path: Path):
         assert not ok
         assert media_id is None
         assert 'VUPLOAD_RECEIVE_HTTP_500' in detail
+
+    asyncio.run(run())
+
+
+def test_rupload_graph_api_video_missing_credentials(tmp_path: Path):
+    async def run():
+        video = tmp_path / 'test.mp4'
+        video.write_bytes(b'\x00\x00\x00\x00' * 256)
+        redis = FakeRedis()
+        identity = IdentityContext(account_id='acct-1', proxy_url='http://proxy-1')
+        vault = TokenVault(redis)
+        await vault.set('acct-1', {'fb_dtsg': 'd', 'lsd': 'l'})
+        uploader = HardenedRupload(
+            vault, identity, redis,
+            ProxyManager([], redis),
+            AppConfig(enable_private_facebook_http=True),
+        )
+        ok, media_id, detail = await uploader.upload_video_via_graph_api(str(video), '', '')
+        assert not ok
+        assert media_id is None
+        assert 'MISSING_GRAPH_API_CREDENTIALS' in detail
+
+    asyncio.run(run())
+
+
+def test_rupload_graph_api_video_invalid_path(tmp_path: Path):
+    async def run():
+        redis = FakeRedis()
+        identity = IdentityContext(account_id='acct-1', proxy_url='http://proxy-1')
+        vault = TokenVault(redis)
+        await vault.set('acct-1', {'fb_dtsg': 'd', 'lsd': 'l'})
+        uploader = HardenedRupload(
+            vault, identity, redis,
+            ProxyManager([], redis),
+            AppConfig(enable_private_facebook_http=True),
+        )
+        ok, media_id, detail = await uploader.upload_video_via_graph_api(
+            '/nonexistent/video.mp4', 'EAAtest', '123',
+        )
+        assert not ok
+        assert media_id is None
+        assert 'validation failed' in detail
 
     asyncio.run(run())

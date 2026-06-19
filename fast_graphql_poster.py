@@ -90,12 +90,23 @@ async def _post_one_fast(
         if post_type == 'image':
             uploader = HardenedRupload(token_vault, identity, redis_client, proxy_manager, config)
             upload_success, fbid, upload_err = await uploader.upload_image(media_url)
+            if not upload_success:
+                return False, f"{post_type.upper()} upload failed: {upload_err}", None
+            media_fbid = fbid
         elif post_type == 'video':
             uploader = HardenedRupload(token_vault, identity, redis_client, proxy_manager, config)
+            page_access_tokens = (tokens or {}).get('page_access_tokens', {}) or {}
+            page_token = page_access_tokens.get(str(page_id))
+            if page_token:
+                upload_success, fbid, upload_err = await uploader.upload_video_via_graph_api(
+                    media_url, page_token, str(page_id), caption,
+                )
+                if upload_success:
+                    return True, 'Posted via Graph API', fbid
             upload_success, fbid, upload_err = await uploader.upload_video(media_url)
-        if not upload_success:
-            return False, f"{post_type.upper()} upload failed: {upload_err}", None
-        media_fbid = fbid
+            if not upload_success:
+                return False, f"{post_type.upper()} upload failed: {upload_err}", None
+            media_fbid = fbid
         
     # Post via GraphQL
     poster = HardenedGraphQLPoster(token_vault, identity, redis_client, proxy_manager, config)
