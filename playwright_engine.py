@@ -6710,6 +6710,26 @@ async def _dismiss_common_facebook_popups(page: Page) -> None:
     )
 
 
+async def _dismiss_profile_switch_dialog(page: Page) -> None:
+    """Dismiss an open profile-switch dialog without committing to any option."""
+    try:
+        dimmer = page.locator('[role="dialog"] [role="button"][aria-label="Close"], '
+                              '[role="dialog"] button:has-text("Close"), '
+                              '[role="dialog"] button:has-text("إغلاق"), '
+                              '[role="dialog"] [aria-label="إغلاق"]').first
+        if await dimmer.is_visible(timeout=500):
+            await dimmer.click(timeout=1500)
+            await asyncio.sleep(0.3)
+            return
+    except Exception:
+        pass
+    try:
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.3)
+    except Exception:
+        pass
+
+
 async def _visible_text(locator: Any, timeout: int = 700) -> str:
     try:
         if not await locator.is_visible(timeout=timeout):
@@ -6974,7 +6994,14 @@ async def _confirm_profile_switch_dialog(page: Page, timeout: Optional[int] = No
 
 
 async def _click_onscreen_switch_button(page: Page, page_name: str = '') -> bool:
-    """Detect and click any prominent 'Switch Now' or 'Switch' button in the page content itself."""
+    """Detect and click any prominent 'Switch Now' or 'Switch' button in the page content itself.
+
+    Returns True only if a switch to *page_name* was confirmed.
+    If a generic switch button is found but the target page_name is not in the
+    resulting options list, the dialog is dismissed to avoid switching to the
+    wrong profile (important in parallel posting where sibling workers change
+    the shared cookie).
+    """
     try:
         if page_name and await _profile_switch_dialog_visible(page):
             selected = await _click_profile_switch_option(page, page_name)
@@ -6985,6 +7012,8 @@ async def _click_onscreen_switch_button(page: Page, page_name: str = '') -> bool
                     timeout_ms=9000,
                     initial_grace_seconds=POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS,
                 )
+            # Dialog is open but target page is not an option — dismiss it
+            await _dismiss_profile_switch_dialog(page)
             return False
         direct_switch_patterns = [
             "Switch Now", "Switch profile", "تبديل الآن", "بدّل الآن", "بدل الآن"
@@ -7000,6 +7029,25 @@ async def _click_onscreen_switch_button(page: Page, page_name: str = '') -> bool
                         continue
                 except Exception:
                     pass
+                # Before clicking a generic switch button, check if the target
+                # page is already listed in a visible switch dialog.  If the
+                # dialog contains the wrong profile skip the button so we do
+                # not switch away from the target.
+                if page_name and await _profile_switch_dialog_visible(page):
+                    can_switch = await _click_profile_switch_option(page, page_name)
+                    if not can_switch:
+                        logger.info(
+                            f"Page Switch: refusing to click '{pattern}' — switch dialog "
+                            f"does not contain target page '{page_name}' (likely from "
+                            "another parallel worker's cookie change)."
+                        )
+                        return False
+                    await _confirm_profile_switch_dialog(page)
+                    return await _wait_for_profile_switch_to_settle(
+                        page,
+                        timeout_ms=9000,
+                        initial_grace_seconds=POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS,
+                    )
                 logger.info(f"Page Switch: found on-screen switch button with text '{pattern}'. Clicking it...")
                 await loc.click(timeout=3000)
                 await _wait_for_facebook_ui_ready(page, timeout=4000)
@@ -7009,11 +7057,7 @@ async def _click_onscreen_switch_button(page: Page, page_name: str = '') -> bool
                         logger.info(
                             f"Page Switch: generic switch button did not expose target page '{page_name}'."
                         )
-                        await _wait_for_profile_switch_to_settle(
-                            page,
-                            timeout_ms=2000,
-                            initial_grace_seconds=POST_PROFILE_SWITCH_SETTLE_GRACE_SECONDS,
-                        )
+                        await _dismiss_profile_switch_dialog(page)
                         return False
                     await _confirm_profile_switch_dialog(page)
                 return await _wait_for_profile_switch_to_settle(
