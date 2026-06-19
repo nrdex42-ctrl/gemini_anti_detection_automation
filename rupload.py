@@ -38,8 +38,9 @@ class PrivateEndpointDisabled(RuntimeError):
 _PHOTO_INIT_URL = 'https://rupload.facebook.com/photo-upload/v1'
 _PHOTO_TRANSFER_URL = 'https://rupload.facebook.com/photo-upload/v1/{session_id}'
 
-_VIDEO_INIT_URL = 'https://rupload.facebook.com/video-upload/v1'
-_VIDEO_TRANSFER_URL = 'https://rupload.facebook.com/video-upload/v1/{session_id}'
+_VIDEO_INIT_URL = 'https://vupload2.facebook.com/ajax/video/upload/requests/start/'
+_VIDEO_RECEIVE_URL = 'https://vupload2.facebook.com/ajax/video/upload/requests/receive/'
+_GRAPH_VIDEO_URL = 'https://graph.facebook.com/v19.0/{page_id}/videos'
 
 
 class HardenedRupload:
@@ -57,6 +58,69 @@ class HardenedRupload:
         self.proxy = proxy_manager
         self.config = config or AppConfig()
         self.safety = SafetyConfig()
+
+    async def upload_video(self, video_path: str) -> Tuple[bool, Optional[str], str]:
+        if not self.config.enable_private_facebook_http:
+            return False, None, 'Private Facebook HTTP upload is disabled by configuration.'
+        if not self._validate_video(video_path):
+            return False, None, 'Video validation failed.'
+
+        proxy_url = ''
+        try:
+            video_bytes = self._read_video_bytes(video_path)
+            tokens = await self.tokens.get(self.identity.account_id)
+            if not tokens:
+                return False, None, 'TOKEN_EXPIRED'
+
+            proxy_url = await self.proxy.get_proxy_for_account(self.identity.account_id)
+            await self._sleep(StochasticTimer.think_time(200, 800))
+
+            upload_url, session_id, init_detail = await self._vupload_init(
+                tokens, video_bytes, video_path, proxy_url,
+            )
+            if not upload_url or not session_id:
+                return False, None, init_detail
+
+            media_fbid_from_transfer, transfer_ok, transfer_detail = await self._vupload_transfer(
+                tokens, video_bytes, upload_url, proxy_url,
+            )
+            if not transfer_ok:
+                return False, None, transfer_detail
+
+            media_fbid, receive_detail = await self._vupload_receive(
+                tokens, session_id, proxy_url,
+            )
+            if not media_fbid:
+                return False, None, receive_detail
+            await self.tokens.increment_usage(self.identity.account_id)
+            return True, str(media_fbid), 'Success'
+        except Exception as exc:
+            await self.proxy.report_failure(self.identity.account_id, proxy_url, str(exc))
+            return False, None, f'Exception: {str(exc)[:200]}'
+
+    def _validate_video(self, path: str) -> bool:
+        try:
+            size = os.path.getsize(path)
+            if size < 1024 or size > self.safety.max_video_size_bytes:
+                logger.warning(
+                    'Video validation failed for %s: size %s outside allowed range',
+                    path,
+                    size,
+                )
+                return False
+        except OSError as exc:
+            logger.warning('Video validation failed for %s: %s', path, exc)
+            return False
+        lower = path.lower()
+        if not lower.endswith(('.mp4', '.mov', '.avi', '.mkv', '.webm', '.gif')):
+            logger.warning('Video validation failed for %s: unsupported extension', path)
+            return False
+        return True
+
+    @staticmethod
+    def _read_video_bytes(path: str) -> bytes:
+        with open(path, 'rb') as f:
+            return f.read()
 
     async def upload_image(self, image_path: str) -> Tuple[bool, Optional[str], str]:
         if not self.config.enable_private_facebook_http:
@@ -470,6 +534,193 @@ class HardenedRupload:
         if not media_fbid:
             detail = self._extract_error_detail(result)
             return None, f'{classify_error(detail or result_text)}: {detail or self._response_excerpt(result)}'
+        return str(media_fbid), ''
+
+    def _vupload_headers(
+        self,
+        tokens: Dict[str, Any],
+        video_bytes: bytes,
+    ) -> Dict[str, str]:
+        content_length = len(video_bytes)
+        entity_name = self._video_entity_name_for_size(video_bytes)
+
+        forge = AdvancedHeaderForge(
+            chrome_version=self.identity.chrome_version,
+            user_agent=self.identity.user_agent,
+            platform=self.identity.platform,
+            locale=self.identity.locale,
+        )
+
+        cookie_header = str(tokens.get('cookie_header') or '').strip() or None
+        updates = {
+            'X-Entity-Length': str(content_length),
+            'X-Entity-Type': 'video/mp4',
+            'X-Entity-Name': entity_name,
+            'X-Start-Offset': '0',
+        }
+        return forge.build_rupload_headers(
+            tokens=tokens,
+            file_size=content_length,
+            offset=0,
+            cookies=cookie_header,
+            extra=updates,
+        )
+
+    @staticmethod
+    def _video_entity_name_for_size(video_bytes: bytes) -> str:
+        return f'fb_video_{hashlib.md5(video_bytes[:256]).hexdigest()[:12]}.mp4'
+
+    async def _vupload_init(
+        self,
+        tokens: Dict[str, Any],
+        video_bytes: bytes,
+        video_path: str,
+        proxy_url: str,
+    ) -> Tuple[Optional[str], Optional[str], str]:
+        payload = {
+            'fb_dtsg': str(tokens.get('fb_dtsg') or ''),
+            'lsd': str(tokens.get('lsd') or ''),
+            'file_size': str(len(video_bytes)),
+            'media_type': 'video/mp4',
+            'file_name': os.path.basename(video_path) or 'video.mp4',
+            'client_id': generate_client_id(self.identity.account_id),
+        }
+        if tokens.get('user_id'):
+            payload['user_id'] = str(tokens['user_id'])
+
+        cookie_header = str(tokens.get('cookie_header') or '').strip() or None
+        forge = AdvancedHeaderForge(
+            chrome_version=self.identity.chrome_version,
+            user_agent=self.identity.user_agent,
+            platform=self.identity.platform,
+            locale=self.identity.locale,
+        )
+        headers = forge.build_xhr_headers(
+            host='vupload2.facebook.com',
+            origin='https://www.facebook.com',
+            referer='https://www.facebook.com/',
+            content_type='application/x-www-form-urlencoded',
+            content_length=len(urllib_parse.urlencode(payload)),
+            cookies=cookie_header,
+        )
+
+        init_status, init_text = await self._post_form(
+            _VIDEO_INIT_URL,
+            payload,
+            headers,
+            proxy_url,
+            timeout_seconds=20,
+        )
+        if init_status >= 400:
+            return None, None, f'VUPLOAD_INIT_HTTP_{init_status}: {init_text[:300]}'
+        try:
+            init_data = self._loads_json(init_text)
+        except Exception:
+            return None, None, f'VUPLOAD_INIT_PARSE_FAILED: {init_text[:300]}'
+
+        payload_data = init_data
+        if isinstance(payload_data, dict):
+            raw_payload = payload_data.get('payload')
+            if isinstance(raw_payload, dict):
+                upload_url = raw_payload.get('upload_url') or raw_payload.get('url') or ''
+                session_id = raw_payload.get('upload_session_id') or raw_payload.get('session_id') or ''
+            else:
+                upload_url = payload_data.get('upload_url') or payload_data.get('url') or ''
+                session_id = payload_data.get('upload_session_id') or payload_data.get('session_id') or ''
+
+        if not upload_url:
+            return None, None, f'VUPLOAD_INIT_NO_URL: {init_text[:300]}'
+        if not session_id:
+            return None, None, f'VUPLOAD_INIT_NO_SESSION: {init_text[:300]}'
+
+        return str(upload_url), str(session_id), ''
+
+    async def _vupload_transfer(
+        self,
+        tokens: Dict[str, Any],
+        video_bytes: bytes,
+        upload_url: str,
+        proxy_url: str,
+    ) -> Tuple[Optional[str], bool, str]:
+        headers = self._vupload_headers(tokens, video_bytes)
+        result_status, result_text = await self._post_form(
+            upload_url,
+            video_bytes,
+            headers,
+            proxy_url,
+            timeout_seconds=120,
+        )
+        if result_status >= 400:
+            return None, False, f'VUPLOAD_TRANSFER_HTTP_{result_status}: {result_text[:300]}'
+
+        media_fbid = None
+        try:
+            result = self._loads_json(result_text)
+            if isinstance(result, dict):
+                result_payload = result.get('payload') or result
+                if isinstance(result_payload, dict):
+                    media_fbid = result_payload.get('fbid') or result_payload.get('media_fbid') or result_payload.get('video_id')
+            if not media_fbid and isinstance(result, dict):
+                media_fbid = result.get('fbid') or result.get('media_fbid') or result.get('video_id')
+        except Exception:
+            pass
+
+        return (str(media_fbid), True, '') if media_fbid else (None, True, 'Transfer accepted (fbid not in response)')
+
+    async def _vupload_receive(
+        self,
+        tokens: Dict[str, Any],
+        session_id: str,
+        proxy_url: str,
+    ) -> Tuple[Optional[str], str]:
+        payload = {
+            'fb_dtsg': str(tokens.get('fb_dtsg') or ''),
+            'lsd': str(tokens.get('lsd') or ''),
+            'upload_session_id': str(session_id),
+            'client_id': generate_client_id(self.identity.account_id),
+        }
+
+        cookie_header = str(tokens.get('cookie_header') or '').strip() or None
+        forge = AdvancedHeaderForge(
+            chrome_version=self.identity.chrome_version,
+            user_agent=self.identity.user_agent,
+            platform=self.identity.platform,
+            locale=self.identity.locale,
+        )
+        headers = forge.build_xhr_headers(
+            host='vupload2.facebook.com',
+            origin='https://www.facebook.com',
+            referer='https://www.facebook.com/',
+            content_type='application/x-www-form-urlencoded',
+            content_length=len(urllib_parse.urlencode(payload)),
+            cookies=cookie_header,
+        )
+
+        recv_status, recv_text = await self._post_form(
+            _VIDEO_RECEIVE_URL,
+            payload,
+            headers,
+            proxy_url,
+            timeout_seconds=15,
+        )
+        if recv_status >= 400:
+            return None, f'VUPLOAD_RECEIVE_HTTP_{recv_status}: {recv_text[:300]}'
+        try:
+            recv_data = self._loads_json(recv_text)
+        except Exception:
+            return None, f'VUPLOAD_RECEIVE_PARSE_FAILED: {recv_text[:300]}'
+
+        media_fbid = None
+        if isinstance(recv_data, dict):
+            recv_payload = recv_data.get('payload') or recv_data
+            if isinstance(recv_payload, dict):
+                media_fbid = recv_payload.get('fbid') or recv_payload.get('media_fbid') or recv_payload.get('video_id')
+        if not media_fbid:
+            if isinstance(recv_data, dict):
+                media_fbid = recv_data.get('fbid') or recv_data.get('media_fbid') or recv_data.get('video_id')
+        if not media_fbid:
+            return None, f'VUPLOAD_RECEIVE_NO_FBID: {recv_text[:300]}'
+
         return str(media_fbid), ''
 
     def build_upload_init_payload(

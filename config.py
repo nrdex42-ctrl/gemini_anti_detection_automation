@@ -110,6 +110,7 @@ class SafetyConfig:
     quarantine_hard_seconds: int = 3600
     quarantine_severe_seconds: int = 86400
     max_image_size_bytes: int = 15 * 1024 * 1024
+    max_video_size_bytes: int = 200 * 1024 * 1024
     min_image_dimension: int = 100
     proxy_sticky_seconds: int = 600
     proxy_max_failures: int = 3

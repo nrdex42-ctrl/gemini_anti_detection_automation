@@ -184,3 +184,161 @@ def test_rupload_mocked_transfer_failure_reports_error(tmp_path: Path):
         assert 'RUPLOAD_TRANSFER_HTTP_500' in detail
 
     asyncio.run(run())
+
+
+# ── Video upload tests ──
+
+def test_rupload_video_validates(tmp_path: Path):
+    uploader = HardenedRupload(
+        TokenVault(FakeRedis()),
+        IdentityContext(account_id='acct-1', proxy_url='http://proxy-1'),
+        FakeRedis(),
+        ProxyManager([], FakeRedis()),
+        AppConfig(enable_private_facebook_http=False),
+    )
+    video = tmp_path / 'test.mp4'
+    video.write_bytes(b'\x00\x00\x00\x00' * 256)
+    assert uploader._validate_video(str(video))
+    bad = tmp_path / 'test.txt'
+    bad.write_text('not a video')
+    assert not uploader._validate_video(str(bad))
+
+
+def test_rupload_video_disabled(tmp_path: Path):
+    async def run():
+        video = tmp_path / 'test.mp4'
+        video.write_bytes(b'\x00\x00\x00\x00' * 256)
+        uploader = HardenedRupload(
+            TokenVault(FakeRedis()),
+            IdentityContext(account_id='acct-1', proxy_url='http://proxy-1'),
+            FakeRedis(),
+            ProxyManager([], FakeRedis()),
+            AppConfig(enable_private_facebook_http=False),
+        )
+        ok, media_id, detail = await uploader.upload_video(str(video))
+        assert not ok
+        assert media_id is None
+        assert 'disabled' in detail.lower()
+
+    asyncio.run(run())
+
+
+def test_rupload_video_mocked_success(tmp_path: Path):
+    async def run():
+        video = tmp_path / 'test.mp4'
+        video.write_bytes(b'\x00\x00\x00\x00' * 256)
+        redis = FakeRedis()
+        identity = IdentityContext(account_id='acct-1', proxy_url='http://proxy-1')
+        vault = TokenVault(redis)
+        await vault.set('acct-1', {'fb_dtsg': 'd', 'lsd': 'l', 'user_id': 'user-1'})
+
+        uploader = MockRupload(
+            vault,
+            identity,
+            redis,
+            ProxyManager(['http://proxy-1'], redis),
+            AppConfig(enable_private_facebook_http=True),
+            responses=[
+                (200, '{"payload":{"upload_url":"https://rupload-test.up.facebook.com/fb_video/hash-0-1024","upload_session_id":"vsess-1"}}'),
+                (200, '{"fbid":"vmedia-1"}'),
+                (200, '{"fbid":"vmedia-1"}'),
+            ],
+        )
+        ok, media_id, detail = await uploader.upload_video(str(video))
+        assert ok
+        assert media_id == 'vmedia-1'
+        assert detail == 'Success'
+        assert len(uploader.calls) == 3
+        assert 'vupload2.facebook.com/ajax/video/upload/requests/start/' in uploader.calls[0]['url']
+        assert 'rupload-test.up.facebook.com' in uploader.calls[1]['url']
+        assert 'vupload2.facebook.com/ajax/video/upload/requests/receive/' in uploader.calls[2]['url']
+        assert uploader.calls[1]['headers']['X-Entity-Type'] == 'video/mp4'
+        assert uploader.calls[1]['headers']['X-Start-Offset'] == '0'
+        assert isinstance(uploader.calls[1]['data'], bytes)
+        assert redis.store['fb_tokens:acct-1:usage'] == 1
+
+    asyncio.run(run())
+
+
+def test_rupload_video_transfer_no_fbid_relies_on_receive(tmp_path: Path):
+    async def run():
+        video = tmp_path / 'test.mp4'
+        video.write_bytes(b'\x00\x00\x00\x00' * 256)
+        redis = FakeRedis()
+        identity = IdentityContext(account_id='acct-1', proxy_url='http://proxy-1')
+        vault = TokenVault(redis)
+        await vault.set('acct-1', {'fb_dtsg': 'd', 'lsd': 'l', 'user_id': 'user-1'})
+
+        uploader = MockRupload(
+            vault,
+            identity,
+            redis,
+            ProxyManager(['http://proxy-1'], redis),
+            AppConfig(enable_private_facebook_http=True),
+            responses=[
+                (200, '{"payload":{"upload_url":"https://rupload-test.up.facebook.com/fb_video/hash-0-1024","upload_session_id":"vsess-1"}}'),
+                (200, '{"status":"success"}'),
+                (200, '{"payload":{"fbid":"vmedia-2"}}'),
+            ],
+        )
+        ok, media_id, detail = await uploader.upload_video(str(video))
+        assert ok
+        assert media_id == 'vmedia-2'
+        assert detail == 'Success'
+        assert len(uploader.calls) == 3
+
+    asyncio.run(run())
+
+
+def test_rupload_video_init_failure(tmp_path: Path):
+    async def run():
+        video = tmp_path / 'test.mp4'
+        video.write_bytes(b'\x00\x00\x00\x00' * 256)
+        redis = FakeRedis()
+        identity = IdentityContext(account_id='acct-1', proxy_url='http://proxy-1')
+        vault = TokenVault(redis)
+        await vault.set('acct-1', {'fb_dtsg': 'd', 'lsd': 'l', 'user_id': 'user-1'})
+
+        uploader = MockRupload(
+            vault,
+            identity,
+            redis,
+            ProxyManager(['http://proxy-1'], redis),
+            AppConfig(enable_private_facebook_http=True),
+            responses=[(403, '{"error":"forbidden"}')],
+        )
+        ok, media_id, detail = await uploader.upload_video(str(video))
+        assert not ok
+        assert media_id is None
+        assert 'VUPLOAD_INIT_HTTP_403' in detail
+
+    asyncio.run(run())
+
+
+def test_rupload_video_receive_failure(tmp_path: Path):
+    async def run():
+        video = tmp_path / 'test.mp4'
+        video.write_bytes(b'\x00\x00\x00\x00' * 256)
+        redis = FakeRedis()
+        identity = IdentityContext(account_id='acct-1', proxy_url='http://proxy-1')
+        vault = TokenVault(redis)
+        await vault.set('acct-1', {'fb_dtsg': 'd', 'lsd': 'l', 'user_id': 'user-1'})
+
+        uploader = MockRupload(
+            vault,
+            identity,
+            redis,
+            ProxyManager(['http://proxy-1'], redis),
+            AppConfig(enable_private_facebook_http=True),
+            responses=[
+                (200, '{"payload":{"upload_url":"https://rupload-test.up.facebook.com/fb_video/hash-0-1024","upload_session_id":"vsess-1"}}'),
+                (200, '{"status":"success"}'),
+                (500, '{"error":"confirm failed"}'),
+            ],
+        )
+        ok, media_id, detail = await uploader.upload_video(str(video))
+        assert not ok
+        assert media_id is None
+        assert 'VUPLOAD_RECEIVE_HTTP_500' in detail
+
+    asyncio.run(run())

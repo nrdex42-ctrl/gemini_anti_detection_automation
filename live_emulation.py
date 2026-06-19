@@ -330,6 +330,106 @@ def normalize_live_post_result(
     }
 
 
+async def attempt_private_http_video_post(
+    post: Dict[str, Any],
+    tokens: Dict[str, Any],
+    cookies_json: str,
+    identity: IdentityContext,
+    *,
+    uploader_factory: Optional[Callable[..., Any]] = None,
+    poster_factory: Optional[Callable[..., Any]] = None,
+) -> Dict[str, Any]:
+    from fb_automation.config import AppConfig
+    from fb_automation.graphql_poster import HardenedGraphQLPoster
+    from fb_automation.network import ProxyManager
+    from fb_automation.rupload import HardenedRupload
+    from fb_automation.tokens import TokenVault
+
+    started = time.monotonic()
+    page_id = extract_page_id(str(post.get("page_id_or_url") or ""))
+    if not page_id:
+        return normalize_live_post_result(
+            post,
+            {"success": False, "status": "HTTP_VIDEO_PAGE_ID_MISSING", "post_id": None},
+            transport="private_http_video",
+        )
+
+    try:
+        cookie_header = str(tokens.get("cookie_header") or "").strip() or cookies_json_to_header(cookies_json)
+        token_payload = dict(tokens)
+        token_payload["cookie_header"] = cookie_header
+        token_payload["timestamp"] = time.time()
+        token_vault = TokenVault(None)
+        await token_vault.set(identity.account_id, token_payload)
+
+        active_identity = replace(
+            identity,
+            facebook_user_id=str(token_payload.get("user_id") or identity.facebook_user_id or ""),
+        )
+        config = AppConfig(enable_private_facebook_http=True, proxy_pool=[])
+        proxy_manager = ProxyManager([], None, require_proxy=False)
+        redis_client = None
+
+        uploader_cls = uploader_factory or HardenedRupload
+        uploader = uploader_cls(token_vault, active_identity, redis_client, proxy_manager, config)
+        video_path = str(post.get("media_url") or "")
+        if not video_path or not os.path.exists(video_path):
+            return normalize_live_post_result(
+                post,
+                {
+                    "success": False,
+                    "status": f"HTTP_VIDEO_FILE_MISSING: {video_path}",
+                    "post_id": None,
+                },
+                transport="private_http_video",
+            )
+        upload_ok, media_fbid, upload_detail = await uploader.upload_video(video_path)
+        if not upload_ok or not media_fbid:
+            return normalize_live_post_result(
+                post,
+                {
+                    "success": False,
+                    "status": f"HTTP_VIDEO_UPLOAD_FAILED: {str(upload_detail)[:300]}",
+                    "post_id": None,
+                },
+                transport="private_http_video",
+            )
+
+        poster_cls = poster_factory or HardenedGraphQLPoster
+        poster = poster_cls(token_vault, active_identity, redis_client, proxy_manager, config)
+        post_ok, status, post_id = await poster.post_to_page(
+            page_id,
+            str(post.get("caption") or ""),
+            str(media_fbid),
+            cookie_header=cookie_header,
+        )
+        return normalize_live_post_result(
+            post,
+            {
+                "success": post_ok,
+                "status": status if post_ok else f"HTTP_VIDEO_GRAPHQL_FAILED: {status}",
+                "post_id": post_id,
+            },
+            transport="private_http_video",
+        )
+    except Exception as exc:
+        return normalize_live_post_result(
+            post,
+            {
+                "success": False,
+                "status": f"HTTP_VIDEO_EXCEPTION: {str(exc)[:300]}",
+                "post_id": None,
+            },
+            transport="private_http_video",
+        )
+    finally:
+        logger.info(
+            "HTTP video path finished for %s in %.1fs",
+            post.get("page_name") or post.get("page_id_or_url") or "unknown",
+            time.monotonic() - started,
+        )
+
+
 async def attempt_private_http_image_post(
     post: Dict[str, Any],
     tokens: Dict[str, Any],
@@ -621,19 +721,23 @@ async def run_live_emulation():
     browser_posts: List[Dict[str, Any]] = []
     browser_post_indexes: List[int] = []
     http_image_failures: Dict[int, str] = {}
+    http_video_failures: Dict[int, str] = {}
     http_image_first = private_http_image_first_enabled()
+    http_video_first = _env_bool("LIVE_EMULATION_HTTP_VIDEO_FIRST", True)
     image_strategy = get_image_upload_strategy()
     if http_image_first:
         logger.info("HTTP image-first route enabled for image posts.")
     else:
         logger.info("HTTP image-first route disabled; using browser route for image posts.")
+    if http_video_first:
+        logger.info("HTTP video-first route enabled for video posts.")
+    else:
+        logger.info("HTTP video-first route disabled; using browser route for video posts.")
     logger.info("Image upload strategy: %s", image_strategy)
 
     for index, post in enumerate(posts):
         if post.get("post_type") == "image":
             # ── Smart routing for image posts ──
-            # If the account is known-blocked or strategy is text_only,
-            # skip both HTTP upload and browser upload entirely.
             account_id = getattr(identity, 'account_id', 'unknown')
             if image_strategy == STRATEGY_TEXT_ONLY or is_upload_blocked(account_id):
                 reason = (
@@ -647,13 +751,12 @@ async def run_live_emulation():
                 )
                 smart_result = await smart_image_post(
                     post, tokens, cookies_json, identity,
-                    http_upload_fn=None,  # skip upload
+                    http_upload_fn=None,
                     browser_upload_fn=None,
                 )
                 normalized_results[index] = smart_result
                 continue
 
-            # Try HTTP upload first (if enabled)
             if http_image_first:
                 logger.info(
                     "Attempting HTTP image route for %s (%s)",
@@ -673,7 +776,6 @@ async def run_live_emulation():
                 failure_status = str(http_result.get("status") or "HTTP_IMAGE_FAILED")
                 http_image_failures[index] = failure_status
 
-                # ── Check if this is an upload authorization block ──
                 if looks_like_upload_block(failure_status):
                     mark_upload_blocked(account_id)
                     logger.warning(
@@ -696,6 +798,30 @@ async def run_live_emulation():
                     failure_status,
                 )
 
+        elif post.get("post_type") == "video" and http_video_first:
+            logger.info(
+                "Attempting HTTP video route for %s (%s)",
+                post.get("page_name") or post.get("page_id_or_url"),
+                post.get("page_id_or_url"),
+            )
+            http_result = await attempt_private_http_video_post(post, tokens, cookies_json, identity)
+            if http_result["success"]:
+                normalized_results[index] = http_result
+                logger.info(
+                    "SUCCESS: video post accepted by HTTP route on Page %s. Post ID: %s",
+                    post["page_id_or_url"],
+                    http_result.get("post_id"),
+                )
+                continue
+
+            failure_status = str(http_result.get("status") or "HTTP_VIDEO_FAILED")
+            http_video_failures[index] = failure_status
+            logger.warning(
+                "HTTP video route failed for %s; falling back to browser route. Reason: %s",
+                post.get("page_name") or post.get("page_id_or_url"),
+                failure_status,
+            )
+
         browser_posts.append(post)
         browser_post_indexes.append(index)
 
@@ -703,15 +829,23 @@ async def run_live_emulation():
         results = await create_facebook_posts(cookies_json, browser_posts, progress_callback=None)
         for post, result, original_index in zip(browser_posts, results, browser_post_indexes):
             http_failure = http_image_failures.get(original_index, "")
-            transport = "browser_after_http_image" if http_failure else "browser"
+            http_video_failure = http_video_failures.get(original_index, "")
+            transport = "browser_after_http_image" if http_failure else "browser_after_http_video" if http_video_failure else "browser"
+            prefix = ""
+            if http_failure:
+                prefix = f"HTTP image path failed first: {http_failure}"
+            elif http_video_failure:
+                prefix = f"HTTP video path failed first: {http_video_failure}"
             normalized = normalize_live_post_result(
                 post,
                 result,
                 transport=transport,
-                prefix_status=f"HTTP image path failed first: {http_failure}" if http_failure else "",
+                prefix_status=prefix,
             )
             if http_failure:
                 normalized["http_image_status"] = http_failure
+            if http_video_failure:
+                normalized["http_video_status"] = http_video_failure
 
             # ── Post-browser check: did the browser also hit an upload block? ──
             if (
