@@ -611,7 +611,11 @@ class BotStorage:
         try:
             return self.cipher.decrypt(str(row["cookie_ciphertext"]))
         except Exception:
-            raise RuntimeError("Stored cookie could not be decrypted with this ENCRYPTION_KEY") from None
+            raise RuntimeError(
+                "Stored cookie could not be decrypted — the ENCRYPTION_KEY on this server "
+                "does not match the key used when the account was added. "
+                "Re-add the account or set the original ENCRYPTION_KEY."
+            ) from None
 
     def get_account_proxy(self, account_id: str, owner_id: Optional[int] = None) -> str:
         with self.connect() as conn:

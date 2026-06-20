@@ -714,6 +714,14 @@ async def _wait_for_facebook_ui_ready(page: Page, timeout: int = 3500) -> bool:
     )
 
 
+async def _safe_handle(coro: Awaitable[Any]) -> None:
+    """Run a coroutine and log any exception instead of creating an abandoned future."""
+    try:
+        await coro
+    except Exception as exc:
+        logger.debug('Network handler error (likely detached frame): %s', exc)
+
+
 def _attach_network_monitoring(page: Page, label: str) -> None:
     async def _on_response(response: Any) -> None:
         try:
@@ -740,8 +748,14 @@ def _attach_network_monitoring(page: Page, label: str) -> None:
         except Exception:
             pass
 
-    page.on('response', lambda response: asyncio.create_task(_on_response(response)))
-    page.on('requestfailed', lambda request: asyncio.create_task(_on_request_failed(request)))
+    page.on(
+        'response',
+        lambda response: asyncio.ensure_future(_safe_handle(_on_response(response))),
+    )
+    page.on(
+        'requestfailed',
+        lambda request: asyncio.ensure_future(_safe_handle(_on_request_failed(request))),
+    )
 
 
 def _is_media_upload_url(url: str) -> bool:
@@ -2418,7 +2432,12 @@ async def _release_redis_lock_with_metadata(
             heartbeat[0].set()
         except Exception:
             pass
-    await asyncio.to_thread(resource.release)
+    try:
+        await asyncio.to_thread(resource.release)
+    except AttributeError:
+        # Lock was acquired in a different thread pool thread, so
+        # redis-py's thread-local token is missing in this thread.
+        await asyncio.to_thread(resource.release, force=True)
     _stop_redis_lock_heartbeat(heartbeat, client)
 
 
@@ -2432,7 +2451,10 @@ def _release_redis_lock_with_metadata_sync(
             heartbeat[0].set()
         except Exception:
             pass
-    resource.release()
+    try:
+        resource.release()
+    except AttributeError:
+        resource.release(force=True)
     _stop_redis_lock_heartbeat(heartbeat, client)
 
 
@@ -9922,7 +9944,21 @@ async def _create_facebook_post_browser(
     try:
         logger.info(f'Playwright posting started for target={page_id_or_url} type={post_type}')
         await _enable_fast_posting_mode(context, page)
-        await page.goto("https://www.facebook.com/", wait_until='domcontentloaded', timeout=45000)
+        try:
+            response = await page.goto("https://www.facebook.com/", wait_until='domcontentloaded', timeout=45000)
+        except Exception as goto_exc:
+            logger.error(f'Facebook navigation failed: {goto_exc}')
+            diagnostic_path = await _save_diagnostics(page, 'post_navigation_failure')
+            session_detail = _with_diagnostic(
+                f'Could not load Facebook.com — network or proxy issue: {goto_exc}',
+                diagnostic_path,
+            )
+            return False, session_detail
+        if response is not None and response.ok:
+            logger.info('Facebook home loaded successfully (status=%d)', response.status)
+        else:
+            status = response.status if response is not None else 'no-response'
+            logger.warning('Facebook home returned status=%s; continuing anyway', status)
         await _resume_facebook_cookie_session(page)
         try:
             await page.wait_for_load_state("networkidle", timeout=8000)
@@ -10154,7 +10190,19 @@ async def _create_facebook_posts_unstaged(
         logger.info(f'BATCH_STEP stage="started" total_pages={len(posts)}')
         await _enable_fast_posting_mode(context, page)
         home_started_at = time.time()
-        await page.goto("https://www.facebook.com/", wait_until=POST_BATCH_HOME_WAIT_UNTIL, timeout=45000)
+        try:
+            response = await page.goto("https://www.facebook.com/", wait_until=POST_BATCH_HOME_WAIT_UNTIL, timeout=45000)
+        except Exception as goto_exc:
+            logger.error(f'Batch: Facebook navigation failed: {goto_exc}')
+            for p in posts:
+                p['result'] = _with_diagnostic(
+                    f'Could not load Facebook.com — network or proxy issue: {goto_exc}',
+                    None,
+                )
+                p['success'] = False
+            return posts
+        if response is not None and response.ok:
+            logger.info('Batch: Facebook home loaded (status=%d)', response.status)
         await _resume_facebook_cookie_session(page)
         await _smart_wait(
             lambda: page.locator('body, div[role="main"], h1').count(),
@@ -10276,7 +10324,15 @@ async def _create_facebook_posts_unstaged(
                     retry_page = active_retry_page
                     if FACEBOOK_STEALTH_ASYNC_ENABLED:
                         await stealth_async(active_retry_page)
-                    await active_retry_page.goto("https://www.facebook.com/", wait_until='domcontentloaded', timeout=45000)
+                    try:
+                        response = await active_retry_page.goto("https://www.facebook.com/", wait_until='domcontentloaded', timeout=45000)
+                    except Exception as goto_exc:
+                        logger.error(f'Retry page: Facebook navigation failed: {goto_exc}')
+                        await active_retry_page.close()
+                        continue
+                    if response is None or not response.ok:
+                        logger.warning('Retry page: Facebook returned status=%s; retrying anyway',
+                                       response.status if response else 'no-response')
                     await _resume_facebook_cookie_session(active_retry_page)
                     try:
                         await active_retry_page.wait_for_load_state("networkidle", timeout=8000)
@@ -10580,7 +10636,24 @@ async def _create_facebook_posts_parallel_unstaged(
         # Validate login once (avoid N login checks)
         await _enable_fast_posting_mode(check_context, check_page)
         home_started_at = time.time()
-        await check_page.goto("https://www.facebook.com/", wait_until=POST_BATCH_HOME_WAIT_UNTIL, timeout=45000)
+        try:
+            response = await check_page.goto("https://www.facebook.com/", wait_until=POST_BATCH_HOME_WAIT_UNTIL, timeout=45000)
+        except Exception as goto_exc:
+            logger.error(f'Parallel: Facebook navigation failed: {goto_exc}')
+            await browser.close()
+            await playwright.stop()
+            await asyncio.to_thread(_mark_cookie_session_used, cookies_json, False, str(goto_exc))
+            await _release_cookie_session_guard(session_guard)
+            return [
+                {
+                    'page': str(post.get('page_name') or post.get('page_id_or_url') or 'Unknown page'),
+                    'success': False,
+                    'result': f'Could not load Facebook.com — network or proxy issue: {goto_exc}',
+                }
+                for post in posts
+            ]
+        if response is not None and response.ok:
+            logger.info('Parallel: Facebook home loaded (status=%d)', response.status)
         await _resume_facebook_cookie_session(check_page)
         await _smart_wait(
             lambda: check_page.locator('body, div[role="main"], h1').count(),
