@@ -608,7 +608,10 @@ class BotStorage:
                 row = cur.fetchone()
         if not row:
             raise RuntimeError(f"Active account not found: {account_id}")
-        return self.cipher.decrypt(str(row["cookie_ciphertext"]))
+        try:
+            return self.cipher.decrypt(str(row["cookie_ciphertext"]))
+        except Exception:
+            raise RuntimeError("Stored cookie could not be decrypted with this ENCRYPTION_KEY") from None
 
     def get_account_proxy(self, account_id: str, owner_id: Optional[int] = None) -> str:
         with self.connect() as conn:
@@ -622,7 +625,13 @@ class BotStorage:
                 row = cur.fetchone()
         if not row:
             raise RuntimeError(f"Active account not found: {account_id}")
-        return self.cipher.decrypt(str(row.get("proxy_ciphertext") or ""))
+        raw = str(row.get("proxy_ciphertext") or "")
+        if not raw:
+            return ""
+        try:
+            return self.cipher.decrypt(raw)
+        except Exception:
+            return ""
 
     def upsert_pages(self, account_id: str, pages: List[Dict[str, str]]) -> None:
         normalized_pages: List[Dict[str, str]] = []
@@ -1341,7 +1350,13 @@ class BotStorage:
             conn.commit()
 
     def get_global_proxy(self) -> str:
-        return self.cipher.decrypt(self.get_meta("global_proxy_ciphertext"))
+        raw = self.get_meta("global_proxy_ciphertext")
+        if not raw:
+            return ""
+        try:
+            return self.cipher.decrypt(raw)
+        except Exception:
+            return ""
 
     def set_global_proxy(self, proxy_url: str = "") -> None:
         value = self.cipher.encrypt(proxy_url.strip()) if str(proxy_url or "").strip() else ""
