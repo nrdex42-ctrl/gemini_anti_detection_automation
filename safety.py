@@ -13,6 +13,7 @@ from .config import SafetyConfig
 from .models import IdentityContext
 from .tokens import TokenVault
 from .utils import classify_error, maybe_await
+from .circuit_breaker import CircuitBreaker, BreakerState, CircuitBreakerOpen
 
 
 class SafetyStatus(str, Enum):
@@ -108,18 +109,31 @@ class QuarantineManager:
 
 
 class SafetyGuard:
-    def __init__(self, redis_client: Any, identity: IdentityContext, token_vault: Optional[TokenVault] = None):
+    def __init__(
+        self,
+        redis_client: Any,
+        identity: IdentityContext,
+        token_vault: Optional[TokenVault] = None,
+        circuit_breaker: Optional[CircuitBreaker] = None,
+    ):
         self.redis = redis_client
         self.identity = identity
         self.account_id = identity.account_id
         self.config = SafetyConfig()
         self.token_vault = token_vault or TokenVault(redis_client)
         self.quarantine = QuarantineManager(redis_client)
+        self.circuit_breaker = circuit_breaker
 
     async def pre_flight_check(self) -> Tuple[SafetyStatus, str]:
         account_id = self.identity.account_id
         if self.redis and await maybe_await(self.redis.exists(f'quarantine:{account_id}')):
             return SafetyStatus.QUARANTINE, 'account is quarantined'
+
+        # Circuit breaker check
+        if self.circuit_breaker is not None:
+            allowed = await self.circuit_breaker.before_request()
+            if not allowed:
+                return SafetyStatus.QUARANTINE, 'circuit breaker open'
 
         now = datetime.now(timezone.utc)
         hour_key = f'post_rate:{account_id}:{now:%Y%m%d%H}'
@@ -225,6 +239,10 @@ class SafetyGuard:
             await maybe_await(self.redis.delete(key))
 
     async def post_flight_validation(self, success: bool, response_code: int, error_message: str) -> SafetyStatus:
+        # Report to circuit breaker
+        if self.circuit_breaker is not None:
+            await self.circuit_breaker.after_request(success=(success and response_code < 400))
+
         if success and response_code < 400:
             await self.record_success()
             return SafetyStatus.CLEAR

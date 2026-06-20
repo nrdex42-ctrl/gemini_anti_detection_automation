@@ -11,3 +11,4 @@ requests>=2.31,<3
 rq>=1.16,<2
 brotli>=1.0.9,<2
 python-telegram-bot[job-queue]>=21,<22
+curl-cffi>=0.9,<1

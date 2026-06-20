@@ -42,6 +42,29 @@ if __package__:
         build_text_fallback_caption,
     )
 
+    # New anti-detection modules
+    from .fb_client import FBClient, FBClientPool, FingerprintProfile
+    from .jazoest import compute_jazoest, inject_jazoest
+    from .circuit_breaker import CircuitBreaker, BreakerState, CircuitBreakerOpen
+    from .rate_limiter import RateLimiter
+    from .behavior_simulator import BehaviorSimulator, TelemetryFlusher
+    from .checkpoint import CheckpointDetector, CheckpointEncountered, handle_checkpoint
+    from .warmup_planner import WarmupLevel, WarmupState, WarmupPlanner
+    from .token_trinity import TokenTrinityManager
+    from .backoff import (
+        NetworkError, TransientGraphQLError, PermanentGraphQLError,
+        SilentFailureError, RetryBudgetExhausted,
+        retry_with_backoff, classify_http_response, extract_retry_after,
+    )
+    from .mention_parser import Mention, parse_mentions, build_mention_ranges, strip_mentions
+    from .cookie_jar import FBCookieJar
+    from .fingerprint_profiles import FingerprintProfile as AtomicFingerprintProfile, get_profile, profile_to_fingerprint_dict, PROFILES
+    from .photo_uploader import PhotoUploader, PhotoUploadError
+    from .multi_photo_poster import MultiPhotoPoster, MultiPhotoError
+    from .structured_logging import setup_logging, get_logger as get_structured_logger, FBJsonFormatter
+    from .doc_ids import get_live_doc_id, get_fallback, FALLBACK_DOC_IDS
+    from .worker import AccountState, STATE_BUDGET_MULTIPLIER
+
     __all__ = [
         "AppConfig",
         "BrowserTokenExtractor",
@@ -88,6 +111,53 @@ if __package__:
         "clear_upload_block",
         "get_image_upload_strategy",
         "build_text_fallback_caption",
+        "FBClient",
+        "FBClientPool",
+        "FingerprintProfile",
+        "compute_jazoest",
+        "inject_jazoest",
+        "CircuitBreaker",
+        "BreakerState",
+        "CircuitBreakerOpen",
+        "RateLimiter",
+        "BehaviorSimulator",
+        "TelemetryFlusher",
+        "CheckpointDetector",
+        "CheckpointEncountered",
+        "handle_checkpoint",
+        "WarmupLevel",
+        "WarmupState",
+        "WarmupPlanner",
+        "TokenTrinityManager",
+        "NetworkError",
+        "TransientGraphQLError",
+        "PermanentGraphQLError",
+        "SilentFailureError",
+        "RetryBudgetExhausted",
+        "retry_with_backoff",
+        "classify_http_response",
+        "extract_retry_after",
+        "Mention",
+        "parse_mentions",
+        "build_mention_ranges",
+        "strip_mentions",
+        "FBCookieJar",
+        "AtomicFingerprintProfile",
+        "get_profile",
+        "profile_to_fingerprint_dict",
+        "PROFILES",
+        "PhotoUploader",
+        "PhotoUploadError",
+        "MultiPhotoPoster",
+        "MultiPhotoError",
+        "setup_logging",
+        "get_structured_logger",
+        "FBJsonFormatter",
+        "get_live_doc_id",
+        "get_fallback",
+        "FALLBACK_DOC_IDS",
+        "AccountState",
+        "STATE_BUDGET_MULTIPLIER",
     ]
 else:
     # Pytest imports repository-root __init__.py as a top-level module when this

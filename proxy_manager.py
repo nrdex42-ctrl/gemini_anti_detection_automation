@@ -21,6 +21,14 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 
+async def maybe_await(coro):
+    """Call *coro* if it's awaitable — supports sync and async Redis adapters."""
+    if coro is not None:
+        if hasattr(coro, "__await__"):
+            return await coro
+    return coro
+
+
 @dataclass
 class ProxyEndpoint:
     """A single proxy server endpoint."""
@@ -97,6 +105,13 @@ class ProxyManagerConfig:
     max_concurrent_per_proxy: int = 3
     proxy_selection_strategy: str = "least_used"  # random, round_robin, least_used, lowest_latency
 
+    # Provider-based sticky sessions (BrightData / Oxylabs format)
+    provider_url_template: str = ""  # e.g. "http://{username}:{password}@{gateway}:{port}"
+    provider_username: str = ""
+    provider_password: str = ""
+    provider_gateway: str = ""
+    provider_port: int = 0
+
 
 class AdvancedProxyManager:
     """
@@ -105,6 +120,7 @@ class AdvancedProxyManager:
     - Health checking and auto-cooldown
     - Smart selection (least used, lowest latency, etc.)
     - Concurrent usage tracking
+    - Provider-based session-IDs for IP stickiness (BrightData/oxylabs format)
 
     Named AdvancedProxyManager to avoid collision with the existing
     ProxyManager in network.py.
@@ -114,8 +130,10 @@ class AdvancedProxyManager:
         self,
         proxies: Optional[List[str]] = None,
         config: Optional[ProxyManagerConfig] = None,
+        redis_client: Optional[Any] = None,
     ):
         self.config = config or ProxyManagerConfig()
+        self.redis = redis_client
         self._endpoints: List[ProxyEndpoint] = []
         self._sticky_sessions: Dict[str, StickySession] = {}
         self._concurrent_usage: Dict[str, int] = {}
@@ -211,11 +229,94 @@ class AdvancedProxyManager:
         )
         return endpoint.formatted_url
 
+    def assign_with_provider_session(
+        self,
+        account_id: str,
+        preferred_asn: Optional[str] = None,
+    ) -> Optional[str]:
+        """Assign a sticky proxy URL using provider-based session IDs.
+
+        This is the recommended pattern for BrightData/oxylabs-style providers
+        where the session ID is embedded in the username:
+            http://user-session-ACCT_ID:pass@gateway:port
+
+        Deriving the session ID from the account_id ensures that re-assignment
+        after a worker restart returns the same IP (assuming the provider still
+        has it pooled). This provides true IP stickiness across restarts.
+
+        Args:
+            account_id: The account identifier (used to derive session ID)
+            preferred_asn: Optional ASN to pin the proxy to
+
+        Returns:
+            Proxy URL string with session-ID, or None if provider not configured.
+        """
+        if not self.config.provider_gateway or not self.config.provider_username:
+            # Fall back to regular pool-based selection
+            return self.get_proxy_for_account(account_id)
+
+        session_id = f"acct-{account_id}"
+        username = f"{self.config.provider_username}-session-{session_id}"
+        if preferred_asn:
+            username += f"-asn-{preferred_asn}"
+
+        proxy_url = (
+            f"http://{username}:{self.config.provider_password}"
+            f"@{self.config.provider_gateway}:{self.config.provider_port}"
+        )
+
+        # Track this as a sticky session
+        now = time.monotonic()
+        self._sticky_sessions[account_id] = StickySession(
+            account_key=account_id,
+            proxy_url=proxy_url,
+            created_at=now,
+            last_used=now,
+            use_count=1,
+        )
+
+        logger.info(
+            "Provider session assigned for account %s: session_id=%s",
+            account_id, session_id,
+        )
+        return proxy_url
+
     def release_proxy(self, proxy_url: str):
         """Release a proxy after use (decrement concurrent count)."""
         current = self._concurrent_usage.get(proxy_url, 0)
         if current > 0:
             self._concurrent_usage[proxy_url] = current - 1
+
+    # ── IP Cooldown Cache (Redis-backed) ──────────────────────────────
+
+    async def is_ip_cooled_down(self, ip: str) -> bool:
+        """True if *ip* is in cooldown — do not assign to any account."""
+        if self.redis is None:
+            return False
+        try:
+            return bool(await maybe_await(self.redis.exists(f"proxy:cooldown:{ip}")))
+        except Exception:
+            return False
+
+    async def mark_ip_cooled_down(
+        self,
+        ip: str,
+        duration_s: int = 86400,
+        reason: str = "unspecified",
+    ):
+        """Park *ip* for *duration_s* seconds. No account will be assigned."""
+        if self.redis is None:
+            return
+        try:
+            import json as _json
+            payload = _json.dumps({"reason": reason, "at": time.time()})
+            await maybe_await(self.redis.setex(f"proxy:cooldown:{ip}", duration_s, payload))
+            logger.warning(
+                "IP cooldown: %s parked for %ds (reason=%s)",
+                ip, duration_s, reason,
+            )
+        except Exception as exc:
+            logger.debug("IP cooldown set failed: %s", exc)
 
     def report_success(self, proxy_url: str):
         """Report a successful request through a proxy."""
@@ -369,7 +470,8 @@ def get_advanced_proxy_manager() -> Optional[AdvancedProxyManager]:
 def init_advanced_proxy_manager(
     proxy_urls: Optional[List[str]] = None,
     config: Optional[ProxyManagerConfig] = None,
+    redis_client: Optional[Any] = None,
 ) -> AdvancedProxyManager:
     global _proxy_manager
-    _proxy_manager = AdvancedProxyManager(proxies=proxy_urls, config=config)
+    _proxy_manager = AdvancedProxyManager(proxies=proxy_urls, config=config, redis_client=redis_client)
     return _proxy_manager

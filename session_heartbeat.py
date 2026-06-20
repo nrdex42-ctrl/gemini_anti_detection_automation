@@ -1,27 +1,13 @@
 """
-Session Heartbeat & Cookie Refresh
-===================================
+Session Heartbeat, Cookie Refresh & Behavioral Telemetry
+========================================================
 Keeps a Facebook cookie session alive for as long as possible by:
 
 1. Sending a lightweight periodic keep-alive GET to facebook.com (heartbeat).
 2. Periodically re-launching a stealth Playwright browser, loading the stored
    cookies, letting the page run so JS can refresh the xs/session tokens, then
    exporting the updated cookie jar back into TokenVault and Redis.
-
-Usage (fire-and-forget background task)::
-
-    from session_heartbeat import SessionHeartbeatManager
-
-    mgr = SessionHeartbeatManager(
-        cookies_json=cookies_json,
-        account_id=account_id,
-        token_vault=vault,
-        redis_client=redis_client,
-        identity=identity,
-    )
-    asyncio.create_task(mgr.run_forever())   # runs until cancelled
-
-The manager is safe to cancel at any time (asyncio.CancelledError is caught).
+3. Sending synthetic /ajax/bz behavioral telemetry to avoid detection.
 """
 
 from __future__ import annotations
@@ -33,12 +19,11 @@ import os
 import time
 from typing import Any, Dict, Optional
 
+from .fb_client import FBClient
+from .behavior_simulator import TelemetryFlusher, BehaviorSimulator
+
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Environment knobs (all optional)
-# ---------------------------------------------------------------------------
 
 def _env_int(name: str, default: int) -> int:
     try:
@@ -47,34 +32,22 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# How often (seconds) to send a lightweight GET heartbeat
-HEARTBEAT_INTERVAL_SECONDS = _env_int("FB_HEARTBEAT_INTERVAL_SECONDS", 900)   # 15 min
-
-# How often (seconds) to do a full Playwright cookie refresh
-COOKIE_REFRESH_INTERVAL_SECONDS = _env_int("FB_COOKIE_REFRESH_INTERVAL_SECONDS", 1800)  # 30 min
-
-# Playwright navigation timeout for the refresh page load
+HEARTBEAT_INTERVAL_SECONDS = _env_int("FB_HEARTBEAT_INTERVAL_SECONDS", 900)
+COOKIE_REFRESH_INTERVAL_SECONDS = _env_int("FB_COOKIE_REFRESH_INTERVAL_SECONDS", 1800)
 REFRESH_NAV_TIMEOUT_MS = _env_int("FB_COOKIE_REFRESH_NAV_TIMEOUT_MS", 45_000)
+_TELEMETRY_INTERVAL_SECONDS = _env_int("FB_TELEMETRY_INTERVAL_SECONDS", 60)
 
-# Redis key where the refreshed cookie header is stored per account
 _COOKIE_HEADER_REDIS_PREFIX = "fb_live_cookie_header:"
-_COOKIE_HEADER_REDIS_TTL = 7200  # 2 hours
+_COOKIE_HEADER_REDIS_TTL = 7200
 
-
-# ---------------------------------------------------------------------------
-# Lightweight aiohttp heartbeat
-# ---------------------------------------------------------------------------
 
 async def _send_heartbeat(cookie_header: str, user_agent: str) -> bool:
-    """
-    Fetch facebook.com with the stored cookies to prevent idle-timeout.
-    Returns True if the session looks alive (no redirect to /login or /checkpoint).
-    """
+    """Lightweight GET to facebook.com to prevent idle-timeout."""
     try:
         import aiohttp
     except ImportError:
         logger.warning("aiohttp not available; skipping HTTP heartbeat.")
-        return True  # optimistic
+        return True
 
     headers = {
         "User-Agent": user_agent,
@@ -98,23 +71,19 @@ async def _send_heartbeat(cookie_header: str, user_agent: str) -> bool:
                 text = await resp.text(errors="replace")
                 if "/login" in final_url or "/checkpoint" in final_url:
                     logger.warning(
-                        "Heartbeat: session appears expired/challenged. Final URL: %s",
+                        "Heartbeat: session expired/challenged. Final URL: %s",
                         final_url,
                     )
                     return False
                 if "id_token" in text or "login_form" in text.lower():
                     logger.warning("Heartbeat: login form detected in response body.")
                     return False
-                logger.debug("Heartbeat OK for cookie session (HTTP %s).", resp.status)
+                logger.debug("Heartbeat OK (HTTP %s).", resp.status)
                 return True
     except Exception as exc:
         logger.warning("Heartbeat request failed: %s", exc)
-        return False  # treat network errors as uncertain (not necessarily expired)
+        return False
 
-
-# ---------------------------------------------------------------------------
-# Playwright cookie refresh
-# ---------------------------------------------------------------------------
 
 async def _refresh_cookies_via_playwright(
     cookies_json: str,
@@ -123,15 +92,7 @@ async def _refresh_cookies_via_playwright(
     token_vault: Any,
     redis_client: Optional[Any] = None,
 ) -> Optional[str]:
-    """
-    Launch a stealth Playwright browser, load cookies, navigate to Facebook
-    so the page's JS can execute and refresh xs / session tokens, then:
-      - Export the updated Cookie header string.
-      - Store updated `fb_dtsg`, `lsd`, `xs` back into token_vault.
-      - Optionally persist the cookie header in Redis.
-
-    Returns the refreshed cookie header string, or None on failure.
-    """
+    """Launch stealth Playwright to refresh cookies and tokens."""
     try:
         from playwright.async_api import async_playwright
     except ImportError:
@@ -141,8 +102,8 @@ async def _refresh_cookies_via_playwright(
     try:
         from browser_stealth import BrowserStealth, StealthConfig
     except ImportError:
-        BrowserStealth = None  # type: ignore
-        StealthConfig = None   # type: ignore
+        BrowserStealth = None
+        StealthConfig = None
 
     logger.info("Cookie refresh: launching stealth browser for account %s.", account_id)
 
@@ -163,7 +124,6 @@ async def _refresh_cookies_via_playwright(
 
         browser = await pw.chromium.launch(**launch_options)
 
-        # Build context args from identity
         user_agent = getattr(identity, "user_agent", None) or (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -183,7 +143,6 @@ async def _refresh_cookies_via_playwright(
             locale=getattr(identity, "locale", None) or "en-US",
         )
 
-        # Apply stealth if available
         if BrowserStealth and StealthConfig:
             stealth = BrowserStealth(StealthConfig(
                 webgl_vendor=getattr(identity, "webgl_vendor", None),
@@ -191,7 +150,6 @@ async def _refresh_cookies_via_playwright(
             ))
             await stealth.apply_to_context(context)
 
-        # Load cookies into the browser context
         try:
             raw_cookies = json.loads(cookies_json)
             if isinstance(raw_cookies, dict) and "cookies" in raw_cookies:
@@ -199,13 +157,12 @@ async def _refresh_cookies_via_playwright(
             if isinstance(raw_cookies, list):
                 await context.add_cookies(raw_cookies)
         except Exception as exc:
-            logger.warning("Cookie refresh: failed to load cookies into context: %s", exc)
+            logger.warning("Cookie refresh: failed to load cookies: %s", exc)
 
         page = await context.new_page()
         refreshed_cookie_header: Optional[str] = None
 
         try:
-            # Navigate to Facebook — this triggers JS-based session/token refresh
             try:
                 await page.goto(
                     "https://www.facebook.com/",
@@ -214,8 +171,7 @@ async def _refresh_cookies_via_playwright(
                 )
             except Exception as nav_exc:
                 logger.warning(
-                    "Cookie refresh: navigation did not complete cleanly: %s. "
-                    "Proceeding to extract from current page state.",
+                    "Cookie refresh: navigation issue: %s. Proceeding.",
                     str(nav_exc)[:200],
                 )
                 try:
@@ -223,19 +179,15 @@ async def _refresh_cookies_via_playwright(
                 except Exception:
                     pass
 
-            # Give background JS a moment to execute (token refresh calls happen here)
             await asyncio.sleep(3)
 
-            # Check for checkpoint / login redirect
             current_url = page.url
             if "/login" in current_url or "/checkpoint" in current_url:
                 logger.error(
-                    "Cookie refresh: session is expired or requires manual action "
-                    "(redirected to %s). Cannot refresh.", current_url
+                    "Cookie refresh: session expired (redirected to %s).", current_url
                 )
                 return None
 
-            # Extract updated tokens from the live page
             _TOKEN_SCRIPT = """() => {
                 const get = (name) => { try { return require(name); } catch (_) { return {}; } };
                 const cookie = document.cookie || '';
@@ -254,10 +206,9 @@ async def _refresh_cookies_via_playwright(
             try:
                 tokens = await page.evaluate(_TOKEN_SCRIPT)
             except Exception as eval_exc:
-                logger.warning("Cookie refresh: token script evaluation failed: %s", eval_exc)
+                logger.warning("Cookie refresh: token script failed: %s", eval_exc)
                 tokens = {}
 
-            # Export the updated cookies from the browser context
             browser_cookies = await context.cookies()
             if browser_cookies:
                 parts = []
@@ -273,7 +224,6 @@ async def _refresh_cookies_via_playwright(
                         len(parts), account_id,
                     )
 
-            # Merge new tokens with the refreshed cookies header
             if isinstance(tokens, dict) and tokens.get("fb_dtsg"):
                 merged = dict(tokens)
                 if refreshed_cookie_header:
@@ -281,24 +231,21 @@ async def _refresh_cookies_via_playwright(
                 merged["refreshed_at"] = time.time()
                 merged.setdefault("timestamp", time.time())
 
-                # Write back to token vault
                 try:
                     from .utils import maybe_await
                     await maybe_await(token_vault.set(account_id, merged))
                     logger.info(
-                        "Cookie refresh: token vault updated for account %s "
-                        "(fb_dtsg=%s…).",
+                        "Cookie refresh: token vault updated for account %s (fb_dtsg=%s…).",
                         account_id, str(merged.get("fb_dtsg", ""))[:8],
                     )
                 except Exception as vault_exc:
                     logger.warning("Cookie refresh: token vault write failed: %s", vault_exc)
             else:
                 logger.warning(
-                    "Cookie refresh: no fb_dtsg found in refreshed page for account %s. "
-                    "Tokens NOT updated.", account_id
+                    "Cookie refresh: no fb_dtsg found for account %s. Tokens NOT updated.",
+                    account_id,
                 )
 
-            # Persist the refreshed cookie header string in Redis for fast access
             if refreshed_cookie_header and redis_client is not None:
                 try:
                     from .utils import maybe_await
@@ -306,7 +253,6 @@ async def _refresh_cookies_via_playwright(
                     await maybe_await(
                         redis_client.setex(redis_key, _COOKIE_HEADER_REDIS_TTL, refreshed_cookie_header)
                     )
-                    logger.debug("Cookie refresh: cookie header stored in Redis for account %s.", account_id)
                 except Exception as redis_exc:
                     logger.warning("Cookie refresh: Redis persist failed: %s", redis_exc)
 
@@ -323,22 +269,13 @@ async def _refresh_cookies_via_playwright(
     return refreshed_cookie_header
 
 
-# ---------------------------------------------------------------------------
-# Retrieve the latest live cookie header (for use in GraphQL poster)
-# ---------------------------------------------------------------------------
-
 async def get_live_cookie_header(
     account_id: str,
     token_vault: Any,
     redis_client: Optional[Any] = None,
     fallback_cookie_header: str = "",
 ) -> str:
-    """
-    Return the most up-to-date cookie header for an account:
-      1. Try Redis live-cookie-header key (written by periodic refresh).
-      2. Fall back to what's stored in TokenVault.
-      3. Fall back to the provided fallback_cookie_header.
-    """
+    """Return the most up-to-date cookie header for an account."""
     if redis_client is not None:
         try:
             from .utils import maybe_await
@@ -364,20 +301,15 @@ async def get_live_cookie_header(
     return fallback_cookie_header
 
 
-# ---------------------------------------------------------------------------
-# Background manager
-# ---------------------------------------------------------------------------
-
 class SessionHeartbeatManager:
     """
-    Long-running background coroutine that keeps a Facebook session alive.
+    Long-running background coroutine that keeps a Facebook session alive and
+    sends behavioral telemetry.
 
-    Runs two independent loops:
+    Runs three independent loops:
       - Heartbeat loop  : lightweight GET every HEARTBEAT_INTERVAL_SECONDS.
       - Refresh loop    : full Playwright cookie refresh every COOKIE_REFRESH_INTERVAL_SECONDS.
-
-    If the session is detected as expired, both loops stop and
-    `on_session_expired` is called (if provided).
+      - Telemetry loop  : /ajax/bz behavioral events every TELEMETRY_INTERVAL_SECONDS.
     """
 
     def __init__(
@@ -390,6 +322,8 @@ class SessionHeartbeatManager:
         on_session_expired: Optional[Any] = None,
         heartbeat_interval: int = HEARTBEAT_INTERVAL_SECONDS,
         refresh_interval: int = COOKIE_REFRESH_INTERVAL_SECONDS,
+        telemetry_interval: int = _TELEMETRY_INTERVAL_SECONDS,
+        fb_client: Optional[FBClient] = None,
     ) -> None:
         self.cookies_json = cookies_json
         self.account_id = account_id
@@ -399,10 +333,14 @@ class SessionHeartbeatManager:
         self.on_session_expired = on_session_expired
         self.heartbeat_interval = heartbeat_interval
         self.refresh_interval = refresh_interval
+        self.telemetry_interval = telemetry_interval
         self._session_alive = True
         self._last_cookie_header: str = ""
+        self.fb_client = fb_client
 
-        # Pre-compute cookie header from cookies_json
+        # Telemetry
+        self._telemetry_flusher: Optional[TelemetryFlusher] = None
+
         try:
             raw = json.loads(cookies_json)
             if isinstance(raw, dict) and "cookies" in raw:
@@ -413,27 +351,55 @@ class SessionHeartbeatManager:
         except Exception:
             self._last_cookie_header = ""
 
+        # Initialize telemetry flusher if FBClient is available
+        if fb_client is not None:
+            sim = BehaviorSimulator(
+                screen_w=getattr(identity, "screen_width", 1920),
+                screen_h=getattr(identity, "screen_height", 1080),
+            )
+            self._telemetry_flusher = TelemetryFlusher(
+                client=fb_client,
+                account_id=account_id,
+                simulator=sim,
+                interval=telemetry_interval,
+            )
+
     @property
     def session_alive(self) -> bool:
         return self._session_alive
 
     async def run_forever(self) -> None:
-        """Start heartbeat and refresh loops concurrently. Runs until cancelled."""
+        """Start heartbeat, refresh, and telemetry loops concurrently."""
         logger.info(
             "SessionHeartbeatManager started for account %s "
-            "(heartbeat every %ds, refresh every %ds).",
-            self.account_id, self.heartbeat_interval, self.refresh_interval,
+            "(heartbeat=%ds, refresh=%ds, telemetry=%ds).",
+            self.account_id, self.heartbeat_interval,
+            self.refresh_interval, self.telemetry_interval,
         )
+
+        tasks = [
+            self._heartbeat_loop(),
+            self._refresh_loop(),
+        ]
+
+        # Add telemetry loop if flusher is available
+        if self._telemetry_flusher is not None:
+            tasks.append(self._telemetry_flusher.run_forever())
+
         try:
-            await asyncio.gather(
-                self._heartbeat_loop(),
-                self._refresh_loop(),
-                return_exceptions=False,
-            )
+            await asyncio.gather(*tasks, return_exceptions=False)
         except asyncio.CancelledError:
             logger.info("SessionHeartbeatManager cancelled for account %s.", self.account_id)
         except Exception as exc:
             logger.error("SessionHeartbeatManager unexpected error: %s", exc)
+
+    async def flush_telemetry_pre_action(self):
+        """Send pre-action telemetry burst before a post/comment/like."""
+        if self._telemetry_flusher is not None:
+            try:
+                await self._telemetry_flusher.flush_pre_action()
+            except Exception as exc:
+                logger.debug("Pre-action telemetry burst failed: %s", exc)
 
     async def _heartbeat_loop(self) -> None:
         while self._session_alive:
@@ -442,7 +408,6 @@ class SessionHeartbeatManager:
                 if not self._session_alive:
                     break
 
-                # Use the most current cookie header (may have been refreshed)
                 cookie_header = await get_live_cookie_header(
                     self.account_id,
                     self.token_vault,
@@ -473,15 +438,12 @@ class SessionHeartbeatManager:
                 )
                 if new_header:
                     self._last_cookie_header = new_header
-                    logger.info(
-                        "Cookie refresh cycle succeeded for account %s.", self.account_id
-                    )
+                    logger.info("Cookie refresh cycle succeeded for account %s.", self.account_id)
                 else:
                     logger.warning(
                         "Cookie refresh returned None for account %s. "
-                        "Session may be expired.", self.account_id
+                        "Session may be expired.", self.account_id,
                     )
-                    # Don't immediately declare expired — could be a transient nav error
                 await asyncio.sleep(self.refresh_interval)
             except asyncio.CancelledError:
                 return
@@ -494,8 +456,7 @@ class SessionHeartbeatManager:
 
     async def _handle_session_expired(self, reason: str) -> None:
         logger.error(
-            "Session EXPIRED for account %s: %s. "
-            "Manual re-login and fresh cookie export required.",
+            "Session EXPIRED for account %s: %s. Manual re-login required.",
             self.account_id, reason,
         )
         if callable(self.on_session_expired):

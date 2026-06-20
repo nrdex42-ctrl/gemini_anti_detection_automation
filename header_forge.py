@@ -17,12 +17,20 @@ from typing import Dict, List, Optional
 
 # Chrome sends headers in this EXACT order (lowercased for comparison,
 # but we preserve Chrome's original casing in output)
+# Full Client Hints family: sec-ch-ua, sec-ch-ua-arch, sec-ch-ua-bitness,
+# sec-ch-ua-full-version-list, sec-ch-ua-mobile, sec-ch-ua-model,
+# sec-ch-ua-platform, sec-ch-ua-platform-version
 CHROME_HEADER_ORDER: List[str] = [
     "host",
     "connection",
     "sec-ch-ua",
+    "sec-ch-ua-arch",
+    "sec-ch-ua-bitness",
+    "sec-ch-ua-full-version-list",
     "sec-ch-ua-mobile",
+    "sec-ch-ua-model",
     "sec-ch-ua-platform",
+    "sec-ch-ua-platform-version",
     "upgrade-insecure-requests",
     "user-agent",
     "accept",
@@ -40,8 +48,13 @@ CHROME_HEADER_CASING: Dict[str, str] = {
     "host": "Host",
     "connection": "Connection",
     "sec-ch-ua": "sec-ch-ua",
+    "sec-ch-ua-arch": "sec-ch-ua-arch",
+    "sec-ch-ua-bitness": "sec-ch-ua-bitness",
+    "sec-ch-ua-full-version-list": "sec-ch-ua-full-version-list",
     "sec-ch-ua-mobile": "sec-ch-ua-mobile",
+    "sec-ch-ua-model": "sec-ch-ua-model",
     "sec-ch-ua-platform": "sec-ch-ua-platform",
+    "sec-ch-ua-platform-version": "sec-ch-ua-platform-version",
     "upgrade-insecure-requests": "Upgrade-Insecure-Requests",
     "user-agent": "User-Agent",
     "accept": "Accept",
@@ -59,8 +72,13 @@ CHROME_XHR_HEADER_ORDER: List[str] = [
     "host",
     "connection",
     "sec-ch-ua",
+    "sec-ch-ua-arch",
+    "sec-ch-ua-bitness",
+    "sec-ch-ua-full-version-list",
     "sec-ch-ua-mobile",
+    "sec-ch-ua-model",
     "sec-ch-ua-platform",
+    "sec-ch-ua-platform-version",
     "content-length",
     "sec-fetch-dest",
     "sec-fetch-mode",
@@ -80,32 +98,59 @@ CHROME_XHR_HEADER_ORDER: List[str] = [
 
 @dataclass
 class ChromeVersionIdentity:
-    """Complete Chrome version fingerprint."""
+    """Complete Chrome version fingerprint with full Client Hints family."""
     major: int
     minor: int
     build: int
     patch: int
     full_version: str
+    full_version_list: str
     sec_ch_ua: str
+    sec_ch_ua_arch: str = '"x86"'
+    sec_ch_ua_bitness: str = '"64"'
+    sec_ch_ua_platform: str = '"Windows"'
+    sec_ch_ua_platform_version: str = '"15.0.0"'
+    sec_ch_ua_model: str = '""'
 
     @classmethod
-    def from_version_string(cls, version: str) -> "ChromeVersionIdentity":
+    def from_version_string(
+        cls,
+        version: str,
+        platform: str = "Windows",
+        platform_version: str = "15.0.0",
+        arch: str = "x86",
+        bitness: str = "64",
+    ) -> "ChromeVersionIdentity":
         parts = version.split(".")
         major = int(parts[0]) if len(parts) > 0 else 120
         minor = int(parts[1]) if len(parts) > 1 else 0
         build = int(parts[2]) if len(parts) > 2 else 0
         patch = int(parts[3]) if len(parts) > 3 else 0
 
+        full_version = version
+        full_version_list = (
+            f'"Not_A Brand";v="8.0.0.0", "Chromium";v="{full_version}", '
+            f'"Google Chrome";v="{full_version}"'
+        )
+
+        sec_ch_ua = (
+            f'"Not_A Brand";v="8", "Chromium";v="{major}", '
+            f'"Google Chrome";v="{major}"'
+        )
+
         return cls(
             major=major,
             minor=minor,
             build=build,
             patch=patch,
-            full_version=version,
-            sec_ch_ua=(
-                f'"Not_A Brand";v="8", "Chromium";v="{major}", '
-                f'"Google Chrome";v="{major}"'
-            ),
+            full_version=full_version,
+            full_version_list=full_version_list,
+            sec_ch_ua=sec_ch_ua,
+            sec_ch_ua_arch=f'"{arch}"',
+            sec_ch_ua_bitness=f'"{bitness}"',
+            sec_ch_ua_platform=f'"{platform}"',
+            sec_ch_ua_platform_version=f'"{platform_version}"',
+            sec_ch_ua_model='""',
         )
 
     @property
@@ -167,8 +212,18 @@ class AdvancedHeaderForge:
         chrome_version: str = "120.0.0.0",
         config: Optional[HeaderForgeConfig] = None,
         ua_override: Optional[str] = None,
+        platform: str = "Windows",
+        platform_version: str = "15.0.0",
+        arch: str = "x86",
+        bitness: str = "64",
     ):
-        self.identity = ChromeVersionIdentity.from_version_string(chrome_version)
+        self.identity = ChromeVersionIdentity.from_version_string(
+            chrome_version,
+            platform=platform,
+            platform_version=platform_version,
+            arch=arch,
+            bitness=bitness,
+        )
         self.config = config or HeaderForgeConfig()
         self._frozen_accept_language: Optional[str] = None
         self._frozen_accept_encoding: Optional[str] = None
@@ -247,8 +302,13 @@ class AdvancedHeaderForge:
             "host": host,
             "connection": "keep-alive",
             "sec-ch-ua": self.identity.sec_ch_ua,
+            "sec-ch-ua-arch": self.identity.sec_ch_ua_arch,
+            "sec-ch-ua-bitness": self.identity.sec_ch_ua_bitness,
+            "sec-ch-ua-full-version-list": self.identity.full_version_list,
             "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
+            "sec-ch-ua-model": self.identity.sec_ch_ua_model,
+            "sec-ch-ua-platform": self.identity.sec_ch_ua_platform,
+            "sec-ch-ua-platform-version": self.identity.sec_ch_ua_platform_version,
             "content-length": str(content_length),
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
@@ -290,8 +350,13 @@ class AdvancedHeaderForge:
             "host": host,
             "connection": "keep-alive",
             "sec-ch-ua": self.identity.sec_ch_ua,
+            "sec-ch-ua-arch": self.identity.sec_ch_ua_arch,
+            "sec-ch-ua-bitness": self.identity.sec_ch_ua_bitness,
+            "sec-ch-ua-full-version-list": self.identity.full_version_list,
             "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
+            "sec-ch-ua-model": self.identity.sec_ch_ua_model,
+            "sec-ch-ua-platform": self.identity.sec_ch_ua_platform,
+            "sec-ch-ua-platform-version": self.identity.sec_ch_ua_platform_version,
             "upgrade-insecure-requests": "1",
             "user-agent": self._effective_user_agent,
             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",

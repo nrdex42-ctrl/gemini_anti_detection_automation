@@ -76,6 +76,26 @@ class StealthConnector:
         context = ssl.create_default_context()
         return aiohttp.TCPConnector(ssl=context, ttl_dns_cache=300, enable_cleanup_closed=True)
 
+    @staticmethod
+    async def create_curl_cffi_session(
+        impersonate: str = "chrome120",
+        proxy_url: str = "",
+    ) -> Any:
+        """Create a curl_cffi AsyncSession with Chrome impersonation.
+
+        Returns None if curl_cffi is not installed.
+        """
+        try:
+            from curl_cffi.requests import AsyncSession
+        except ImportError:
+            logger.warning("curl_cffi not installed; cannot create impersonated session.")
+            return None
+
+        kwargs = {"impersonate": impersonate}
+        if proxy_url:
+            kwargs["proxy"] = proxy_url
+        return AsyncSession(**kwargs)
+
 
 class HeaderForge:
     @staticmethod

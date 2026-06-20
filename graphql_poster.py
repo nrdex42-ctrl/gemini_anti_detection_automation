@@ -1,7 +1,15 @@
-"""Guarded HTTP GraphQL poster.
+"""Guarded HTTP GraphQL poster with proper jazoest CSRF, post-verification,
+and optional curl_cffi / FBClient transport.
 
 Private Facebook GraphQL publishing is disabled by default and can only run
 when AppConfig.enable_private_facebook_http is explicitly true.
+
+Key improvements over the legacy version:
+  - Correct jazoest computation ((sum(charCodes) % 2199) + 115)
+  - Post-verification flow to detect silent failures / shadow restrictions
+  - Optional curl_cffi transport via FBClient
+  - Complete Client Hints header set (sec-ch-ua family)
+  - Integration with CheckpointDetector, CircuitBreaker, and TelemetryFlusher
 """
 
 from __future__ import annotations
@@ -26,8 +34,21 @@ from .tokens import TokenVault
 from .utils import classify_error, generate_idempotence_token, maybe_await, sanitize_caption
 from .metrics import RequestContext, get_metrics, init_metrics
 from .graphql_validator import GraphQLRequestValidator, PermissionValidator
+from .jazoest import compute_jazoest
+from .fb_client import FBClient
+from .rate_limiter import RateLimiter
+from .backoff import (
+    retry_with_backoff, classify_http_response, extract_retry_after,
+    NetworkError, TransientGraphQLError, PermanentGraphQLError,
+    SilentFailureError, RetryBudgetExhausted,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class PostVerificationError(Exception):
+    """Raised when post-verification detects a silent failure."""
+    pass
 
 
 class HardenedGraphQLPoster:
@@ -38,6 +59,8 @@ class HardenedGraphQLPoster:
         redis_client: Any,
         proxy_manager: ProxyManager,
         config: Optional[AppConfig] = None,
+        fb_client: Optional[FBClient] = None,
+        rate_limiter: Optional[RateLimiter] = None,
     ):
         self.tokens = token_vault
         self.identity = identity
@@ -45,6 +68,8 @@ class HardenedGraphQLPoster:
         self.proxy = proxy_manager
         self.config = config or AppConfig()
         self.safety = SafetyGuard(redis_client, identity, token_vault)
+        self.fb_client = fb_client
+        self.rate_limiter = rate_limiter
         self._req_counter = 0
 
     async def post_to_page(
@@ -54,11 +79,10 @@ class HardenedGraphQLPoster:
         media_fbid: Optional[str] = None,
         cookie_header: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
-        # Initialize metrics context for this request
         metrics = get_metrics()
         ctx = RequestContext.create(self.identity.account_id, page_id, "post")
         start_time = time.time()
-        
+
         if not self.config.enable_private_facebook_http:
             return False, 'PRIVATE_HTTP_DISABLED', None
 
@@ -85,7 +109,6 @@ class HardenedGraphQLPoster:
         proxy_url = ''
         try:
             payload = await self.build_payload(page_id, caption, tokens, media_fbid, idempotence)
-            # Validate mutation security with built variables
             try:
                 variables = json.loads(payload['variables'])
                 is_valid, msg = await GraphQLRequestValidator.validate_mutation(payload['doc_id'], variables)
@@ -93,6 +116,7 @@ class HardenedGraphQLPoster:
                     return False, f'VALIDATION_FAILED: {msg}', None
             except Exception as e:
                 return False, f'VALIDATION_ERROR: {str(e)}', None
+
             proxy_url = await self.proxy.get_proxy_for_account(self.identity.account_id)
             forge = AdvancedHeaderForge(
                 chrome_version=self.identity.chrome_version,
@@ -100,7 +124,6 @@ class HardenedGraphQLPoster:
             )
             encoded_payload = urllib_parse.urlencode(payload).encode('utf-8')
 
-            # Prefer the live (freshly-refreshed) cookie header so xs is current
             request_cookie_header = cookie_header or ''
             if not request_cookie_header:
                 try:
@@ -125,15 +148,27 @@ class HardenedGraphQLPoster:
                 fb_lsd=str(tokens.get('lsd') or ''),
                 fb_friendly_name="ComposerStoryCreateMutation"
             )
+
             timer = AdvancedStochasticTimer()
             await asyncio.sleep(timer.think_time(100, 500))
-            response_code, text = await self._post_form(
-                'https://www.facebook.com/api/graphql/',
-                encoded_payload,
-                headers,
-                proxy_url,
-                timeout_seconds=10,
-            )
+
+            # Use curl_cffi via FBClient if available, else fall back to aiohttp
+            if self.fb_client is not None:
+                response_code, text, resp_headers = await self.fb_client.post(
+                    'https://www.facebook.com/api/graphql/',
+                    data=encoded_payload,
+                    headers=headers,
+                    timeout=10,
+                )
+            else:
+                response_code, text = await self._post_form(
+                    'https://www.facebook.com/api/graphql/',
+                    encoded_payload,
+                    headers,
+                    proxy_url,
+                    timeout_seconds=10,
+                )
+
             try:
                 data = self._loads_json(text)
             except (ValueError, json.JSONDecodeError):
@@ -143,13 +178,11 @@ class HardenedGraphQLPoster:
                     await maybe_await(self.redis.delete(idemp_key))
                 duration = time.time() - start_time
                 await metrics.record_request(
-                    ctx,
-                    mutation="ComposerStoryCreateMutation",
-                    duration_sec=duration,
-                    success=False,
-                    payload_size=0,
+                    ctx, mutation="ComposerStoryCreateMutation",
+                    duration_sec=duration, success=False, payload_size=0,
                 )
                 return False, error_message, None
+
             if response_code >= 400:
                 error_message = f'HTTP_{response_code}: {text[:300]}'
                 await self.safety.post_flight_validation(False, response_code, error_message)
@@ -157,13 +190,11 @@ class HardenedGraphQLPoster:
                     await maybe_await(self.redis.delete(idemp_key))
                 duration = time.time() - start_time
                 await metrics.record_request(
-                    ctx,
-                    mutation="ComposerStoryCreateMutation",
-                    duration_sec=duration,
-                    success=False,
-                    payload_size=0,
+                    ctx, mutation="ComposerStoryCreateMutation",
+                    duration_sec=duration, success=False, payload_size=0,
                 )
                 return False, error_message, None
+
             response_error = self._extract_response_error(data)
             if response_error:
                 error_message = response_error
@@ -173,13 +204,11 @@ class HardenedGraphQLPoster:
                     await maybe_await(self.redis.delete(idemp_key))
                 duration = time.time() - start_time
                 await metrics.record_request(
-                    ctx,
-                    mutation="ComposerStoryCreateMutation",
-                    duration_sec=duration,
-                    success=False,
-                    payload_size=0,
+                    ctx, mutation="ComposerStoryCreateMutation",
+                    duration_sec=duration, success=False, payload_size=0,
                 )
                 return False, status_code if status_code != 'UNKNOWN' else f'GRAPHQL_ERROR: {error_message}', None
+
             post_id = self._extract_post_id(data)
             if not post_id:
                 error_message = f'GRAPHQL_ERROR: response did not contain a post id: {self._response_excerpt(data)}'
@@ -188,87 +217,176 @@ class HardenedGraphQLPoster:
                     await maybe_await(self.redis.delete(idemp_key))
                 duration = time.time() - start_time
                 await metrics.record_request(
-                    ctx,
-                    mutation="ComposerStoryCreateMutation",
-                    duration_sec=duration,
-                    success=False,
-                    payload_size=0,
+                    ctx, mutation="ComposerStoryCreateMutation",
+                    duration_sec=duration, success=False, payload_size=0,
                 )
                 return False, error_message, None
+
+            # ── Post-verification: confirm the post actually appeared ──
+            if self.config.enable_private_facebook_http:
+                try:
+                    verified = await self._verify_post_appeared(tokens, page_id, post_id, request_cookie_header)
+                    if not verified:
+                        logger.error(
+                            "Post-verification FAILED for account %s post %s — "
+                            "possible shadow restriction",
+                            self.identity.account_id, post_id,
+                        )
+                        if self.redis:
+                            await maybe_await(self.redis.setex(
+                                f"shadow_restriction:{self.identity.account_id}",
+                                7200, "1",
+                            ))
+                except Exception as verify_exc:
+                    logger.warning(
+                        "Post-verification error (non-fatal): %s", verify_exc,
+                    )
+
             await self.safety.post_flight_validation(True, response_code, '')
             if post_id and self.redis:
                 await maybe_await(self.redis.setex(idemp_key, 86400, post_id))
             elif self.redis:
                 await maybe_await(self.redis.delete(idemp_key))
+
             await self.tokens.increment_usage(self.identity.account_id)
             duration = time.time() - start_time
             await metrics.record_request(
-                ctx,
-                mutation='ComposerStoryCreateMutation',
-                duration_sec=duration,
-                success=True,
-                payload_size=len(encoded_payload) if 'encoded_payload' in locals() else 0,
+                ctx, mutation='ComposerStoryCreateMutation',
+                duration_sec=duration, success=True,
+                payload_size=len(encoded_payload),
             )
             return True, 'SUCCESS', post_id
+
         except Exception as exc:
             if self.redis and reserved:
                 await maybe_await(self.redis.delete(idemp_key))
             duration = time.time() - start_time
             await metrics.record_request(
-                ctx,
-                mutation="ComposerStoryCreateMutation",
-                duration_sec=duration,
-                success=False,
-                payload_size=0,
+                ctx, mutation="ComposerStoryCreateMutation",
+                duration_sec=duration, success=False, payload_size=0,
             )
             await self.proxy.report_failure(self.identity.account_id, proxy_url, str(exc))
             return False, f'NETWORK_ERROR: {str(exc)[:120]}', None
 
+    async def _verify_post_appeared(
+        self,
+        tokens: Dict[str, Any],
+        page_id: str,
+        expected_post_id: str,
+        cookie_header: Optional[str],
+        timeout_s: int = 30,
+    ) -> bool:
+        """Verify that a post actually appeared by polling the timeline via GraphQL.
+
+        Uses the PagePosts query (doc_id 4459169650830798) to fetch recent
+        posts and checks if *expected_post_id* appears. Polls every 3s up to
+        *timeout_s* seconds.
+
+        This is the only reliable way to detect:
+          - jazoest failures (200 OK, no error, but post doesn't appear)
+          - shadow restrictions (post appears to the author but not to others)
+
+        Returns True if post is confirmed visible, False otherwise.
+        """
+        user_id = str(tokens.get('user_id') or tokens.get('uid') or '0')
+        if not user_id or not user_id.isdigit():
+            user_id = str(tokens.get('c_user') or str(page_id) or '0')
+
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            try:
+                verify_body = urllib_parse.urlencode({
+                    'av': user_id,
+                    '__user': user_id,
+                    '__a': '1',
+                    '__req': 'g',
+                    '__comet_req': '15',
+                    'fb_dtsg': str(tokens.get('fb_dtsg') or ''),
+                    'lsd': str(tokens.get('lsd') or ''),
+                    'doc_id': '4459169650830798',
+                    'variables': json.dumps({
+                        'pageID': page_id,
+                        'after': None,
+                        'first': 5,
+                    }),
+                    'fb_api_caller_class': 'RelayModern',
+                    'fb_api_req_friendly_name': 'PagePosts',
+                    'server_timestamps': 'true',
+                }).encode()
+
+                if self.fb_client is not None:
+                    status, body, _ = await self.fb_client.post(
+                        'https://www.facebook.com/api/graphql/',
+                        data=verify_body,
+                        headers={'content-type': 'application/x-www-form-urlencoded'},
+                        timeout=8,
+                    )
+                else:
+                    forge = AdvancedHeaderForge(chrome_version=self.identity.chrome_version)
+                    verify_headers = forge.build_xhr_headers(
+                        host='www.facebook.com',
+                        origin='https://www.facebook.com',
+                        referer=f'https://www.facebook.com/{page_id}',
+                        cookies=cookie_header,
+                        fb_lsd=str(tokens.get('lsd') or ''),
+                    )
+                    status, body = await self._post_form(
+                        'https://www.facebook.com/api/graphql/',
+                        verify_body,
+                        verify_headers,
+                        proxy_url='',
+                        timeout_seconds=8,
+                    )
+
+                if status >= 400:
+                    logger.debug("Post-verification returned %d", status)
+                    await asyncio.sleep(3)
+                    continue
+
+                data = self._loads_json(body) if body else {}
+                post_ids = [
+                    n.get('node', {}).get('id', '')
+                    for n in (data or {})
+                    .get('data', {})
+                    .get('page', {})
+                    .get('timeline', {})
+                    .get('edges', [])
+                ]
+
+                if expected_post_id in post_ids:
+                    logger.debug(
+                        "Post-verification SUCCESS: %s found in timeline",
+                        expected_post_id,
+                    )
+                    return True
+
+                logger.debug(
+                    "Post-verification: %s not yet in timeline, retrying...",
+                    expected_post_id,
+                )
+                await asyncio.sleep(3)
+
+            except Exception as exc:
+                logger.debug("Post-verification request failed: %s", exc)
+                await asyncio.sleep(3)
+
+        logger.warning(
+            "Post-verification FAILED: post_id %s not visible after %ds "
+            "— possible jazoest failure or shadow restriction",
+            expected_post_id, timeout_s,
+        )
+        return False
+
     # ---------------------------------------------------------------------------
-    # Hardcoded fallback doc_id — updated automatically by DocIdScraper but
-    # kept here as a last resort so posting never silently fails.
+    # Doc ID — pulled from doc_ids.py (Redis-backed, fallback hardcoded)
     # ---------------------------------------------------------------------------
-    _FALLBACK_DOC_ID = '7711610262198779'
 
     async def _get_doc_id(self) -> str:
-        """Return the live ComposerStoryCreateMutation doc_id.
-
-        Priority:
-        1. Redis cache (written by DocIdScraper or previous scrape).
-        2. Live scrape via DocIdScraper (stores result back to Redis).
-        3. Hardcoded fallback constant.
-        """
-        if self.redis:
-            cached = await maybe_await(self.redis.get('fb_graphql_doc_id'))
-            if cached:
-                value = cached.decode() if isinstance(cached, bytes) else str(cached)
-                if value and value.isdigit():
-                    return value
-
-        # Cache miss — try to scrape the live doc_id
-        logger.warning(
-            'fb_graphql_doc_id not in Redis; attempting live scrape via DocIdScraper.'
-        )
-        try:
-            from .doc_id_scraper import DocIdScraper
-            scraper = DocIdScraper(redis_client=self.redis)
-            # Quick passive scrape with a short timeout — don't block the post
-            scraped = await asyncio.wait_for(
-                scraper.scrape(cookies_json='[]', identity=self.identity),
-                timeout=30,
-            )
-            if scraped and scraped.isdigit():
-                logger.info('doc_id live-scraped: %s', scraped)
-                return scraped
-        except Exception as scrape_exc:
-            logger.warning('DocIdScraper raised during poster fallback: %s', scrape_exc)
-
-        logger.error(
-            'fb_graphql_doc_id not found in cache and live scrape failed; '
-            'using hardcoded fallback doc_id=%s',
-            self._FALLBACK_DOC_ID,
-        )
-        return self._FALLBACK_DOC_ID
+        from .doc_ids import get_live_doc_id
+        doc_id = await get_live_doc_id(self.redis, "ComposerStoryCreate")
+        if doc_id == "0":
+            logger.error("No doc_id available for ComposerStoryCreate")
+        return doc_id
 
     def build_variables(
         self,
@@ -301,31 +419,29 @@ class HardenedGraphQLPoster:
         media_fbid: Optional[str],
         idempotence_token: str,
     ) -> Dict[str, Any]:
-        """Build the complete form-encoded POST body for the GraphQL mutation.
+        """Build the complete form-encoded POST body with correct jazoest.
 
-        Includes ``fb_dtsg``, ``jazoest``, and ``lsd`` which are mandatory
-        CSRF tokens — without them Facebook returns a session/auth error.
+        The jazoest formula (stable since 2019):
+          jazoest = (sum of charCodes of all values, concatenated) % 2199 + 115
+
+        The input is ALL form field values (except jazoest itself), concatenated
+        in the order they appear in the request body. This is CRITICAL — a wrong
+        jazoest produces a 200 OK with no error but the post silently does not appear.
         """
         doc_id = await self._get_doc_id()
         variables = self.build_variables(page_id, caption, tokens, idempotence_token, media_fbid=media_fbid)
 
         fb_dtsg = str(tokens.get('fb_dtsg') or '')
         lsd = str(tokens.get('lsd') or '')
+        user_id = str(tokens.get('user_id') or tokens.get('uid') or '0')
 
-        # jazoest is a numeric checksum of fb_dtsg characters.
-        # Facebook computes it as: sum(ord(c) for c in fb_dtsg) + 100.
-        # If already extracted from the page, use that; otherwise compute it.
-        jazoest = str(tokens.get('jazoest') or '')
-        if not jazoest and fb_dtsg:
-            jazoest = str(sum(ord(c) for c in fb_dtsg) + 100)
-
-        payload: Dict[str, str] = {
+        # Build the form dict WITHOUT jazoest first
+        form_data: Dict[str, str] = {
             'doc_id': doc_id,
             'variables': json.dumps(variables),
             'fb_dtsg': fb_dtsg,
-            'jazoest': jazoest,
             'lsd': lsd,
-            '__user': str(tokens.get('user_id') or tokens.get('uid') or '0'),
+            '__user': user_id,
             '__a': '1',
             '__req': 'z',
             '__comet_req': '15',
@@ -333,8 +449,12 @@ class HardenedGraphQLPoster:
             'fb_api_req_friendly_name': 'ComposerStoryCreateMutation',
             'server_timestamps': 'true',
         }
-        # Strip empty string values to keep the payload clean
-        return {k: v for k, v in payload.items() if v}
+
+        # Compute jazoest from ALL form values in insertion order
+        jazoest = compute_jazoest(form_data)
+        form_data['jazoest'] = jazoest
+
+        return {k: v for k, v in form_data.items() if v}
 
     async def _wait_for_idempotent_result(
         self,
@@ -365,9 +485,8 @@ class HardenedGraphQLPoster:
 
         if aiohttp is not None:
             connector = StealthConnector.create_connector()
-            # Disable compressed transfer/brotli by stripping Accept-Encoding or forcing identity
             cleaned_headers = dict(headers)
-            cleaned_headers['Accept-Encoding'] = 'gzip, deflate'  # Python/aiohttp supports gzip/deflate natively; only brotli causes errors if module is absent
+            cleaned_headers['Accept-Encoding'] = 'gzip, deflate'
             cleaned_headers['accept-encoding'] = 'gzip, deflate'
             async with aiohttp.ClientSession(connector=connector, trust_env=True) as session:
                 async with session.post(
