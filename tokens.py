@@ -6,7 +6,7 @@ import json
 import time
 from typing import Any, Dict, Optional
 
-from .utils import canonical_json, maybe_await, stable_hash
+from utils import canonical_json, maybe_await, stable_hash
 
 
 class TokenVault:

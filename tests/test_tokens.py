@@ -59,6 +59,7 @@ async def test_token_vault_get_from_l2(mock_redis):
     vault = TokenVault(mock_redis)
     tokens = {
         'fb_dtsg': 'redis_dtsg',
+        'lsd': 'redis_lsd',
         'timestamp': time.time(),
         'usage_count': 0
     }
@@ -88,6 +89,7 @@ async def test_token_vault_expiry(mock_redis):
     old_time = time.time() - vault.TOKEN_TTL_SECONDS - 10
     tokens = {
         'fb_dtsg': 'old_dtsg',
+        'lsd': 'old_lsd',
         'timestamp': old_time,
         'usage_count': 0
     }
@@ -126,11 +128,11 @@ async def test_token_vault_rotation_needed(mock_redis):
     assert await vault.is_rotation_needed('account5') is True
     
     # Fresh tokens = no rotation needed
-    await vault.set('account5', {'fb_dtsg': 'dtsg1'})
+    await vault.set('account5', {'fb_dtsg': 'dtsg1', 'lsd': 'lsd1'})
     assert await vault.is_rotation_needed('account5') is False
     
-    # Old tokens (> 300s) = rotation needed
-    vault._local_cache['account5']['timestamp'] = time.time() - 301
+    # Old tokens (> TTL) = rotation needed
+    vault._local_cache['account5']['timestamp'] = time.time() - vault.TOKEN_TTL_SECONDS - 1
     assert await vault.is_rotation_needed('account5') is True
     
     # High usage (> 50) = rotation needed

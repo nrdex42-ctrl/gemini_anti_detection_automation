@@ -13,15 +13,15 @@ import json
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
-from config import AppConfig
-from models import IdentityContext
-from tokens import TokenVault
-from network import ProxyManager
-from graphql_poster import HardenedGraphQLPoster
-from rupload import HardenedRupload
-from identity import IdentityRegistry
-from facebook_cookie_parser import parse_account_cookie_payload
-from utils import extract_page_id, maybe_await
+from .config import AppConfig
+from .models import IdentityContext
+from .tokens import TokenVault
+from .network import ProxyManager
+from .graphql_poster import HardenedGraphQLPoster
+from .rupload import HardenedRupload
+from .identity import IdentityRegistry
+from .facebook_cookie_parser import parse_account_cookie_payload
+from .utils import extract_page_id, maybe_await
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ async def _post_one_fast(
     media_url = post.get('media_url', '')
     
     # Check rate limits / safety pre-flight
-    from safety import SafetyGuard, SafetyStatus
+    from .safety import SafetyGuard, SafetyStatus
     safety = SafetyGuard(redis_client, identity, token_vault)
     status, message = await safety.pre_flight_check()
     if status != SafetyStatus.CLEAR:
@@ -74,7 +74,7 @@ async def _post_one_fast(
     # Get tokens
     tokens = await token_vault.get(account_id)
     if not tokens or await token_vault.is_rotation_needed(account_id):
-        from browser_fallback import BrowserTokenExtractor
+        from .browser_fallback import BrowserTokenExtractor
         extractor = BrowserTokenExtractor(token_vault, identity)
         try:
             tokens = await extractor.extract_with_retry(cookies_json)
@@ -121,7 +121,7 @@ async def _post_one_fast(
     # perform a dynamic browser token/doc_id extraction refresh and retry once.
     if not success and status_code not in {'RATE_LIMITED', 'PRIVATE_HTTP_DISABLED', 'IDEMPOTENCY_TIMEOUT'}:
         logger.info(f"GraphQL post failed with {status_code}. Executing dynamic token and doc_id refresh...")
-        from browser_fallback import BrowserTokenExtractor
+        from .browser_fallback import BrowserTokenExtractor
         extractor = BrowserTokenExtractor(token_vault, identity)
         try:
             tokens = await extractor.extract_with_retry(cookies_json)
