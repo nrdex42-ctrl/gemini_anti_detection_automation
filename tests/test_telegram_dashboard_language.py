@@ -6,6 +6,7 @@ from telegram_dashboard import (
     dashboard_markup,
     dashboard_text,
     language_selection_markup,
+    page_display_name,
     page_selection_markup,
     parse_image_mode_choice,
     parse_post_type_choice,
@@ -80,6 +81,12 @@ def test_admin_dashboard_keyboard_has_language_button():
     assert dashboard_action("📣 Broadcast") == "admin_broadcast"
     assert dashboard_action("⚙️ Posting Mode") == "admin_posting_mode"
     assert dashboard_action("🌐 Proxy") == "admin_proxy"
+
+
+def test_page_display_name_includes_follower_count_when_available():
+    page = {"page_name": "Insan", "page_url": "https://facebook.com/insan", "follower_count": "1.2K"}
+
+    assert page_display_name(page, 0) == "Insan (1.2K followers)"
 
 
 def test_user_dashboard_admin_row_includes_language_and_admin_dashboard():

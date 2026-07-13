@@ -90,6 +90,19 @@ def requested_post_types() -> List[str]:
     return requested or ["image", "video"]
 
 
+def page_name_with_followers(page_name: str, follower_count: str) -> str:
+    page_name = page_name.strip()
+    follower_count = follower_count.strip()
+    if not follower_count:
+        return page_name
+    suffix = (
+        follower_count
+        if "follower" in follower_count.lower() or "متابع" in follower_count
+        else f"{follower_count} followers"
+    )
+    return f"{page_name} ({suffix})"
+
+
 def live_image_format() -> str:
     requested = os.getenv("LIVE_EMULATION_IMAGE_FORMAT", "png").strip().lower()
     if requested not in SUPPORTED_IMAGE_FORMATS:
@@ -698,7 +711,10 @@ async def run_live_emulation():
         page_targets = [
             {
                 "page_id_or_url": str(item.get("url") or item.get("id") or "").strip(),
-                "page_name": str(item.get("name") or item.get("url") or item.get("id") or "").strip(),
+                "page_name": page_name_with_followers(
+                    str(item.get("name") or item.get("url") or item.get("id") or ""),
+                    str(item.get("follower_count") or ""),
+                ),
             }
             for item in discovered_pages
             if str(item.get("url") or item.get("id") or "").strip()

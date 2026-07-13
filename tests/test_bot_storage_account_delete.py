@@ -170,16 +170,17 @@ def test_upsert_pages_replaces_account_page_snapshot_and_normalizes_page_fields(
         [
             {"page_id": "p1", "page_name": "Insan", "page_url": "https://facebook.com/insan"},
             {"id": "p1", "name": "Duplicate Insan", "url": "https://facebook.com/insan"},
-            {"page_name": "Oppo"},
+            {"page_name": "Oppo", "follower_count": "1.2K"},
         ],
     )
 
     assert connection.committed is True
     assert cursor.executed[0] == ("delete from fb_pages where account_id=%s", ("acct_1",))
     assert len(cursor.executed) == 3
-    assert cursor.executed[1][1] == ("acct_1", "p1", "Insan", "https://facebook.com/insan")
-    account_id, generated_page_id, page_name, page_url = cursor.executed[2][1]
+    assert cursor.executed[1][1] == ("acct_1", "p1", "Insan", "https://facebook.com/insan", "")
+    account_id, generated_page_id, page_name, page_url, follower_count = cursor.executed[2][1]
     assert account_id == "acct_1"
     assert len(generated_page_id) == 24
     assert page_name == "Oppo"
     assert page_url == ""
+    assert follower_count == "1.2K"

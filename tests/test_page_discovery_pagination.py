@@ -10,6 +10,7 @@ def _page_node(index):
         "id": page_id,
         "name": f"Managed Page {index:02d}",
         "url": f"https://www.facebook.com/profile.php?id={page_id}",
+        "follower_count": f"{index}K",
     }
 
 
@@ -141,6 +142,7 @@ def test_page_discovery_collects_graphql_pages_after_scroll(monkeypatch):
         assert len(pages) == 30
         assert fake_page.scroll_calls >= 1
         assert pages[0]["name"] == "Managed Page 01"
+        assert pages[0]["follower_count"] == "1K"
         assert pages[-1]["name"] == "Managed Page 30"
 
     asyncio.run(run())

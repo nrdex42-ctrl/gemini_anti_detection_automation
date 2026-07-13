@@ -648,6 +648,12 @@ class BotStorage:
                 page_url,
                 page_id or page_url,
             )
+            follower_count = str(
+                page.get("follower_count")
+                or page.get("followers")
+                or page.get("followers_count")
+                or ""
+            ).strip()
             if not page_id and "id=" in page_url:
                 page_id = page_url.split("id=", 1)[1].split("&", 1)[0]
             if not page_id:
@@ -658,7 +664,14 @@ class BotStorage:
             if page_id in seen_page_ids:
                 continue
             seen_page_ids.add(page_id)
-            normalized_pages.append({"page_id": page_id, "page_name": page_name or page_id, "page_url": page_url})
+            normalized_pages.append(
+                {
+                    "page_id": page_id,
+                    "page_name": page_name or page_id,
+                    "page_url": page_url,
+                    "follower_count": follower_count,
+                }
+            )
 
         with self.connect() as conn:
             with conn.cursor() as cur:
@@ -666,10 +679,16 @@ class BotStorage:
                 for page in normalized_pages:
                     cur.execute(
                         """
-                        insert into fb_pages (account_id, page_id, page_name, page_url, updated_at)
-                        values (%s, %s, %s, %s, now())
+                        insert into fb_pages (account_id, page_id, page_name, page_url, follower_count, updated_at)
+                        values (%s, %s, %s, %s, %s, now())
                         """,
-                        (account_id, page["page_id"], page["page_name"], page["page_url"]),
+                        (
+                            account_id,
+                            page["page_id"],
+                            page["page_name"],
+                            page["page_url"],
+                            page["follower_count"],
+                        ),
                     )
             conn.commit()
 
@@ -679,7 +698,7 @@ class BotStorage:
                 if owner_id is None:
                     cur.execute(
                         """
-                        select p.page_id, p.page_name, p.page_url, p.updated_at
+                        select p.page_id, p.page_name, p.page_url, p.follower_count, p.updated_at
                         from fb_pages p
                         join fb_accounts a on a.account_id = p.account_id
                         where p.account_id=%s and a.active = true
@@ -690,7 +709,7 @@ class BotStorage:
                 else:
                     cur.execute(
                         """
-                        select p.page_id, p.page_name, p.page_url, p.updated_at
+                        select p.page_id, p.page_name, p.page_url, p.follower_count, p.updated_at
                         from fb_pages p
                         join fb_accounts a on a.account_id = p.account_id
                         where p.account_id=%s and a.created_by=%s and a.active = true
@@ -1166,7 +1185,7 @@ class BotStorage:
 
                 cur.execute(
                     """
-                    select p.account_id, p.page_id, p.page_name, p.page_url, p.updated_at
+                    select p.account_id, p.page_id, p.page_name, p.page_url, p.follower_count, p.updated_at
                     from fb_pages p
                     join fb_accounts a on a.account_id = p.account_id
                     where a.created_by=%s

@@ -27,11 +27,14 @@ create table if not exists fb_pages (
     account_id text not null references fb_accounts(account_id) on delete cascade,
     page_id text not null,
     page_name text not null default '',
+    follower_count text not null default '',
     page_url text not null default '',
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
     unique(account_id, page_id)
 );
+
+alter table fb_pages add column if not exists follower_count text not null default '';
 
 create table if not exists fb_account_runtime (
     account_id text primary key references fb_accounts(account_id) on delete cascade,

@@ -639,9 +639,19 @@ def page_choice_label(page: Dict[str, Any]) -> str:
 def page_display_name(page: Dict[str, Any], index: int = 0) -> str:
     page_url = str(page.get("page_url") or page.get("url") or "").strip()
     name = clean_facebook_page_name(page.get("page_name") or page.get("name"), page_url)
-    if name:
-        return name
-    return f"Page {index + 1}" if index >= 0 else "Page"
+    if not name:
+        name = f"Page {index + 1}" if index >= 0 else "Page"
+    follower_count = str(
+        page.get("follower_count")
+        or page.get("followers")
+        or page.get("followers_count")
+        or ""
+    ).strip()
+    if follower_count:
+        lower_count = follower_count.lower()
+        suffix = follower_count if "follower" in lower_count or "متابع" in follower_count else f"{follower_count} followers"
+        return f"{name} ({suffix})"
+    return name
 
 
 def _short(value: Any, limit: int = 80) -> str:

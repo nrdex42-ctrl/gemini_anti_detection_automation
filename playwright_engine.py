@@ -4325,6 +4325,21 @@ def _prefer_discovered_page_name(candidate: str, page_url: str) -> str:
     return ''
 
 
+def _extract_follower_count_text(*values: Any) -> str:
+    text = ' '.join(' '.join(str(value or '').split()) for value in values if value)
+    if not text:
+        return ''
+    patterns = (
+        r'((?:\d{1,3}(?:[,.]\d{3})+|\d+)(?:[.,]\d+)?\s*[KkMmBb]?)\s+(?:followers?|متابع(?:ين|ون)?|متابع)',
+        r'(?:followers?|متابع(?:ين|ون)?|متابع)\s*[:\-]?\s*((?:\d{1,3}(?:[,.]\d{3})+|\d+)(?:[.,]\d+)?\s*[KkMmBb]?)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            return ' '.join(match.group(1).split())
+    return ''
+
+
 def _discovered_page_name_score(name: str, page_url: str) -> int:
     cleaned = _clean_discovered_page_name(name)
     if _is_blocked_discovered_page_name(cleaned):
@@ -4366,6 +4381,7 @@ async def _extract_page_links(page: Page) -> List[Dict[str, str]]:
                 href: anchor.href,
                 text,
                 imageLabel,
+                nearbyText: (anchor.closest("[role='article'], [aria-label], div")?.innerText || '').trim(),
                 visible: rect.width > 0 && rect.height > 0,
             };
         })
@@ -4384,6 +4400,11 @@ async def _extract_page_links(page: Page) -> List[Dict[str, str]]:
             str(anchor.get('text') or ''),
             str(anchor.get('imageLabel') or ''),
         ]
+        follower_count = _extract_follower_count_text(
+            anchor.get('text'),
+            anchor.get('imageLabel'),
+            anchor.get('nearbyText'),
+        )
         cleaned_name = ''
         score = -1
         for raw_text in candidates:
@@ -4400,8 +4421,11 @@ async def _extract_page_links(page: Page) -> List[Dict[str, str]]:
                 'id': _page_id_from_url(page_url) or page_url,
                 'url': page_url,
                 'name': cleaned_name,
+                'follower_count': follower_count,
                 'score': score,
             }
+        elif follower_count and not current.get('follower_count'):
+            current['follower_count'] = follower_count
 
     pages = []
     for item in grouped.values():
@@ -4469,6 +4493,12 @@ async def _extract_page_cards(page: Page) -> List[Dict[str, str]]:
             str(card.get('parentText') or '').splitlines()[0] if card.get('parentText') else '',
             *[str(value) for value in cast(List[Any], card.get('siblingLabels') or [])[:3]],
         ]
+        follower_count = _extract_follower_count_text(
+            card.get('label'),
+            card.get('ariaLabel'),
+            card.get('parentText'),
+            *cast(List[Any], card.get('siblingLabels') or []),
+        )
         for label in labels:
             cleaned_name = _prefer_discovered_page_name(_page_name_from_discovered_link(label, page_url), page_url)
             score = _discovered_page_name_score(cleaned_name, page_url)
@@ -4480,8 +4510,11 @@ async def _extract_page_cards(page: Page) -> List[Dict[str, str]]:
                     'id': _page_id_from_url(page_url) or page_url,
                     'url': page_url,
                     'name': cleaned_name,
+                    'follower_count': follower_count,
                     'score': score,
                 }
+            elif follower_count and not current.get('follower_count'):
+                current['follower_count'] = follower_count
 
     pages = []
     for item in grouped.values():
@@ -4545,10 +4578,31 @@ def _page_item_from_graphql_candidate(candidate: Dict[str, Any]) -> Optional[Dic
     if _looks_like_numeric_identifier(cleaned_name) or _is_blocked_discovered_page_name(cleaned_name):
         return None
 
+    follower_count = ''
+    for key in (
+        'followers',
+        'follower_count',
+        'followers_count',
+        'profile_follower_count',
+        'subscriber_count',
+        'fan_count',
+        'likes',
+    ):
+        value = candidate.get(key)
+        if isinstance(value, int):
+            follower_count = str(value)
+            break
+        if isinstance(value, str) and value.strip():
+            follower_count = _extract_follower_count_text(value) or value.strip()
+            break
+    if not follower_count:
+        follower_count = _extract_follower_count_text(json.dumps(candidate, ensure_ascii=False)[:5000])
+
     return {
         'id': raw_page_id or _page_id_from_url(normalized_url) or normalized_url,
         'url': normalized_url,
         'name': cleaned_name,
+        'follower_count': follower_count,
     }
 
 
@@ -4672,7 +4726,12 @@ async def discover_facebook_pages(cookies_json: str, proxy_url: str = '') -> Tup
                     continue
                 if url not in discovered:
                     added += 1
-                discovered[url] = item
+                    discovered[url] = item
+                    continue
+                if item.get('follower_count') and not discovered[url].get('follower_count'):
+                    discovered[url]['follower_count'] = item['follower_count']
+                if item.get('name') and not discovered[url].get('name'):
+                    discovered[url]['name'] = item['name']
             return added
 
         async def _wait_for_graphql_growth(previous_count: int) -> bool:
