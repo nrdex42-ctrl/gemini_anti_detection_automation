@@ -116,6 +116,8 @@ PAGE_DISCOVERY_RESOURCE_BLOCKING = os.getenv('PAGE_DISCOVERY_RESOURCE_BLOCKING',
 PAGE_DISCOVERY_GRAPHQL_WAIT_SECONDS = _env_float('PAGE_DISCOVERY_GRAPHQL_WAIT_SECONDS', 2.0, minimum=0.2)
 PAGE_DISCOVERY_GRAPHQL_SAMPLE_LIMIT = _env_int('PAGE_DISCOVERY_GRAPHQL_SAMPLE_LIMIT', 200, minimum=20)
 PAGE_DISCOVERY_WAIT_UNTIL = os.getenv('PAGE_DISCOVERY_WAIT_UNTIL', 'commit').strip() or 'commit'
+PAGE_DISCOVERY_FOLLOWER_ENRICH_LIMIT = _env_int('PAGE_DISCOVERY_FOLLOWER_ENRICH_LIMIT', 8, minimum=0)
+PAGE_DISCOVERY_FOLLOWER_ENRICH_TIMEOUT = _env_int('PAGE_DISCOVERY_FOLLOWER_ENRICH_TIMEOUT', 8, minimum=2)
 FACEBOOK_POST_TIMEOUT_SECONDS = _env_int('FACEBOOK_POST_TIMEOUT_SECONDS', 180, minimum=60)
 POST_BATCH_PAGE_TIMEOUT_SECONDS = _env_int('POST_BATCH_PAGE_TIMEOUT_SECONDS', 110, minimum=45)
 POST_BATCH_PAGE_TIMEOUT_MAX_SECONDS = _env_int('POST_BATCH_PAGE_TIMEOUT_MAX_SECONDS', 0, minimum=0)
@@ -4330,14 +4332,104 @@ def _extract_follower_count_text(*values: Any) -> str:
     if not text:
         return ''
     patterns = (
-        r'((?:\d{1,3}(?:[,.]\d{3})+|\d+)(?:[.,]\d+)?\s*[KkMmBb]?)\s+(?:followers?|متابع(?:ين|ون)?|متابع)',
-        r'(?:followers?|متابع(?:ين|ون)?|متابع)\s*[:\-]?\s*((?:\d{1,3}(?:[,.]\d{3})+|\d+)(?:[.,]\d+)?\s*[KkMmBb]?)',
+        r'((?:\d{1,3}(?:[,.]\d{3})+|\d+)(?:[.,]\d+)?\s*[KkMmBb]?)\s+(?:followers?|people\s+follow\s+this|متابع(?:ين|ون)?|متابع)',
+        r'(?:followers?|people\s+follow\s+this|متابع(?:ين|ون)?|متابع)\s*[:\-]?\s*((?:\d{1,3}(?:[,.]\d{3})+|\d+)(?:[.,]\d+)?\s*[KkMmBb]?)',
+        r'(?:يتابع(?:ها|ه)?|يتابعون(?:ها|ه)?)\s*((?:\d{1,3}(?:[,.]\d{3})+|\d+)(?:[.,]\d+)?\s*[KkMmBb]?)',
     )
     for pattern in patterns:
         match = re.search(pattern, text, re.I)
         if match:
             return ' '.join(match.group(1).split())
     return ''
+
+
+def _follower_enrichment_urls(page_url: str) -> List[str]:
+    try:
+        parsed = urlparse(page_url)
+    except Exception:
+        return [page_url] if page_url else []
+    if not parsed.scheme or not parsed.netloc:
+        return [page_url] if page_url else []
+
+    urls: List[str] = [page_url]
+    if parsed.path == '/profile.php':
+        query = parse_qs(parsed.query)
+        page_id = (query.get('id') or [''])[0].strip()
+        if page_id:
+            urls.extend(
+                [
+                    urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', urlencode({'id': page_id, 'sk': 'followers'}), '')),
+                    urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', urlencode({'id': page_id, 'sk': 'about'}), '')),
+                ]
+            )
+    else:
+        base = page_url.rstrip('/')
+        urls.extend([f'{base}/followers', f'{base}/about'])
+
+    deduped: List[str] = []
+    seen: Set[str] = set()
+    for url in urls:
+        if url and url not in seen:
+            seen.add(url)
+            deduped.append(url)
+    return deduped
+
+
+async def _extract_visible_follower_count(page: Page) -> str:
+    text = await page.locator('body').evaluate(
+        """
+        body => {
+            const values = [];
+            values.push(body.innerText || body.textContent || '');
+            document.querySelectorAll('meta[content], [aria-label], img[alt]').forEach(node => {
+                values.push(node.getAttribute('content') || '');
+                values.push(node.getAttribute('aria-label') || '');
+                values.push(node.getAttribute('alt') || '');
+            });
+            return values.join('\\n').slice(0, 30000);
+        }
+        """
+    )
+    return _extract_follower_count_text(text)
+
+
+async def _enrich_missing_page_followers(page: Page, pages: List[Dict[str, str]]) -> int:
+    if PAGE_DISCOVERY_FOLLOWER_ENRICH_LIMIT <= 0:
+        return 0
+    missing = [item for item in pages if not str(item.get('follower_count') or '').strip()]
+    if not missing:
+        return 0
+
+    enriched = 0
+    for item in missing[:PAGE_DISCOVERY_FOLLOWER_ENRICH_LIMIT]:
+        page_url = str(item.get('url') or '').strip()
+        if not page_url:
+            continue
+        for target_url in _follower_enrichment_urls(page_url):
+            try:
+                await page.goto(
+                    target_url,
+                    wait_until='domcontentloaded',
+                    timeout=PAGE_DISCOVERY_FOLLOWER_ENRICH_TIMEOUT * 1000,
+                )
+                await _smart_wait(
+                    lambda: page.evaluate('document.readyState !== "loading"'),
+                    timeout_ms=700,
+                    check_interval_ms=100,
+                )
+                follower_count = await _extract_visible_follower_count(page)
+                if follower_count:
+                    item['follower_count'] = follower_count
+                    enriched += 1
+                    logger.info(
+                        'PAGE_DISCOVERY stage="follower_enrich" page="%s" followers="%s"',
+                        item.get('name') or page_url,
+                        follower_count,
+                    )
+                    break
+            except Exception as exc:
+                logger.debug(f'PAGE_DISCOVERY follower enrichment skipped for {target_url}: {exc}')
+    return enriched
 
 
 def _discovered_page_name_score(name: str, page_url: str) -> int:
@@ -4875,12 +4967,14 @@ async def discover_facebook_pages(cookies_json: str, proxy_url: str = '') -> Tup
 
         pages = list(discovered.values())
         pages = [item for item in pages if _is_valid_discovered_page_item(item)]
+        enriched_count = await _enrich_missing_page_followers(page, pages)
         pages.sort(key=lambda item: item.get('name', '').lower())
         if not pages:
             diagnostic_path = await _save_diagnostics(page, 'page_discovery_no_pages')
             return False, [], _with_diagnostic('No managed pages were found in the Facebook pages list.', diagnostic_path)
         logger.info(
             f'PAGE_DISCOVERY stage="finished" pages={len(pages)} '
+            f'follower_enriched={enriched_count} '
             f'elapsed={asyncio.get_running_loop().time() - started_at:.1f}s'
         )
         return True, pages, ''
