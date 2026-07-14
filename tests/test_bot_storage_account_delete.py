@@ -175,10 +175,11 @@ def test_upsert_pages_replaces_account_page_snapshot_and_normalizes_page_fields(
     )
 
     assert connection.committed is True
-    assert cursor.executed[0] == ("delete from fb_pages where account_id=%s", ("acct_1",))
-    assert len(cursor.executed) == 3
-    assert cursor.executed[1][1] == ("acct_1", "p1", "Insan", "https://facebook.com/insan", "")
-    account_id, generated_page_id, page_name, page_url, follower_count = cursor.executed[2][1]
+    assert cursor.executed[0] == ("alter table fb_pages add column if not exists follower_count text not null default ''", None)
+    assert cursor.executed[1] == ("delete from fb_pages where account_id=%s", ("acct_1",))
+    assert len(cursor.executed) == 4
+    assert cursor.executed[2][1] == ("acct_1", "p1", "Insan", "https://facebook.com/insan", "")
+    account_id, generated_page_id, page_name, page_url, follower_count = cursor.executed[3][1]
     assert account_id == "acct_1"
     assert len(generated_page_id) == 24
     assert page_name == "Oppo"

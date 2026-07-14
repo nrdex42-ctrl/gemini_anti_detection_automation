@@ -495,6 +495,7 @@ async def discover_pages(cookies: List[Dict[str, str]], tokens: Dict[str, Any], 
                         "id": str(item.get("id") or ""),
                         "url": url,
                         "name": name,
+                        "follower_count": str(item.get("follower_count") or ""),
                     }
                 )
             logger.info("Engine discovery returned %d page(s).", len(discovered))

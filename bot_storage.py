@@ -86,6 +86,12 @@ class BotStorage:
                 cur.execute(schema_path.read_text(encoding="utf-8"))
             conn.commit()
 
+    def ensure_page_follower_count_column(self) -> None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("alter table fb_pages add column if not exists follower_count text not null default ''")
+            conn.commit()
+
     def upsert_account(self, account_id: str, cookie_string: str, label: str = "", created_by: int = 0) -> None:
         encrypted_cookie = self.cipher.encrypt(cookie_string)
         allow_owner_transfer = os.getenv("BOT_ALLOW_ACCOUNT_OWNERSHIP_TRANSFER", "true").lower() == "true"
@@ -673,6 +679,7 @@ class BotStorage:
                 }
             )
 
+        self.ensure_page_follower_count_column()
         with self.connect() as conn:
             with conn.cursor() as cur:
                 cur.execute("delete from fb_pages where account_id=%s", (account_id,))
@@ -693,6 +700,7 @@ class BotStorage:
             conn.commit()
 
     def list_pages(self, account_id: str, owner_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        self.ensure_page_follower_count_column()
         with self.connect() as conn:
             with conn.cursor() as cur:
                 if owner_id is None:
